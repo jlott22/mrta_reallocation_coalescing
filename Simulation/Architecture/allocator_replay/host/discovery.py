@@ -9,6 +9,12 @@ from allocator_replay.host.transport import DEFAULT_BAUDRATE, ReplayTransportErr
 
 
 DISCOVERY_MARKER = "AR_DISCOVER"
+# Auto-discovery must never send REPL control bytes to arbitrary serial
+# devices. Raspberry Pi's RP2040 USB VID covers the MicroPython firmware used
+# on the Pololu 3pi+ 2040. PID 0x0005 is Raspberry Pi's registered Pico
+# MicroPython CDC firmware. An explicitly named port is treated as the
+# operator's narrow allow-list for a board with any custom USB identity.
+SAFE_AUTO_USB_IDS = frozenset(((0x2E8A, 0x0005),))
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,38 @@ def available_ports() -> list[tuple[str, str]]:
         ((item.device, item.description or "") for item in list_ports.comports()),
         key=lambda item: item[0],
     )
+
+
+def safe_auto_ports() -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
+    """Return only recognized RP2040/Pololu ports plus skipped audit rows."""
+
+    _, list_ports = _serial_dependencies()
+    selected: list[tuple[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    for item in sorted(list_ports.comports(), key=lambda value: value.device):
+        port = str(item.device)
+        description = str(item.description or "")
+        vid = getattr(item, "vid", None)
+        pid = getattr(item, "pid", None)
+        if (vid, pid) in SAFE_AUTO_USB_IDS:
+            selected.append((port, description))
+        else:
+            usb_id = (
+                "unknown"
+                if vid is None
+                else f"{int(vid):04x}:{int(pid or 0):04x}"
+            )
+            skipped.append(
+                {
+                    "port": port,
+                    "error": (
+                        "not probed by safe auto-discovery "
+                        f"(USB VID:PID {usb_id}); pass the exact port explicitly "
+                        "only after confirming it is a replay RP2040"
+                    ),
+                }
+            )
+    return selected, skipped
 
 
 def _query_port(port: str, description: str) -> DiscoveredDevice:
@@ -118,13 +156,14 @@ def discover(
     ports: Iterable[str] | str = "auto",
 ) -> tuple[list[DiscoveredDevice], list[dict[str, str]]]:
     descriptions = dict(available_ports())
-    selected = (
-        list(descriptions)
-        if ports == "auto"
-        else [str(port) for port in ports]
-    )
+    if ports == "auto":
+        safe, failures = safe_auto_ports()
+        selected = [item[0] for item in safe]
+        descriptions.update(dict(safe))
+    else:
+        selected = [str(port) for port in ports]
+        failures = []
     devices: list[DiscoveredDevice] = []
-    failures: list[dict[str, str]] = []
     for port in selected:
         try:
             device = _query_port(port, descriptions.get(port, ""))

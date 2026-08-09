@@ -1060,6 +1060,7 @@ class SerialReplayDevice:
         trial_key = str(config["trial_key"])
         fixture = {
             "schema": 1,
+            "persistent": True,
             "fixture_id": "persistent-trial/" + trial_key,
             "condition_id": config["condition_id"],
             "mission": config["mission"],

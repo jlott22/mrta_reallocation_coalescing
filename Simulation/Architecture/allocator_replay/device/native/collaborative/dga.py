@@ -35,6 +35,22 @@ class DGAAllocator(NativeAllocatorBase):
             if state.peer_position_valid[index]
         ]
 
+    def on_allocation_epoch(self, reason, admitted_cells, epoch_index=None):
+        changed = NativeAllocatorBase.on_allocation_epoch(
+            self, reason, admitted_cells, epoch_index
+        )
+        if changed:
+            # Match the simulator DGA visible-set-growth reset.  The RNG,
+            # generation, and solution counter remain monotonic trial state;
+            # cached plans and received solutions do not survive a new task.
+            self.population = []
+            self.received_pool = []
+            self.received_entries = {}
+            self.received_better = False
+            self.best_plan = []
+            self.best_fitness = float("inf")
+        return changed
+
     def choose(self):
         state = self.state
         self.clean_path()

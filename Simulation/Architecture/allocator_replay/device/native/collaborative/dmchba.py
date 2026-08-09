@@ -29,6 +29,15 @@ class DMCHBAAllocator(NativeAllocatorBase):
             peers.append((index, int(state.peer_positions[index])))
         return (int(state.task_revision), tuple(peers))
 
+    def on_allocation_epoch(self, reason, admitted_cells, epoch_index=None):
+        changed = NativeAllocatorBase.on_allocation_epoch(
+            self, reason, admitted_cells, epoch_index
+        )
+        if changed:
+            self.last_assignment_signature = None
+            self.last_matrix_size = 0
+        return changed
+
     def choose(self):
         state = self.state
         self.clean_path()

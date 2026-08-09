@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "study_id": "mrta_reallocation_coalescing",
+  "campaign_id": "hil_pilot_calibrated_v5",
+  "manifest_root": "study/generated/manifests/collaborative_visit_g19_t50_n25_calibrated_v2",
+  "manifest_set_id": "collaborative_visit_g19_t50_n25_calibrated_v2",
+  "results_root": "results/hil_reallocation_coalescing",
+  "mission": "collaborative",
+  "allocators": ["CBAA", "ACBBA", "PI", "HIPC"],
+  "arrival_loads": ["medium"],
+  "arrival_rates_tasks_per_s": {"medium": 0.3},
+  "policies": [
+    {"policy_id": "eager_b1", "policy": "eager", "batch_size": 1},
+    {"policy_id": "count_b4", "policy": "count", "batch_size": 4},
+    {
+      "policy_id": "bounded_b4_w5s",
+      "policy": "bounded",
+      "batch_size": 4,
+      "max_wait_s": 5.0
+    }
+  ],
+  "trace_ids": ["trace_0000"],
+  "allocator_rounds_per_epoch": 1,
+  "timeout_seconds": 30.0
+}

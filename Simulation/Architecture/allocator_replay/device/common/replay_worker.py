@@ -202,58 +202,10 @@ def _module_set_sha256(module_files):
 
 
 def _allocator_class(fixture):
-    global _ACTIVE_ALLOCATOR_MODULE
-    prefix = "b" if fixture["mission"] == "bayesian" else "c"
-    module_name = "replay_{}_{}".format(
-        prefix,
-        fixture["algorithm"].lower(),
-    )
-    if _ACTIVE_ALLOCATOR_MODULE != module_name:
-        keep = {module_name}
-        if module_name == "replay_b_dga":
-            keep.add("replay_b_dga_optimized")
-        for loaded_name in list(sys.modules):
-            if (
-                loaded_name.startswith("replay_b_")
-                or loaded_name.startswith("replay_c_")
-            ) and loaded_name not in keep:
-                try:
-                    del sys.modules[loaded_name]
-                except KeyError:
-                    pass
-        clear_object_classes()
-        gc.collect()
-        _ACTIVE_ALLOCATOR_MODULE = module_name
-    module = __import__(module_name)
-    for name in ("_PackedPlan", "_PackedScore"):
-        cls = getattr(module, name, None)
-        if cls is not None:
-            register_object_class(
-                cls,
-                name,
-                (
-                    ("cells", "lengths", "team_ids", "grid_size")
-                    if name == "_PackedPlan"
-                    else ("plan", "fitness", "ordinal")
-                ),
-            )
-    if fixture["mission"] == "bayesian" and fixture["algorithm"] == "DGA":
-        optimized = __import__("replay_b_dga_optimized")
-        for name in ("_PackedPlan", "_PackedScore"):
-            cls = getattr(optimized, name, None)
-            if cls is not None:
-                register_object_class(
-                    cls,
-                    name,
-                    (
-                        ("cells", "lengths", "team_ids", "grid_size")
-                        if name == "_PackedPlan"
-                        else ("plan", "fitness", "ordinal")
-                    ),
-                )
-    return getattr(
-        module,
-        ALGORITHM_CLASSES[fixture["algorithm"]],
+    raise RuntimeError(
+        "legacy one-shot allocator replay is disabled in the "
+        "reallocation-coalescing build; use the persistent collaborative "
+        "protocol"
     )
 
 
@@ -263,9 +215,11 @@ def _load_allocator(fixture):
 
 def _persistent_runtime(config):
     """Use the exact factory shared with a future physical control wrapper."""
-    if str(config.get("mission", "")).lower() == "bayesian":
-        # Preserve the memory-optimized DGA alias and codec registrations.
-        _allocator_class(config)
+    mission = str(config.get("mission", "")).lower()
+    if mission not in ("collaborative", "collaborative_visit"):
+        raise ValueError("persistent replay supports Collaborative Visit only")
+    if config.get("max_candidate_cells") is not None:
+        raise ValueError("persistent replay requires unrestricted candidates")
     module = __import__("replay_physical_factory")
     return module.create_complete_runtime(config)
 
@@ -1196,9 +1150,13 @@ def main():
                 fixture = json.loads(bytes(fixture_buffer).decode("utf-8"))
                 if fixture["fixture_id"] != fixture_meta["fixture_id"]:
                     raise ValueError("fixture id mismatch")
-                # Import and register packed replay classes before streamed
-                # state parts are decoded.  No allocator instance is created.
-                _allocator_class(fixture)
+                # Offline legacy fixtures need their generated replay class
+                # registered before streamed state is decoded.  Persistent
+                # coalescing trials instead construct the self-contained
+                # native Collaborative Visit runtime at PTRIAL and deploy no
+                # Bayesian/Top-K replay modules.
+                if not fixture.get("persistent"):
+                    _allocator_class(fixture)
                 fixture_buffer = None
                 gc.collect()
                 _write(PROTOCOL, "LOADED", fixture["fixture_id"], _mem_free())

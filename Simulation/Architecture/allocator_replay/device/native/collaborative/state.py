@@ -68,10 +68,18 @@ class CollaborativeState:
         self.peer_positions[self.robot_index] = self.position
         self.peer_position_valid[self.robot_index] = 1
 
-        raw_targets = value_from(
+        # Online-arrival studies need an immutable target universe plus a
+        # smaller admitted/active subset.  Older static fixtures provide only
+        # ``active_tasks`` and therefore retain their previous behavior.
+        raw_active_targets = value_from(
             initial_state,
             ("active_tasks", "targets", "known_targets", "target_cells"),
             value_from(config, ("active_tasks", "targets", "known_targets", "target_cells"), []),
+        )
+        raw_targets = value_from(
+            initial_state,
+            ("all_tasks", "task_universe"),
+            value_from(config, ("all_tasks", "task_universe"), raw_active_targets),
         )
         encoded_targets = self._normalize_cell_collection(raw_targets)
         encoded_targets.sort()
@@ -136,8 +144,12 @@ class CollaborativeState:
         self.candidate_count_after = 0
         self.last_event = "trial_reset"
         self.current_goal = None
+        self.last_allocation_epoch_index = -1
+        self.last_allocation_epoch_reason = ""
+        self.last_allocation_epoch_admitted = array("H")
+        self.allocation_epoch_hook_count = 0
 
-        self._replace_active(raw_targets, mark_revision=False)
+        self._replace_active(raw_active_targets, mark_revision=False)
         completed = value_from(
             initial_state,
             ("completed_tasks", "visited_targets", "searched"),
@@ -289,6 +301,53 @@ class CollaborativeState:
         self.collision_active = bool(active)
         self.last_event = "collision_updated"
 
+    def apply_allocation_epoch(
+        self, epoch_index, trigger_reason, admitted_cells
+    ):
+        """Record one idempotent allocation epoch in persistent state."""
+
+        epoch_index = int(epoch_index)
+        if epoch_index < 0:
+            raise ValueError("allocation epoch index must be non-negative")
+        trigger_reason = str(trigger_reason)
+        if not trigger_reason:
+            raise ValueError("allocation epoch trigger reason is required")
+        admitted = self._normalize_cell_collection(admitted_cells)
+        unique = []
+        seen = set()
+        for encoded in admitted:
+            if encoded in seen:
+                continue
+            slot = self.slot_by_cell.get(encoded)
+            if slot is None:
+                raise ValueError(
+                    "allocation epoch task is outside the immutable target universe"
+                )
+            if not self.active[slot]:
+                raise ValueError("allocation epoch task is not active")
+            seen.add(encoded)
+            unique.append(encoded)
+
+        if epoch_index < self.last_allocation_epoch_index:
+            raise ValueError("allocation epoch index moved backwards")
+        if epoch_index == self.last_allocation_epoch_index:
+            previous = [
+                int(item) for item in self.last_allocation_epoch_admitted
+            ]
+            if (
+                trigger_reason != self.last_allocation_epoch_reason
+                or unique != previous
+            ):
+                raise ValueError("duplicate allocation epoch metadata changed")
+            return False
+
+        self.last_allocation_epoch_index = epoch_index
+        self.last_allocation_epoch_reason = trigger_reason
+        self.last_allocation_epoch_admitted = array("H", unique)
+        self.allocation_epoch_hook_count += 1
+        self.last_event = "allocation_epoch"
+        return True
+
     def active_slots(self):
         return [slot for slot, active in enumerate(self.active) if active]
 
@@ -404,6 +463,16 @@ class CollaborativeState:
             "task_revision": int(self.task_revision),
             "rng_state": int(self.rng.state),
             "current_goal": self.current_goal,
+            "last_allocation_epoch_index": int(
+                self.last_allocation_epoch_index
+            ),
+            "last_allocation_epoch_reason": self.last_allocation_epoch_reason,
+            "last_allocation_epoch_admitted": [
+                int(item) for item in self.last_allocation_epoch_admitted
+            ],
+            "allocation_epoch_hook_count": int(
+                self.allocation_epoch_hook_count
+            ),
         }
 
     def restore_resume(self, resume):
@@ -464,6 +533,24 @@ class CollaborativeState:
         ) & 0xFFFFFFFF
         goal = resume.get("current_goal")
         self.current_goal = None if goal is None else self.encode_cell(int(goal))
+        self.last_allocation_epoch_index = int(
+            resume.get("last_allocation_epoch_index", -1)
+        )
+        self.last_allocation_epoch_reason = str(
+            resume.get("last_allocation_epoch_reason", "")
+        )
+        admitted = []
+        for encoded in resume.get("last_allocation_epoch_admitted", ()):
+            encoded = self.encode_cell(int(encoded))
+            if encoded not in self.slot_by_cell:
+                raise ValueError(
+                    "resumed allocation epoch task is outside target universe"
+                )
+            admitted.append(encoded)
+        self.last_allocation_epoch_admitted = array("H", admitted)
+        self.allocation_epoch_hook_count = int(
+            resume.get("allocation_epoch_hook_count", 0)
+        )
 
     def snapshot_minimal(self):
         active_cells = []
@@ -484,4 +571,15 @@ class CollaborativeState:
             "current_goal": None
             if self.current_goal is None
             else list(self.decode_cell(self.current_goal)),
+            "last_allocation_epoch_index": int(
+                self.last_allocation_epoch_index
+            ),
+            "last_allocation_epoch_reason": self.last_allocation_epoch_reason,
+            "last_allocation_epoch_admitted": [
+                list(self.decode_cell(item))
+                for item in self.last_allocation_epoch_admitted
+            ],
+            "allocation_epoch_hook_count": int(
+                self.allocation_epoch_hook_count
+            ),
         }

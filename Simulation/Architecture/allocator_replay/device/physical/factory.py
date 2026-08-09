@@ -1,12 +1,9 @@
-"""Complete persistent allocator factory shared by HIL and physical wrappers.
+"""Complete Collaborative Visit allocator factory shared by HIL and robots.
 
 This module is flattened to ``replay_physical_factory`` in a device build.
 It deliberately selects the same deployed allocator modules for both entry
 points so stationary and moving trials time the same allocator code.
 """
-
-from replay_persistent import ReplayPersistentRuntime
-
 
 ALGORITHM_CLASSES = {
     "CBAA": "CBAAAllocator",
@@ -23,17 +20,11 @@ def create_complete_runtime(config):
     algorithm = str(config.get("algorithm", "")).upper()
     if algorithm not in ALGORITHM_CLASSES:
         raise ValueError("unknown allocator: " + algorithm)
-    if mission == "collaborative":
-        module = __import__("replay_native_c_runtime")
-        return module.create_persistent_runtime(config)
-    if mission != "bayesian":
-        raise ValueError("unknown mission: " + mission)
-    if algorithm == "DMCHBA":
-        module = __import__("replay_native_b_dmchba")
-        persistent = __import__("replay_persistent")
-        return persistent.ReplayPersistentRuntime(
-            lambda: module.DMCHBAAllocator(config)
+    if mission not in ("collaborative", "collaborative_visit"):
+        raise ValueError(
+            "this study deploys Collaborative Visit allocators only: " + mission
         )
-    module = __import__("replay_b_" + algorithm.lower())
-    allocator_class = getattr(module, ALGORITHM_CLASSES[algorithm])
-    return ReplayPersistentRuntime(lambda: allocator_class())
+    if config.get("max_candidate_cells") is not None:
+        raise ValueError("reallocation-coalescing HIL requires unrestricted candidates")
+    module = __import__("replay_native_c_runtime")
+    return module.create_persistent_runtime(config)

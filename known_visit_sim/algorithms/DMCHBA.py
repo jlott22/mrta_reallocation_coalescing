@@ -79,6 +79,18 @@ class DMCHBAAllocator(AllocatorBase):
         if removed.intersection(self._get_path(robot)):
             setattr(robot, "dmchba_external_path_invalidated", True)
 
+    def on_allocation_epoch(
+        self, robot: Any, reason: str, admitted_tasks: Sequence[Cell]
+    ) -> None:
+        """Grow the task set by opening a normal DMCHBA reassignment trigger."""
+
+        self._ensure_dmchba_state(robot)
+        if admitted_tasks:
+            setattr(robot, "dmchba_path", [])
+            setattr(robot, "dmchba_last_assignment_signature", None)
+            setattr(robot, "dmchba_task_signature", None)
+            setattr(robot, "dmchba_stall_self_only", False)
+
     def _task_set_trigger(self, robot: Any) -> Optional[str]:
         """Return reassignment trigger name, or None if current path should continue."""
 

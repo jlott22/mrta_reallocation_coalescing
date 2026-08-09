@@ -42,6 +42,10 @@ Thumbs.db
 *.eps
 
 # Transient study execution state (preserve combined CSV/JSON and manifests)
+/study/output/
+/results/
+/study/generated/manifests/collaborative_visit_g19_t50_n25_v1/
+/Simulation/Architecture/allocator_replay/builds/
 /results/**/logs/
 /results/**/parts/
 /results/**/launcher.pid

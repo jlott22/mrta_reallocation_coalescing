@@ -1,0 +1,32 @@
+{
+  "manifest": {
+    "manifest_set_id": "collaborative_visit_g19_t50_n25_calibrated_v2",
+    "root": "study/generated/manifests",
+    "master_seed": 20260808,
+    "trace_count": 25,
+    "grid_size": 19,
+    "robot_count": 4,
+    "task_count": 50,
+    "initial_task_count": 8,
+    "arrival_loads": {"low": 0.075, "medium": 0.3, "high": 1.2},
+    "arrival_rate_units": "tasks_per_mission_second",
+    "design_status": "calibrated_from_pilots_d_and_e"
+  },
+  "campaign": {
+    "campaign_id": "pilot_extended_algorithms_v1",
+    "output_root": "study/output/pilot_extended_algorithms_v1",
+    "algorithms": ["DMCHBA", "DGA"],
+    "loads": ["medium"],
+    "policies": [
+      {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1},
+      {"policy_id": "count_b4", "mode": "count", "batch_size": 4}
+    ],
+    "trace_limit": 1,
+    "max_workers": 4,
+    "schedule_seed": 2026080904,
+    "allow_dirty": true,
+    "required_outputs": ["trial_summary.json", "task_events.csv", "allocation_epochs.csv"],
+    "runner": {"module": "known_visit_sim.run_online_trials", "extra_args": []},
+    "notes": "Bounded full-size trace_0000 smoke for unrestricted DMCHBA and DGA under calibrated medium load."
+  }
+}

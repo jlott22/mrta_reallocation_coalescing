@@ -15,14 +15,26 @@ runtime = create_persistent_runtime({
     "robot_id": "00",
     "robot_ids": ["00", "01", "02", "03"],
     "grid_size": 19,
-    "max_candidate_cells": 25,
+    "max_candidate_cells": None,
 })
 runtime.reset_trial({}, {
     "pos": [0, 0],
+    "all_tasks": [[2, 2], [8, 4], [7, 3]],
     "active_tasks": [[2, 2], [8, 4]],
     "peer_positions": {"01": [0, 6], "02": [0, 12], "03": [0, 18]},
 })
 runtime.apply_delta({"sequence": 1, "pos": [1, 0]})
+runtime.apply_delta({
+    "active_tasks": [[2, 2], [8, 4], [7, 3]],
+    "events": [{
+        "kind": "allocation_epoch",
+        "payload": {
+            "epoch_index": 1,
+            "trigger_reason": "batch_threshold",
+            "admitted_cells": [[7, 3]],
+        },
+    }],
+})
 decision = runtime.choose_goal()
 messages = runtime.drain_messages()
 ```
@@ -38,6 +50,15 @@ worker puts the outer timer immediately around this method. The runtime's
 `candidate_counts()` exposes the before/after counts, allowing the worker to
 report total, filter, and allocator-exclusive microseconds. USB decoding,
 delta application, message draining, and snapshots stay outside that timer.
+
+The coalescing host sends one `allocation_epoch` event to each robot context
+on its first call in every admission epoch. The persisted event record includes
+the epoch index, trigger reason, and admitted cells. Duplicate delivery is
+idempotent. When the admitted list is nonempty, all six allocators invalidate
+their local cached consensus/path before the timed call; CBAA therefore cannot
+take its maintenance-only cached-goal path after visible-set growth. Later
+rounds in the same epoch keep the new solution. The candidate set remains the
+complete active set (`max_candidate_cells=None`).
 
 `snapshot_minimal()` returns the five standard worker sections. Its one compact
 resume record contains target flags, claims, short paths, RNG state, and the

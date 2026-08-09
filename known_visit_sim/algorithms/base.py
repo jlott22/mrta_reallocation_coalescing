@@ -80,6 +80,22 @@ class AllocatorBase:
         """Allow an allocator to reset cached paths after local task completion inference."""
         return True
 
+    def on_allocation_epoch(
+        self, robot: RobotAPI, reason: str, admitted_tasks: Sequence[Cell]
+    ) -> None:
+        """Make newly admitted tasks operational at a scheduler epoch.
+
+        The retained allocators already expose a compatibility reset hook.  A
+        reset is used only when the visible task set grows; completion-only
+        behavior remains on the existing ``on_task_set_changed`` path.
+        """
+
+        self.on_task_set_changed(robot)
+        if admitted_tasks:
+            reset = getattr(self, "_reset_cbaa_state", None)
+            if callable(reset):
+                reset(robot)
+
     def recover_stalled_allocation(self, robot: RobotAPI) -> bool:
         """Clear local allocation consensus after a prolonged no-goal stall.
 

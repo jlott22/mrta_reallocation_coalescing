@@ -6,3 +6,4 @@
 /results/**/combined/*.csv -text
 /results/**/artifacts/** -text
 /results/analysis/archive/** -text
+/study/generated/manifests/** -text

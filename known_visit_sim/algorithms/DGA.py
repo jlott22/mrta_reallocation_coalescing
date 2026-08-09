@@ -1021,6 +1021,10 @@ class DGAAllocator(AllocatorBase):
 
     def _seed_for_robot(self, robot: Any) -> int:
         text = str(getattr(robot, "rid", "0"))
+        online_trace_seed = getattr(robot, "_online_trace_seed", None)
+        if online_trace_seed is not None:
+            payload = repr((online_trace_seed, text)).encode("utf-8")
+            return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
         try:
             return 1009 + int(text)
         except ValueError:

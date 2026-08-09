@@ -33,3 +33,12 @@ from the named Git commits with `git archive`.
   machine-specific ESP32/network settings.
 
 This repository is an independent real-file copy with a fresh Git history.
+
+## Final read-only verification
+
+On 2026-08-09, immediately before the new repository was committed/published,
+all donor HEADs were unchanged. Complete `git status --porcelain=v1 -uall`
+entry counts also exactly matched the initial audit: 28 for
+`topk_filter_study`, 100 for `dcta_benchmark_sim` (3 modified, 45 deleted, 52
+untracked), and 1 for `dtca_benchmark_hardware`. No donor change was cleaned,
+staged, committed, or otherwise altered.

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "validation_date": "2026-08-09",
+  "execution_mode": "software_loopback_dry_run",
+  "hardware_validated": false,
+  "campaign_id": "hil_pilot_calibrated_v5_dry_run",
+  "manifest_set_id": "collaborative_visit_g19_t50_n25_calibrated_v2",
+  "condition_count": 12,
+  "completed_trials": 12,
+  "accepted_allocator_calls": 1168,
+  "journal_rows_verified": 1192,
+  "resume_added_rows": 0,
+  "candidate_mode": "unrestricted",
+  "candidate_restriction_violations": 0,
+  "active_hil_tests_passed": 33,
+  "active_hil_tests_failed": 0,
+  "compiled_preflight_allocators_passed": [
+    "CBAA",
+    "ACBBA",
+    "PI",
+    "HIPC",
+    "DMCHBA",
+    "DGA"
+  ],
+  "preflight_online_growth": {
+    "initial_visible_tasks": 2,
+    "visible_tasks_after_admission": 3,
+    "duplicate_epoch_hook_repeated": false
+  },
+  "timing_definition": {
+    "device_allocator_time_us": "loopback device timer around choose_goal only",
+    "host_nonallocator_overhead_us": "setup, transport, and output outside the device timer"
+  },
+  "note": "This artifact records software/protocol validation only. No RP2040 or Pololu hardware was opened."
+}

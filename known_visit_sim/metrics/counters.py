@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List
 
+from known_visit_sim.core.reallocation import AllocatorCallRecord
+
 
 @dataclass
 class RobotCounters:
@@ -21,6 +23,7 @@ class RobotCounters:
     allocator_time_ns_samples: List[int] = field(default_factory=list)
     allocator_solve_time_ns_samples: List[int] = field(default_factory=list)
     candidate_filter_time_ns_samples: List[int] = field(default_factory=list)
+    allocator_call_records: List[AllocatorCallRecord] = field(default_factory=list)
 
 
 @dataclass

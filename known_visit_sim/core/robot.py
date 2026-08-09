@@ -10,6 +10,7 @@ from known_visit_sim.comms.bus import MessageBus
 from known_visit_sim.comms.message import Message, topic_for
 from known_visit_sim.config import SimConfig
 from known_visit_sim.metrics.counters import RobotCounters
+from .reallocation import AllocatorCallRecord
 from .planner import AStarPlanner
 from .types import Cell, DIRS4, Heading, Observation, in_bounds
 from .world import World
@@ -58,7 +59,7 @@ class RobotShell:
         self.bus = bus
         self.allocator = allocator
         self._searched: Set[Cell] = {pos}
-        self._active_tasks: Set[Cell] = set(world.targets)
+        self._active_tasks: Set[Cell] = set(world.admitted_targets)
         self.counters = RobotCounters(rid=rid)
         self.current_goal: Optional[Cell] = None
         self.last_goal: Optional[Cell] = None
@@ -77,6 +78,9 @@ class RobotShell:
         self._last_published_state_pos: Optional[Cell] = None
         self._now: float = 0.0
         self.pending_actions: Deque[PendingAction] = deque()
+        self._reallocation_scheduler = None
+        self._next_allocation_reason: Optional[str] = "initial_allocation"
+        self._reported_assignments: Set[Cell] = set()
 
         # Droppable coordination knowledge.
         self._peer_positions: Dict[str, Cell] = {}
@@ -101,6 +105,79 @@ class RobotShell:
     @property
     def active_tasks(self) -> Set[Cell]:
         return set(self._active_tasks)
+
+    def attach_reallocation_scheduler(self, scheduler: Any) -> None:
+        self._reallocation_scheduler = scheduler
+
+    def admit_tasks(
+        self, cells: List[Cell], epoch_id: int, trigger_reason: str
+    ) -> None:
+        admitted = [
+            cell for cell in cells
+            if cell in self.world.admitted_targets and cell not in self._active_tasks
+        ]
+        if not admitted:
+            return
+        # A cell traversed before its task existed is not evidence that the
+        # newly admitted task has been serviced.  Keep the world's physical
+        # visit/revisit history intact, but reopen the cell in every robot's
+        # local planning view so all retained allocators can select it.
+        for cell in admitted:
+            self._searched.discard(cell)
+            self.temp_blocked_next.discard(cell)
+            self._blocked_goal_failures.pop(cell, None)
+            self._blocked_goal_quarantine_level.pop(cell, None)
+            self._temporary_invalid_task_until.pop(cell, None)
+            if cell == self.pos:
+                # Permit a post-admission state publication at an unchanged
+                # position; peers must not rely on the pre-admission message.
+                self._last_published_state_pos = None
+        self._active_tasks.update(admitted)
+        self.last_event = "task_admission"
+        handler = getattr(self.allocator, "on_allocation_epoch", None)
+        if callable(handler):
+            handler(self, trigger_reason, admitted)
+        self.current_goal = None
+        self._clear_pending_actions()
+        self._next_allocation_reason = trigger_reason
+
+    def service_queued_allocation_epochs(self, now_s: float) -> int:
+        """Run queued global epoch calls without advancing physical motion.
+
+        Environment arrival interrupts are global.  Servicing their allocator
+        phase before any robot moves guarantees that every expected robot call
+        is accounted for, even when a nearby robot can complete a task on its
+        next physical wake.
+        """
+
+        scheduler = self._reallocation_scheduler
+        if scheduler is None or not scheduler.has_queued_context(self.rid):
+            return 0
+        self._now = float(now_s)
+        calls = 0
+        plan_peer_positions, _, _ = self._promote_perception()
+        self._active_peer_positions = plan_peer_positions
+        try:
+            while scheduler.has_queued_context(self.rid):
+                self._next_allocation_reason = None
+                self.bus.pump(self._now)
+                decision = self._choose_goal_with_metrics("consensus/internal")
+                if decision.goal is not None and decision.goal not in self._active_tasks:
+                    raise RuntimeError(
+                        f"{self.allocator.name} selected inactive/non-target goal {decision.goal}"
+                    )
+                self.current_goal = decision.goal
+                self.last_decision_debug = decision.debug
+                self._record_owned_assignments()
+                if self.current_goal is not None:
+                    self.last_goal = self.current_goal
+                    self._no_goal_since = None
+                self._publish_allocator_messages()
+                calls += 1
+        finally:
+            self._active_peer_positions = None
+            self.collision_avoidance_active = False
+        return calls
 
     @property
     def searched(self) -> Set[Cell]:
@@ -174,7 +251,26 @@ class RobotShell:
             loc = _payload_cell(payload.get("loc"))
             if loc is not None and in_bounds(loc, self.grid_size):
                 self._peer_positions[sender] = loc
-                self._complete_task_locally(loc, reason="peer_state_at_target")
+                target = self.world.target_records.get(loc)
+                if target is not None and target.completed:
+                    # The shared world is authoritative even if this delayed
+                    # message merely prompted the local cache refresh.  Keep
+                    # the retained peer-completion event name so allocator
+                    # invalidation behavior is unchanged in static trials.
+                    self._complete_task_locally(
+                        loc, reason="peer_state_at_target"
+                    )
+                elif (
+                    target is not None
+                    and target.admission_time_s is not None
+                    and message.created_at_s + 1e-12 >= target.admission_time_s
+                ):
+                    # A state report created while the task was unreleased or
+                    # pending cannot prove post-admission service, even if it
+                    # arrives after admission because of link delay.
+                    self._complete_task_locally(
+                        loc, reason="peer_state_at_target"
+                    )
             return
         if category == "collision_intent":
             loc = _payload_cell(payload.get("loc"))
@@ -208,8 +304,14 @@ class RobotShell:
 
         return self._plan_next_action(planner)
 
-    def _choose_goal_with_metrics(self):
+    def _choose_goal_with_metrics(self, reason: str = "other"):
         """Time one allocator call and separate nested candidate-filter work."""
+        epoch_id: Optional[int] = None
+        epoch_reason = reason
+        if self._reallocation_scheduler is not None:
+            epoch_id, epoch_reason = self._reallocation_scheduler.before_allocator_call(
+                self, self._now, reason
+            )
         started_ns = perf_counter_ns()
         filter_sample_index = len(self.counters.candidate_filter_time_ns_samples)
         try:
@@ -223,6 +325,20 @@ class RobotShell:
             self.counters.allocator_solve_time_ns_samples.append(
                 max(0, elapsed_ns - nested_filter_ns)
             )
+            if self._reallocation_scheduler is not None:
+                call_record = self._reallocation_scheduler.record_allocator_call(
+                    self.rid, self._now, elapsed_ns, epoch_id, epoch_reason
+                )
+            else:
+                call_record = AllocatorCallRecord(
+                    call_id=len(self.counters.allocator_call_records) + 1,
+                    robot_id=self.rid,
+                    mission_time_s=self._now,
+                    duration_ns=elapsed_ns,
+                    epoch_id=None,
+                    trigger_reason=epoch_reason,
+                )
+            self.counters.allocator_call_records.append(call_record)
 
     def _plan_next_action(self, planner: AStarPlanner) -> StepResult:
         (
@@ -230,6 +346,14 @@ class RobotShell:
             plan_collision_positions,
             plan_collision_intents,
         ) = self._promote_perception()
+
+        # Admission can occur while a robot is already standing on the task
+        # cell (including a cell traversed before release).  Service it as a
+        # zero-motion visit after the admission epoch's allocator phase rather
+        # than asking A* for a start==goal path and reporting path_failed.
+        current_position_service = self._service_task_at_current_position()
+        if current_position_service is not None:
+            return current_position_service
 
         previous_task = self.current_goal
         previous_task_completed = previous_task is not None and previous_task not in self._active_tasks
@@ -239,10 +363,31 @@ class RobotShell:
         )
 
         if self.current_goal is None or self.current_goal not in self._active_tasks:
+            allocation_reason = self._next_allocation_reason
+            if allocation_reason is None:
+                if previous_task_completed:
+                    allocation_reason = "task_completion"
+                elif previous_task is not None:
+                    allocation_reason = "invalid_goal"
+                elif not self._active_tasks:
+                    allocation_reason = "robot_idle"
+                elif self.last_goal is None:
+                    allocation_reason = "initial_allocation"
+                else:
+                    allocation_reason = "consensus/internal"
+            self._next_allocation_reason = None
             self.current_goal = None
             self._active_peer_positions = plan_peer_positions
             try:
-                decision = self._choose_goal_with_metrics()
+                decision = self._choose_goal_with_metrics(allocation_reason)
+                # Absolute-time arrivals can open more than one eager epoch
+                # before this robot wakes.  Drain every queued epoch so no
+                # arrival-induced reallocation is silently overwritten.
+                while (
+                    self._reallocation_scheduler is not None
+                    and self._reallocation_scheduler.has_queued_context(self.rid)
+                ):
+                    decision = self._choose_goal_with_metrics("consensus/internal")
             finally:
                 self._active_peer_positions = None
                 self.collision_avoidance_active = False
@@ -259,11 +404,12 @@ class RobotShell:
                     if callable(recover) and recover(self):
                         self._stall_recovery_count += 1
                         self._no_goal_since = self._now
-                        decision = self._choose_goal_with_metrics()
+                        decision = self._choose_goal_with_metrics("stalled_recovery")
                         self.current_goal = decision.goal
             if self.current_goal is not None or not self._active_tasks:
                 self._no_goal_since = None
             self.last_decision_debug = decision.debug
+            self._record_owned_assignments()
             if self.current_goal is not None and self.current_goal != self.last_goal:
                 if previous_task_invalidated:
                     self.counters.task_cell_replans += 1
@@ -299,6 +445,7 @@ class RobotShell:
                     if backoff is not None:
                         return backoff
                 self.current_goal = None
+                self._notify_invalid_goal_epoch()
                 self._set_collision_intent(None)
                 self.last_event = "path_failed"
                 return StepResult(reason="path_failed", time_cost_s=self.cfg.replan_delay_s)
@@ -318,6 +465,7 @@ class RobotShell:
             blocked.add(next_cell)
 
         self.current_goal = None
+        self._notify_invalid_goal_epoch()
         self._set_collision_intent(None)
         self.last_event = "path_failed"
         return StepResult(reason="path_failed", time_cost_s=self.cfg.replan_delay_s)
@@ -371,6 +519,7 @@ class RobotShell:
 
         if action.kind != "move" or action.target is None:
             self._clear_pending_actions()
+            self._notify_invalid_goal_epoch()
             self.last_event = "path_failed"
             return StepResult(reason="path_failed", time_cost_s=self.cfg.replan_delay_s)
 
@@ -380,6 +529,7 @@ class RobotShell:
         next_cell = action.target
         if next_cell is None:
             self._clear_pending_actions()
+            self._notify_invalid_goal_epoch()
             self.last_event = "path_failed"
             return StepResult(reason="path_failed", time_cost_s=self.cfg.replan_delay_s)
 
@@ -421,6 +571,16 @@ class RobotShell:
             self._complete_task_locally(self.pos, reason="local_target_visit")
         if first_completion:
             self.counters.targets_found += 1
+            if (
+                self._reallocation_scheduler is not None
+                and (
+                    not self.world.all_targets_completed()
+                    or self._reallocation_scheduler.pending_count > 0
+                )
+            ):
+                self._reallocation_scheduler.mandatory_event(
+                    self._now, "task_completion", source_robot_id=self.rid
+                )
         elif target_visited:
             self.counters.task_cell_revisits += 1
         obs = Observation(
@@ -490,6 +650,8 @@ class RobotShell:
         )
         self._blocked_goal_failures.pop(goal, None)
         self.current_goal = None
+        self._next_allocation_reason = "invalid_goal"
+        self._notify_invalid_goal_epoch()
         self._set_collision_intent(None)
         self.last_event = "blocked_goal_backoff"
         return StepResult(reason="blocked_goal_backoff", time_cost_s=self.cfg.replan_delay_s)
@@ -502,19 +664,124 @@ class RobotShell:
     def _allocation_active(self) -> bool:
         return True
 
+    def _notify_invalid_goal_epoch(self) -> None:
+        self._next_allocation_reason = "invalid_goal"
+        if self._reallocation_scheduler is not None:
+            self._reallocation_scheduler.mandatory_event(
+                self._now, "invalid_goal", source_robot_id=self.rid
+            )
+
     def _complete_task_locally(self, cell: Cell, reason: str) -> bool:
         if cell not in self._active_tasks:
             return False
         self._active_tasks.remove(cell)
+        self._reported_assignments.discard(cell)
         self._blocked_goal_quarantine_level.pop(cell, None)
         self._temporary_invalid_task_until.pop(cell, None)
         self.last_event = reason
         self.current_goal = None
+        self._next_allocation_reason = (
+            "task_completion" if "target" in reason else "invalid_goal"
+        )
         self._clear_pending_actions()
         handler = getattr(self.allocator, "on_task_set_changed", None)
         if callable(handler):
             handler(self)
         return True
+
+    def _service_task_at_current_position(self) -> Optional[StepResult]:
+        """Complete an admitted task underneath this robot without fake motion."""
+
+        if self.pos not in self._active_tasks:
+            return None
+        record = self.world.target_records.get(self.pos)
+        if record is None or record.admission_time_s is None:
+            return None
+
+        # Direct physical service is a legitimate assignment.  Preserve an
+        # allocator-owned first assignment when one was already recorded.
+        if record.first_assignment_time_s is None:
+            self.world.record_assignment(self.rid, [self.pos], self._now)
+
+        target_visited, first_completion = self.world.record_target_visit(
+            self.rid, self.pos, self._now
+        )
+        if not target_visited:
+            return None
+        self._complete_task_locally(self.pos, reason="local_target_visit")
+        if first_completion:
+            self.counters.targets_found += 1
+            if (
+                self._reallocation_scheduler is not None
+                and (
+                    not self.world.all_targets_completed()
+                    or self._reallocation_scheduler.pending_count > 0
+                )
+            ):
+                self._reallocation_scheduler.mandatory_event(
+                    self._now, "task_completion", source_robot_id=self.rid
+                )
+        else:
+            self.counters.task_cell_revisits += 1
+
+        observation = Observation(
+            time_s=self._now,
+            cell=self.pos,
+            searched=True,
+            target_visited=True,
+            first_completion=first_completion,
+        )
+        self.allocator.on_observation(self, observation)
+        self.publish_state()
+        self._capture_perception()
+        self._publish_allocator_messages()
+        self.last_event = "target_visited"
+        return StepResult(
+            reason="target_visited",
+            moved=False,
+            target_visited=True,
+            first_completion=first_completion,
+            time_cost_s=0.0,
+        )
+
+    def _record_owned_assignments(self) -> None:
+        """Report allocator-owned execution paths using retained state names."""
+
+        name = str(getattr(self.allocator, "name", "")).upper()
+        attr_by_name = {
+            "CBAA": "cbaa_current_task",
+            "ACBBA": "acbba_path",
+            "PI": "pi_path",
+            "HIPC": "hipc_path",
+            "DMCHBA": "dmchba_path",
+            "DGA": "dga_path",
+        }
+        raw = getattr(self, attr_by_name.get(name, ""), None)
+        if raw is None:
+            values = [self.current_goal] if self.current_goal is not None else []
+        elif isinstance(raw, tuple) and len(raw) == 2 and all(
+            isinstance(value, int) for value in raw
+        ):
+            values = [raw]
+        else:
+            try:
+                values = list(raw)
+            except TypeError:
+                values = []
+        owned: Set[Cell] = set()
+        for value in values:
+            try:
+                cell = (int(value[0]), int(value[1]))
+            except (TypeError, ValueError, IndexError):
+                continue
+            if cell in self._active_tasks:
+                owned.add(cell)
+        if self.current_goal is not None and self.current_goal in self._active_tasks:
+            owned.add(self.current_goal)
+        newly_assigned = sorted(owned - self._reported_assignments)
+        if newly_assigned:
+            self.world.record_assignment(self.rid, newly_assigned, self._now)
+        self._reported_assignments = owned
 
     def _clear_pending_actions(self) -> None:
         self.pending_actions.clear()

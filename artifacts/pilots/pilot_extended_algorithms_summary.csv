@@ -1,0 +1,5 @@
+algorithm,policy,trials,completed,epochs,allocator_calls,cumulative_allocator_time_s,mean_assignment_latency_s,mean_completion_latency_s,mission_elapsed_time_s,percent_compute_saved_vs_eager
+DMCHBA,eager_b1,1,1,92,480,0.2090,0.1014,19.4244,195.0742,0.00
+DMCHBA,count_b4,1,1,54,464,0.1600,2.9215,21.1089,176.5494,23.45
+DGA,eager_b1,1,1,94,464,64.9155,3.9096,35.1510,248.8716,0.00
+DGA,count_b4,1,1,56,309,44.3887,5.5272,32.7555,236.4390,31.62

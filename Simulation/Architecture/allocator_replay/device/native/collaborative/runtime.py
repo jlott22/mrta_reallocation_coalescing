@@ -74,6 +74,8 @@ class PersistentCollaborativeRuntime:
         ).upper()
         self.last_delta_sequence = -1
         self.call_index = 0
+        self.epoch_reallocation_pending = False
+        self.last_call_had_epoch_reallocation = False
 
     def reset_trial(self, config, initial_state):
         """Start a trial and return small identity/capacity metadata."""
@@ -122,8 +124,11 @@ class PersistentCollaborativeRuntime:
         if isinstance(resume, dict):
             state_resume = _plain_mapping(resume.get("state"))
             if state_resume:
-                state_initial["active_tasks"] = list(
+                state_initial["all_tasks"] = list(
                     state_resume.get("targets", ())
+                )
+                state_initial["active_tasks"] = list(
+                    state_resume.get("active", state_resume.get("targets", ()))
                 )
                 state_initial["robot_ids"] = list(
                     state_resume.get(
@@ -165,8 +170,14 @@ class PersistentCollaborativeRuntime:
         self.allocator = allocator_class(self.state)
         if isinstance(resume, dict):
             self.allocator.restore_resume(resume.get("allocator"))
-        self.last_delta_sequence = -1
-        self.call_index = 0
+        self.last_delta_sequence = int(
+            resume.get("last_delta_sequence", -1)
+        ) if isinstance(resume, dict) else -1
+        self.call_index = int(
+            resume.get("call_index", 0)
+        ) if isinstance(resume, dict) else 0
+        self.epoch_reallocation_pending = False
+        self.last_call_had_epoch_reallocation = False
         return {
             "mission": "collaborative_visit",
             "algorithm": self.algorithm,
@@ -288,6 +299,20 @@ class PersistentCollaborativeRuntime:
             payload = decode_value(event.get("payload", {}))
             if kind == "allocator_message":
                 self.allocator.handle_message(payload)
+            elif kind == "allocation_epoch":
+                if not isinstance(payload, dict):
+                    raise TypeError("allocation epoch payload must be a mapping")
+                epoch_index = int(payload.get("epoch_index", -1))
+                reason = str(payload.get("trigger_reason", ""))
+                admitted = payload.get("admitted_cells", ())
+                if state.apply_allocation_epoch(
+                    epoch_index, reason, admitted
+                ):
+                    self.epoch_reallocation_pending = bool(
+                        self.allocator.on_allocation_epoch(
+                            reason, admitted, epoch_index
+                        )
+                    )
             elif kind in (
                 "on_collision_avoidance_activated",
                 "collision_avoidance",
@@ -318,7 +343,10 @@ class PersistentCollaborativeRuntime:
         self._require_trial()
         state = self.state
         state.begin_allocator_call()
+        epoch_reallocation = bool(self.epoch_reallocation_pending)
         goal = self.allocator.choose()
+        self.last_call_had_epoch_reallocation = epoch_reallocation
+        self.epoch_reallocation_pending = False
         self.call_index += 1
         return NativeDecision(
             None
@@ -329,6 +357,10 @@ class PersistentCollaborativeRuntime:
                 "robot_id": state.robot_id,
                 "call_index": int(self.call_index - 1),
                 "call_path": self.allocator.last_call_path,
+                "allocation_epoch_reallocation": epoch_reallocation,
+                "allocation_epoch_index": int(
+                    state.last_allocation_epoch_index
+                ),
             },
         )
 
@@ -393,6 +425,8 @@ class PersistentCollaborativeRuntime:
 
     def call_class(self):
         self._require_trial()
+        if self.last_call_had_epoch_reallocation:
+            return "full_allocation_solve"
         path = str(self.allocator.last_call_path)
         if self.algorithm in ("DGA", "DMCHBA") and path in (
             "path_empty",

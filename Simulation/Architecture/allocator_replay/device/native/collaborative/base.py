@@ -46,6 +46,24 @@ class NativeAllocatorBase:
         self.last_collision_active = active
         return rising
 
+    def on_allocation_epoch(self, reason, admitted_cells, epoch_index=None):
+        """Invalidate local consensus when the visible task set grows.
+
+        This mirrors the simulator compatibility hook: completion-only epochs
+        retain normal maintenance behavior, while any newly admitted task
+        clears the cached allocation so the next timed call performs a real
+        solve over the complete unrestricted active set.
+        """
+
+        del reason, epoch_index
+        if not admitted_cells:
+            return False
+        for slot in range(len(self.state.targets)):
+            self.state.clear_claim(slot)
+        self.path = []
+        self.last_call_path = "allocation_epoch_reset"
+        return True
+
     def score_from(self, encoded_position, slot):
         distance = self.state.distance(encoded_position, self.state.targets[slot])
         return -self.state.adjusted_cost(distance, slot)

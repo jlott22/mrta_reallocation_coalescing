@@ -444,7 +444,8 @@ class _LoopbackSerial:
                         self._queue("AR1", "ERROR", "END", "crc")
                     else:
                         self.fixture = json.loads(raw.decode("utf-8"))
-                        self.worker._allocator_class(self.fixture)
+                        if not self.fixture.get("persistent"):
+                            self.worker._allocator_class(self.fixture)
                         self._queue("AR1", "LOADED", fixture_id, -1)
             elif command == "PBEGIN":
                 self.part_meta = {
