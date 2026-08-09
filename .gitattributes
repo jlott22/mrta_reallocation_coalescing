@@ -1,0 +1,8 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+*.zip binary
+
+# Preserve canonical result and provenance bytes across Windows and Linux.
+/results/**/combined/*.csv -text
+/results/**/artifacts/** -text
+/results/analysis/archive/** -text

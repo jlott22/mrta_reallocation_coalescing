@@ -1,0 +1,11 @@
+trial_id,trial_mode,algorithm,comm_model,comm_level,grid_size,grid_cells,robot_count,target_count,condition_id,scenario_file,target_index,target_x,target_y,first_completion_time_s,first_completion_sim_time_s,first_found_by_robot,first_finder_robot_id,total_visits,duplicate_visits,completed,trial_status
+0,known_visit,CBAA,ideal,1.0,19,361,4,10,baseline_cbaa,scenarios\known_visit_g19_t10_n500.csv,1,18,9,42.262595773838555,42.262595773838555,01,01,1,0,True,completed
+0,known_visit,CBAA,ideal,1.0,19,361,4,10,baseline_cbaa,scenarios\known_visit_g19_t10_n500.csv,2,8,12,22.583679633572476,22.583679633572476,03,03,1,0,True,completed
+0,known_visit,CBAA,ideal,1.0,19,361,4,10,baseline_cbaa,scenarios\known_visit_g19_t10_n500.csv,3,16,10,37.15877589251772,37.15877589251772,02,02,1,0,True,completed
+0,known_visit,CBAA,ideal,1.0,19,361,4,10,baseline_cbaa,scenarios\known_visit_g19_t10_n500.csv,4,4,10,9.164546465927305,9.164546465927305,02,02,1,0,True,completed
+0,known_visit,CBAA,ideal,1.0,19,361,4,10,baseline_cbaa,scenarios\known_visit_g19_t10_n500.csv,5,6,1,10.661700781334744,10.661700781334744,00,00,1,0,True,completed
+0,known_visit,CBAA,ideal,1.0,19,361,4,10,baseline_cbaa,scenarios\known_visit_g19_t10_n500.csv,6,4,8,12.677797277586427,12.677797277586427,02,02,1,0,True,completed
+0,known_visit,CBAA,ideal,1.0,19,361,4,10,baseline_cbaa,scenarios\known_visit_g19_t10_n500.csv,7,17,1,29.93052066198454,29.93052066198454,00,00,1,0,True,completed
+0,known_visit,CBAA,ideal,1.0,19,361,4,10,baseline_cbaa,scenarios\known_visit_g19_t10_n500.csv,8,3,4,7.260507915668736,7.260507915668736,01,01,1,0,True,completed
+0,known_visit,CBAA,ideal,1.0,19,361,4,10,baseline_cbaa,scenarios\known_visit_g19_t10_n500.csv,9,12,1,21.483425794959526,21.483425794959526,00,00,1,0,True,completed
+0,known_visit,CBAA,ideal,1.0,19,361,4,10,baseline_cbaa,scenarios\known_visit_g19_t10_n500.csv,10,11,9,26.785248747044648,26.785248747044648,02,02,1,0,True,completed

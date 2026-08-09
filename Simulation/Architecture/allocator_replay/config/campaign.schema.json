@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "allocator-replay-campaign-v1",
+  "title": "Allocator replay campaign schedule",
+  "type": "object",
+  "required": [
+    "schema",
+    "campaign_id",
+    "build_id",
+    "timeout_seconds",
+    "devices",
+    "conditions"
+  ],
+  "properties": {
+    "schema": {"const": 1},
+    "campaign_id": {"type": "string"},
+    "build_id": {"type": "string"},
+    "timeout_seconds": {"const": 30.0},
+    "devices": {"type": "object"},
+    "trial_windows": {"type": "object"},
+    "conditions": {"type": "object"}
+  }
+}

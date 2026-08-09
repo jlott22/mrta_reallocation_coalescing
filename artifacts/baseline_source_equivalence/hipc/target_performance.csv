@@ -1,0 +1,11 @@
+trial_id,trial_mode,algorithm,comm_model,comm_level,grid_size,grid_cells,robot_count,target_count,condition_id,scenario_file,target_index,target_x,target_y,first_completion_time_s,first_completion_sim_time_s,first_found_by_robot,first_finder_robot_id,total_visits,duplicate_visits,completed,trial_status
+0,known_visit,HIPC,ideal,1.0,19,361,4,10,baseline_hipc,scenarios\known_visit_g19_t10_n500.csv,1,18,9,53.907580656968534,53.907580656968534,02,02,1,0,True,completed
+0,known_visit,HIPC,ideal,1.0,19,361,4,10,baseline_hipc,scenarios\known_visit_g19_t10_n500.csv,2,8,12,26.625147609587746,26.625147609587746,02,02,1,0,True,completed
+0,known_visit,HIPC,ideal,1.0,19,361,4,10,baseline_hipc,scenarios\known_visit_g19_t10_n500.csv,3,16,10,48.1379377300327,48.1379377300327,02,02,1,0,True,completed
+0,known_visit,HIPC,ideal,1.0,19,361,4,10,baseline_hipc,scenarios\known_visit_g19_t10_n500.csv,4,4,10,8.915038601214274,8.915038601214274,02,02,1,0,True,completed
+0,known_visit,HIPC,ideal,1.0,19,361,4,10,baseline_hipc,scenarios\known_visit_g19_t10_n500.csv,5,6,1,10.636253761602738,10.636253761602738,00,00,1,0,True,completed
+0,known_visit,HIPC,ideal,1.0,19,361,4,10,baseline_hipc,scenarios\known_visit_g19_t10_n500.csv,6,4,8,12.212264715562867,12.212264715562867,02,02,1,0,True,completed
+0,known_visit,HIPC,ideal,1.0,19,361,4,10,baseline_hipc,scenarios\known_visit_g19_t10_n500.csv,7,17,1,29.893639428160572,29.893639428160572,00,00,1,0,True,completed
+0,known_visit,HIPC,ideal,1.0,19,361,4,10,baseline_hipc,scenarios\known_visit_g19_t10_n500.csv,8,3,4,7.277473148476296,7.277473148476296,01,01,1,0,True,completed
+0,known_visit,HIPC,ideal,1.0,19,361,4,10,baseline_hipc,scenarios\known_visit_g19_t10_n500.csv,9,12,1,21.232593426292393,21.232593426292393,00,00,1,0,True,completed
+0,known_visit,HIPC,ideal,1.0,19,361,4,10,baseline_hipc,scenarios\known_visit_g19_t10_n500.csv,10,11,9,37.307171207939135,37.307171207939135,02,02,1,0,True,completed

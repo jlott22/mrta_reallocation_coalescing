@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "allocator-replay-fixture-v1",
+  "title": "Allocator replay fixture",
+  "type": "object",
+  "required": [
+    "schema",
+    "fixture_id",
+    "fixture_sha256",
+    "condition_id",
+    "mission",
+    "algorithm",
+    "trial_id",
+    "robot_id",
+    "call_index",
+    "pre_state",
+    "expected",
+    "call_class"
+  ],
+  "properties": {
+    "schema": {"const": 1},
+    "fixture_id": {"type": "string"},
+    "fixture_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "condition_id": {"type": "string"},
+    "mission": {"enum": ["bayesian", "collaborative"]},
+    "algorithm": {
+      "enum": ["CBAA", "ACBBA", "PI", "HIPC", "DMCHBA", "DGA"]
+    },
+    "top_k_level": {"type": "string"},
+    "trial_id": {"type": "integer"},
+    "robot_id": {"type": "string"},
+    "call_index": {"type": "integer", "minimum": 0},
+    "pre_state": {"type": "object"},
+    "expected": {
+      "type": "object",
+      "required": [
+        "goal",
+        "messages",
+        "post_state",
+        "post_state_sha256",
+        "post_robot_attr_names",
+        "post_allocator_attr_names"
+      ]
+    },
+    "call_class": {
+      "enum": [
+        "cached_or_maintenance",
+        "candidate_filter_only",
+        "partial_bundle_refill",
+        "full_allocation_solve"
+      ]
+    }
+  }
+}
