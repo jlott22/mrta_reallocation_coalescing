@@ -858,7 +858,18 @@ def _run_persistent(slot, attempt_id):
         return
     heap_after = _mem_free()
     reported = decision if isinstance(decision, dict) else {}
-    elapsed = int(reported.get("allocator_time_us", elapsed))
+    choose_goal_us = int(reported.get("allocator_time_us", elapsed))
+    epoch_reset_method = getattr(
+        runtime, "algorithm_epoch_reset_time_us", None
+    )
+    algorithm_epoch_reset_us = (
+        max(0, int(epoch_reset_method()))
+        if callable(epoch_reset_method)
+        else 0
+    )
+    # W_alloc includes all policy-induced allocator work.  Generic PSETUP
+    # state patching, protocol transfer, and explicit setup GC remain excluded.
+    elapsed = max(0, choose_goal_us) + algorithm_epoch_reset_us
     filter_us = int(
         reported.get(
             "candidate_filter_time_us",
@@ -925,6 +936,8 @@ def _run_persistent(slot, attempt_id):
         before_count,
         after_count,
         call_class,
+        choose_goal_us,
+        algorithm_epoch_reset_us,
     )
     try:
         # Native search temporaries are no longer part of the timed allocator
@@ -1100,6 +1113,16 @@ def main():
                     actual_module_hash = (
                         "error:" + type(exc).__name__
                     )
+                timer_started = ticks_us()
+                timer_stopped = timer_started
+                for _timer_probe_index in range(10000):
+                    timer_stopped = ticks_us()
+                    if ticks_diff(timer_stopped, timer_started) > 0:
+                        break
+                timer_resolution_us = max(
+                    0,
+                    ticks_diff(timer_stopped, timer_started),
+                )
                 _write(
                     PROTOCOL,
                     "CHECK",
@@ -1109,6 +1132,12 @@ def main():
                     _mem_free(),
                     actual_module_hash,
                     expected_module_hash,
+                    "us",
+                    timer_resolution_us,
+                    int(timer_resolution_us >= 0),
+                    # Every timed boundary in this worker uses ticks_diff,
+                    # which is the MicroPython wrap-safe clock operation.
+                    1,
                 )
             elif command == "BEGIN":
                 if len(fields) != 5:
@@ -1255,7 +1284,7 @@ def main():
             elif command == "PCLEAR":
                 if len(fields) != 3:
                     raise ValueError("PCLEAR requires context id")
-                persistent_slot.clear_context()
+                persistent_slot.clear_context(fields[2])
                 fixture_buffer = None
                 fixture_meta = None
                 fixture = None
@@ -1273,6 +1302,7 @@ def main():
                 if fixture is None or len(fields) != 3:
                     raise ValueError("PSETUP without loaded setup state")
                 attempt_id = fields[2]
+                setup_started = ticks_us()
                 try:
                     persistent_slot.prepare(
                         fixture["context_id"],
@@ -1290,12 +1320,16 @@ def main():
                     part_buffer = None
                     part_meta = None
                     gc.collect()
+                    device_setup_us = max(
+                        0, ticks_diff(ticks_us(), setup_started)
+                    )
                     _write(
                         PROTOCOL,
                         "PCALL_READY",
                         attempt_id,
                         context_id,
                         _mem_free(),
+                        device_setup_us,
                     )
                 except Exception as exc:
                     fixture_buffer = None

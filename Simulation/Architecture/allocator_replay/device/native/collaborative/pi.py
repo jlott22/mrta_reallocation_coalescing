@@ -7,13 +7,40 @@ class PIAllocator(NativeAllocatorBase):
     name = "PI"
     INF = 1.0e18
 
+    def __init__(self, state):
+        NativeAllocatorBase.__init__(self, state)
+        self.time_counter = 0
+
+    def _next_time(self):
+        self.time_counter += 1
+        return self.time_counter
+
+    def on_allocation_epoch(self, reason, admitted_cells, epoch_index=None):
+        reset = NativeAllocatorBase.on_allocation_epoch(
+            self, reason, admitted_cells, epoch_index
+        )
+        if admitted_cells:
+            self.time_counter = 0
+        return reset
+
     def _refresh_local_significance(self):
         state = self.state
         full_cost = self.route_cost(self.path)
         for index, slot in enumerate(self.path):
             without = self.path[:index] + self.path[index + 1 :]
             significance = max(0.0, full_cost - self.route_cost(without))
-            state.set_claim(slot, state.robot_index, significance)
+            owner = int(state.claim_owner[slot])
+            previous = float(state.claim_value[slot])
+            epoch = int(state.claim_epoch[slot])
+            if (
+                owner != state.robot_index
+                or abs(previous - significance) > self.EPS
+                or epoch <= 0
+            ):
+                epoch = self._next_time()
+            state.set_claim(
+                slot, state.robot_index, significance, epoch
+            )
 
     def choose(self):
         state = self.state
@@ -27,7 +54,7 @@ class PIAllocator(NativeAllocatorBase):
         removed = []
         for slot in self.path:
             if (
-                state.is_active(slot)
+                state.is_candidate(slot)
                 and state.claim_owner[slot] == state.robot_index
             ):
                 kept.append(slot)
@@ -42,6 +69,30 @@ class PIAllocator(NativeAllocatorBase):
             self.path = kept
             self._refresh_local_significance()
             trigger = trigger or "consensus_path_repair"
+            # Desktop PI marks a full path snapshot pending whenever message
+            # consensus repairs its retained path.  Re-emit the surviving
+            # prefix (or an explicit clear) so the native output has the same
+            # communication effect even when no new candidate is inserted.
+            if self.path:
+                for slot in self.path:
+                    state.queue_message(
+                        self.claim_message(
+                            "pi_entry",
+                            slot,
+                            state.robot_index,
+                            state.claim_value[slot],
+                        )
+                    )
+            else:
+                state.queue_message(
+                    {
+                        "type": "pi_clear_path",
+                        "sender": state.robot_id,
+                        "timestamp": int(state.event_counter),
+                        "path_cells": [],
+                        "path_size": 0,
+                    }
+                )
 
         changed = False
         horizon = state.commitment_horizon
@@ -137,3 +188,13 @@ class PIAllocator(NativeAllocatorBase):
             ("pi_entry", "acbba_entry", "cbaa_entry"),
             lower_is_better=True,
         )
+
+    def export_resume(self):
+        result = NativeAllocatorBase.export_resume(self)
+        result["time_counter"] = int(self.time_counter)
+        return result
+
+    def restore_resume(self, resume):
+        NativeAllocatorBase.restore_resume(self, resume)
+        if isinstance(resume, dict):
+            self.time_counter = int(resume.get("time_counter", 0))

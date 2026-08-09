@@ -1,9 +1,10 @@
 """Persistent, motor-free allocator runtime used by authoritative HIL.
 
-The serial worker owns at most one active robot context.  A context remains
-resident for consecutive calls; switching robots restores the new context
-outside the timed region.  This mirrors the heap footprint of one physical
-robot without retaining four simulator robots on a single controller.
+Legacy replay retains one active context and restores snapshots between
+calls.  Causal mission mode explicitly retains four isolated native runtime
+objects on one board.  Only the selected object's ``choose_goal`` is timed;
+context creation, selection, and environmental delta application remain
+outside the allocator timing boundary.
 """
 
 from replay_codec import decode_value, encode_value
@@ -558,7 +559,7 @@ class _Bag:
 
 
 class PersistentRuntimeSlot:
-    """One-trial controller that owns no more than one active context."""
+    """One-trial controller with legacy-single or causal-four contexts."""
 
     REQUIRED_METHODS = (
         "reset_trial",
@@ -573,14 +574,36 @@ class PersistentRuntimeSlot:
         self.trial_config = None
         self.runtime = None
         self.context_id = None
+        self.contexts = {}
+        self.context_capacity = 1
+        self.allowed_context_ids = None
 
     def begin_trial(self, config):
         self.end_trial()
         self.trial_config = config
+        requested = int(config.get("logical_context_count", 1) or 1)
+        if requested not in (1, 4):
+            raise ValueError(
+                "persistent logical_context_count must be one or four"
+            )
+        self.context_capacity = requested
+        raw_ids = config.get("robot_ids", ())
+        if requested == 4:
+            ids = [str(item) for item in raw_ids]
+            if len(ids) != 4 or len(set(ids)) != 4:
+                raise ValueError(
+                    "causal persistent trial requires four unique robot IDs"
+                )
+            self.allowed_context_ids = set(ids)
+        else:
+            self.allowed_context_ids = None
 
-    def clear_context(self):
+    def clear_context(self, context_id=None):
         """Release one resident robot while retaining the trial config."""
 
+        selected = self.context_id if context_id is None else str(context_id)
+        if selected is not None:
+            self.contexts.pop(str(selected), None)
         self.runtime = None
         self.context_id = None
 
@@ -660,6 +683,45 @@ class PersistentRuntimeSlot:
     ):
         if self.trial_config is None:
             raise RuntimeError("persistent trial has not begun")
+        if mode == "causal_context":
+            if self.context_capacity != 4:
+                raise RuntimeError(
+                    "causal_context requires logical_context_count=4"
+                )
+            context_id = str(context_id)
+            if (
+                self.allowed_context_ids is not None
+                and context_id not in self.allowed_context_ids
+            ):
+                raise RuntimeError("unknown causal logical context")
+            state = self._apply_state_aliases(state, aliases)
+            runtime = self.contexts.get(context_id)
+            if runtime is None:
+                if len(self.contexts) >= self.context_capacity:
+                    raise RuntimeError("causal context capacity exceeded")
+                runtime = self._new_runtime()
+                restore_state = (
+                    state
+                    if isinstance(runtime, ReplayPersistentRuntime)
+                    else self._native_state(state, resume)
+                )
+                runtime.reset_trial(self.trial_config, restore_state)
+                self.contexts[context_id] = runtime
+                if events:
+                    runtime.apply_delta(
+                        self._delta_payload({}, {}, events)
+                    )
+            else:
+                # Simulator/environment fields and explicitly delivered
+                # messages/events advance this isolated context. Allocator
+                # state remains resident and is never copied from a context
+                # sampled earlier in the same physical serial sequence.
+                runtime.apply_delta(
+                    self._delta_payload(state, deleted, events)
+                )
+            self.runtime = runtime
+            self.context_id = context_id
+            return
         if mode == "restore":
             self.runtime = None
             self.context_id = None
@@ -690,5 +752,9 @@ class PersistentRuntimeSlot:
             raise ValueError("unknown persistent setup mode: " + str(mode))
 
     def end_trial(self):
-        self.clear_context()
+        self.runtime = None
+        self.context_id = None
+        self.contexts = {}
+        self.context_capacity = 1
+        self.allowed_context_ids = None
         self.trial_config = None

@@ -377,14 +377,9 @@ class OnlineIntegrationTests(unittest.TestCase):
         metrics = state.online_metrics()
         self.assertAlmostEqual(
             metrics["mission_elapsed_time_s"],
-            metrics["simulated_execution_time_s"]
-            + metrics["allocator_parallel_critical_path_time_s"],
+            metrics["simulated_execution_time_s"],
         )
-        self.assertAlmostEqual(
-            metrics["mission_elapsed_time_serial_compute_s"],
-            metrics["simulated_execution_time_s"]
-            + metrics["cumulative_allocator_time_s"],
-        )
+        self.assertNotIn("mission_elapsed_time_serial_compute_s", metrics)
         self.assertLessEqual(
             metrics["allocator_parallel_critical_path_time_s"],
             metrics["cumulative_allocator_time_s"] + 1e-12,

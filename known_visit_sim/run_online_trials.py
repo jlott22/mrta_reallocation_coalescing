@@ -25,6 +25,10 @@ from known_visit_sim.comms.models import make_comm_model
 from known_visit_sim.config import SimConfig
 from known_visit_sim.core.reallocation import ReallocationPolicy
 from known_visit_sim.core.scheduler import AsyncTrialRunner
+from known_visit_sim.core.timing import (
+    HostMeasuredTimingProvider,
+    ZeroComputeTimingProvider,
+)
 from known_visit_sim.core.types import TrialScenario
 
 
@@ -290,11 +294,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     allocator_cls = load_allocator_class(args.algorithm)
     policy = _policy(args)
     release_times = {cell: row["release_time_s"] for cell, row in zip(targets, tasks, strict=True)}
+    timing_mode = str(getattr(args, "timing_mode", "zero_compute"))
+    timing_provider = (
+        ZeroComputeTimingProvider()
+        if timing_mode == "zero_compute"
+        else HostMeasuredTimingProvider()
+    )
     state = AsyncTrialRunner(
         cfg,
         allocator_cls,
         make_comm_model("ideal", None),
         seed=args.seed,
+        timing_provider=timing_provider,
     ).run_online_trial(trial, release_times, policy)
     state.validate_online_invariants()
     metrics = state.online_metrics()
@@ -316,6 +327,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "task_count": len(tasks),
         "initial_task_count": sum(row["initially_visible"] for row in tasks),
         "runtime_seed": args.seed,
+        "timing_mode": timing_mode,
         "python_hash_seed": python_hash_seed,
         "scenario_manifest": str(scenario_path),
         "release_manifest": str(release_path),
@@ -323,18 +335,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "release_sha256": args.release_sha256.lower(),
     }
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "trial_status": "completed",
         **dimensions,
         **metrics,
         "trial_id_numeric": metrics["trial_id"],
         "trial_id": args.trial_id,
         "timing_definition": {
-            "simulated_execution_time_s": "existing asynchronous event clock; movement, turns, waits, replans, and legitimate simulated execution delays",
-            "cumulative_allocator_time_s": "sum of measured choose_goal host durations for all robots",
-            "allocator_parallel_critical_path_time_s": "for calls sharing an epoch and simulated timestamp, sum per robot then take the maximum; sum those group maxima",
-            "mission_elapsed_time_serial_compute_s": "simulated_execution_time_s + cumulative_allocator_time_s; conservative team-serial sensitivity metric",
-            "mission_elapsed_time_s": "simulated_execution_time_s + allocator_parallel_critical_path_time_s; deployment-facing four-processor estimate",
+            "simulated_execution_time_s": "causal event clock with overlapping per-robot compute and explicit movement intervals",
+            "rp2040_allocator_processor_work_s": "sum of valid device-only allocator durations; processor-seconds, not mission delay",
+            "agx_allocator_processor_work_s": "sum of authoritative AGX choose_goal plus policy-induced on_allocation_epoch allocator callback durations, kept separate from device timing",
+            "serial_roundtrip_s": "transport diagnostic excluded from virtual compute duration",
+            "mission_elapsed_time_s": "timestamp of final required task completion minus mission start; no post-hoc allocator addition",
             "host_program_runtime_s": "raw runner duration; diagnostic only",
         },
     }
@@ -342,6 +354,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     epoch_rows = [{**dimensions, **row, "trial_id": args.trial_id} for row in state.epoch_rows()]
     call_rows = [{**dimensions, **row, "trial_id": args.trial_id} for row in state.allocator_call_rows()]
     queue_rows = [{**dimensions, **row, "trial_id": args.trial_id} for row in state.queue_sample_rows()]
+    movement_rows = [{**dimensions, **row, "trial_id": args.trial_id} for row in state.movement_rows()]
     if len(task_rows) != len(tasks) or not epoch_rows:
         raise AssertionError("online output cardinality invariant failed")
     output = args.output_dir.resolve()
@@ -350,7 +363,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         name: output / name
         for name in (
             "trial_summary.json", "task_events.csv", "allocation_epochs.csv",
-            "allocator_calls.csv", "pending_queue_samples.csv", "run_metadata.json",
+            "allocator_calls.csv", "pending_queue_samples.csv", "movement_events.csv",
+            "run_metadata.json",
         )
     }
     conflicts = [path for path in destinations.values() if path.exists()]
@@ -361,6 +375,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     _atomic_csv(destinations["allocation_epochs.csv"], epoch_rows)
     _atomic_csv(destinations["allocator_calls.csv"], call_rows)
     _atomic_csv(destinations["pending_queue_samples.csv"], queue_rows or [{**dimensions, "event": "none", "depth": 0, "oldest_age_s": 0.0}])
+    _atomic_csv(destinations["movement_events.csv"], movement_rows or [{
+        **dimensions,
+        "movement_id": "none",
+        "duration_s": 0.0,
+    }])
     _atomic_json(destinations["run_metadata.json"], {
         "schema_version": 1,
         "command": sys.argv,
@@ -392,6 +411,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--max-pending-age-s", type=float)
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument(
+        "--timing-mode",
+        choices=("zero_compute", "agx_host_proxy"),
+        default="zero_compute",
+        help="software-only causal duration source; RP2040 providers use the native worker entrypoint",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args(argv)
 

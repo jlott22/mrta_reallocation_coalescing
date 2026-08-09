@@ -367,6 +367,7 @@ class SerialReplayDevice:
         self.port = port
         self.identity: DeviceIdentity | None = None
         self._persistent_ready_heap: dict[str, int] = {}
+        self._persistent_prepare_metrics: dict[str, dict[str, int | None]] = {}
         if start_worker:
             self.start_worker()
 
@@ -634,6 +635,10 @@ class SerialReplayDevice:
             "heap_free": int(fields[5]),
             "actual_module_set_sha256": fields[6],
             "expected_module_set_sha256": fields[7],
+            "timer_unit": fields[8] if len(fields) > 8 else "unknown",
+            "timer_resolution_us": int(fields[9]) if len(fields) > 9 else -1,
+            "timer_monotonic": fields[10] == "1" if len(fields) > 10 else False,
+            "timer_wraparound_safe": fields[11] == "1" if len(fields) > 11 else False,
         }
 
     def _expect_ack(self, kind: str, value: object, timeout: float = 3.0) -> None:
@@ -1087,7 +1092,9 @@ class SerialReplayDevice:
         self,
         setup: dict[str, Any],
         attempt_id: str,
-    ) -> None:
+    ) -> dict[str, int | None]:
+        wall_started_ns = time.perf_counter_ns()
+        cpu_started_ns = time.process_time_ns()
         try:
             if setup.get("setup_mode") == "restore":
                 context_id = str(setup["context_id"])
@@ -1110,6 +1117,22 @@ class SerialReplayDevice:
                 f"wrong ready-to-time acknowledgement: {'|'.join(fields)}"
             )
         self._persistent_ready_heap[attempt_id] = int(fields[4])
+        metrics: dict[str, int | None] = {
+            # CPU time is reported honestly as aggregate host preparation CPU;
+            # serialization is interleaved with acknowledged USB chunks and
+            # cannot be isolated without changing the transport workload.
+            "host_prepare_cpu_us": max(
+                0, (time.process_time_ns() - cpu_started_ns) // 1000
+            ),
+            "psetup_transaction_us": max(
+                0, (time.perf_counter_ns() - wall_started_ns) // 1000
+            ),
+            "device_pre_call_setup_us": (
+                int(fields[5]) if len(fields) > 5 else None
+            ),
+        }
+        self._persistent_prepare_metrics[attempt_id] = metrics
+        return dict(metrics)
 
     def _read_persistent_field(
         self,
@@ -1200,7 +1223,7 @@ class SerialReplayDevice:
                     timeout_seconds=timeout_seconds,
                 ) from exc
             raise
-        if len(timed) != 12 or timed[2] != attempt_id:
+        if len(timed) not in (12, 14) or timed[2] != attempt_id:
             raise ReplayTransportError("malformed PTIMED response")
         result = {
             "attempt_id": attempt_id,
@@ -1215,6 +1238,12 @@ class SerialReplayDevice:
             "candidate_count_before": int(timed[9]),
             "candidate_count_after": int(timed[10]),
             "call_class": timed[11],
+            "choose_goal_time_us": (
+                int(timed[12]) if len(timed) == 14 else int(timed[3])
+            ),
+            "algorithm_epoch_reset_us": (
+                int(timed[13]) if len(timed) == 14 else 0
+            ),
         }
         output_deadline = time.monotonic() + 300.0
         output_stage = "result_begin"
@@ -1285,6 +1314,9 @@ class SerialReplayDevice:
         result["messages"] = messages
         result["post_state"] = state
         result["resume_state"] = resume_state
+        result["transport_prepare_metrics"] = dict(
+            self._persistent_prepare_metrics.pop(attempt_id, {})
+        )
         return result
 
     def execute_persistent(

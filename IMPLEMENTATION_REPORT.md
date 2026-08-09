@@ -1,5 +1,13 @@
 # Implementation report
 
+> **Historical report — superseded for the causal paper campaign.** This report
+> describes the earlier post-hoc timing design. The active implementation is
+> documented in `CAUSAL_IMPLEMENTATION_REPORT.md`. In particular, allocator
+> duration is now part of event evolution, movement is interval-based, the
+> native campaign uses exactly four workers/four timing boards, and rates/W/n
+> must be recalibrated and frozen on the AGX before the full run. The historical
+> record below is intentionally unchanged otherwise.
+
 Date: 2026-08-09 (America/Los_Angeles)
 
 ## Outcome

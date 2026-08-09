@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "manifest": {
+    "manifest_set_id": "collaborative_visit_g19_t50_n5_rate_sweep_v1",
+    "root": "study/generated/manifests",
+    "master_seed": 20260808,
+    "final_campaign_master_seed": 2026080905,
+    "trace_count": 5,
+    "grid_size": 19,
+    "robot_count": 4,
+    "task_count": 50,
+    "initial_task_count": 8,
+    "arrival_loads": {
+      "rate_003": 0.03,
+      "rate_0075": 0.075,
+      "rate_015": 0.15,
+      "rate_03": 0.3,
+      "rate_06": 0.6,
+      "rate_12": 1.2,
+      "rate_24": 2.4
+    }
+  },
+  "campaign": {
+    "campaign_id": "agx_causal_rate_calibration_v1",
+    "stage": "calibrate_rates",
+    "output_root": "study/output/agx_causal_rate_calibration_v1",
+    "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
+    "loads": ["rate_003", "rate_0075", "rate_015", "rate_03", "rate_06", "rate_12", "rate_24"],
+    "policies": [
+      {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1},
+      {"policy_id": "count_b4", "mode": "count", "batch_size": 4}
+    ],
+    "trace_limit": 5,
+    "schedule_seed": 2026081002,
+    "max_technical_retries": 1,
+    "runner_factory": "study.causal.worker:run_causal_job",
+    "required_gate_paths": [
+      "study/native_gates/environment/native_environment_report.json",
+      "study/native_gates/preflight/native_preflight_report.json",
+      "study/native_gates/smoke/causal_smoke_report.json"
+    ],
+    "require_clean_source": true,
+    "notes": "Required native rate sweep: 7 rates x 4 algorithms x Eager/B4 x 5 traces = 280 causal RP2040-timed missions."
+  },
+  "hardware": {
+    "bindings_file": "configs/local/agx_board_bindings.json",
+    "development_override": false,
+    "provider_factory": "study.causal.worker:create_timing_provider"
+  }
+}

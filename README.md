@@ -1,5 +1,38 @@
 # MRTA Reallocation Coalescing
 
+> **Current study path: causal native campaign.** The calibrated noncausal
+> simulation/HIL workflow described later in this file is retained as historical
+> evidence and is superseded for the paper experiment by
+> `CAUSAL_IMPLEMENTATION_REPORT.md`, `EXPERIMENTAL_PLAN.md`, and
+> `AGX_NATIVE_RUNBOOK.md`. The current design uses exactly four AGX workers and
+> four RP2040 timing boards, feeds device allocator durations (`choose_goal()`
+> plus any policy-induced allocation-epoch reset callback) into a causal
+> four-logical-processor mission, and requires fresh native calibration plus an
+> explicit design freeze. Do not launch the old `run_agx_full_campaign.sh` path
+> for the causal paper.
+
+The native causal entry sequence is:
+
+```bash
+bash scripts/agx_prepare_rp2040_boards.sh PORT_A,PORT_B,PORT_C,PORT_D
+bash scripts/agx_native_environment_check.sh
+bash scripts/agx_rp2040_preflight.sh
+bash scripts/agx_causal_smoke.sh
+bash scripts/agx_causal_calibrate_rates.sh
+bash scripts/agx_causal_calibrate_timeout.sh
+bash scripts/agx_causal_variance_pilot.sh
+bash scripts/agx_freeze_experimental_design.sh
+bash scripts/agx_run_full_causal_campaign.sh
+bash scripts/agx_run_zero_compute_counterfactuals.sh
+bash scripts/agx_analyze_full_causal_campaign.sh
+```
+
+Several stages deliberately require review environment variables and the first
+environment check deliberately records a FAIL before acknowledgment. Follow
+`AGX_NATIVE_RUNBOOK.md` rather than copying this list without its gate steps.
+
+## Historical first-generation overview
+
 This standalone repository implements the simulation and RP2040/Pololu HIL
 study for allocator-independent coalescing of online Collaborative Visit task
 arrivals. It is an isolated copy: it does not import from, modify, or require
@@ -52,7 +85,8 @@ paper-figure CSVs. See `study/README.md` for schemas and recovery behavior.
 ## RP2040/Pololu HIL
 
 The HIL path is a motor-free, persistent MicroPython replay of selected
-arrival/admission epochs. It times `choose_goal()` on the device and reports
+arrival/admission epochs. It times allocator goal selection and the
+policy-induced allocation-epoch reset separately on the device, then reports
 host/serial overhead separately. It does not reproduce robot motion or the
 simulator's task-completion/idle epochs, so it validates embedded allocation
 compute rather than physical mission elapsed time.

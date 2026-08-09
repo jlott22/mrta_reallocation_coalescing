@@ -43,8 +43,14 @@ Thumbs.db
 
 # Transient study execution state (preserve combined CSV/JSON and manifests)
 /study/output/
+/study/native_gates/
+/study/frozen/
+/study/native_device_leases/
+/configs/local/
 /results/
 /study/generated/manifests/collaborative_visit_g19_t50_n25_v1/
+/study/generated/manifests/*_causal_calibration_v1_*/
+/study/generated/manifests/*_causal_design_*/
 /Simulation/Architecture/allocator_replay/builds/
 /results/**/logs/
 /results/**/parts/

@@ -1,5 +1,10 @@
 # Decisions to review before the paper campaign
 
+> **Historical decision record — superseded.** The causal rewrite resolves the
+> post-hoc mission-time and release-axis limitations discussed here. Review the
+> remaining native/scientific choices in `DECISIONS_TO_REVIEW_CAUSAL.md` instead.
+> Content below is retained only to explain the earlier artifacts.
+
 Only choices that materially affect interpretation or deployment are listed
 here. The implementation does not require redesign for any of them.
 

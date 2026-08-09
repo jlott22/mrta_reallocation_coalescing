@@ -192,14 +192,209 @@ class AllocatorCallRecord:
     duration_ns: int
     epoch_id: Optional[int] = None
     trigger_reason: str = "other"
+    group_id: Optional[str] = None
+    provider_call_id: str = ""
+    logical_context_id: Optional[str] = None
+    compute_start_time_s: Optional[float] = None
+    compute_completion_time_s: Optional[float] = None
+    agx_allocator_duration_ns: int = 0
+    agx_choose_goal_duration_ns: Optional[int] = None
+    agx_algorithm_epoch_reset_duration_ns: Optional[int] = None
+    device_allocator_duration_ns: Optional[int] = None
+    device_choose_goal_duration_ns: Optional[int] = None
+    algorithm_epoch_reset_duration_ns: Optional[int] = None
+    serial_roundtrip_ns: int = 0
+    host_serialization_setup_ns: int = 0
+    host_total_call_ns: int = 0
+    psetup_transaction_ns: int = 0
+    device_pre_call_setup_ns: Optional[int] = None
+    ptime_result_transaction_ns: int = 0
+    host_prepare_cpu_ns: int = 0
+    timing_decomposition_schema: int = 0
+    host_serialization_setup_measured: bool = False
+    device_allocator_timer_scope: str = ""
+    serial_roundtrip_definition: str = ""
+    timing_source: str = "legacy_host_measurement"
+    parity_passed: bool = True
+    valid_for_mission: bool = True
+    active_task_count: Optional[int] = None
+    candidate_count: Optional[int] = None
+    current_position: Optional[Cell] = None
+    authoritative_goal: Optional[Cell] = None
+    outbound_message_sha256: str = ""
+    pre_state_sha256: str = ""
+    authoritative_post_state_sha256: str = ""
+    device_goal: Optional[Cell] = None
+    device_message_sha256: str = ""
+    device_post_state_sha256: str = ""
+    call_class: str = "allocator_call"
+    board_id: str = ""
+    serial_device: str = ""
+    attempt_id: str = ""
+    physical_measurement_index: int = 0
+    hardware_validated: bool = False
+    provider_metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.duration_ns = max(0, int(self.duration_ns))
+        for name in (
+            "serial_roundtrip_ns",
+            "host_serialization_setup_ns",
+            "host_total_call_ns",
+            "psetup_transaction_ns",
+            "ptime_result_transaction_ns",
+            "host_prepare_cpu_ns",
+        ):
+            setattr(self, name, max(0, int(getattr(self, name))))
+        if self.device_pre_call_setup_ns is not None:
+            self.device_pre_call_setup_ns = max(
+                0, int(self.device_pre_call_setup_ns)
+            )
+        self.timing_decomposition_schema = max(
+            0, int(self.timing_decomposition_schema)
+        )
+        if self.device_allocator_duration_ns is None:
+            self.device_allocator_duration_ns = self.duration_ns
+        else:
+            self.device_allocator_duration_ns = max(
+                0, int(self.device_allocator_duration_ns)
+            )
+            # ``duration_ns`` remains the backward-compatible device-duration
+            # column.  It is never USB roundtrip or setup time.
+            self.duration_ns = self.device_allocator_duration_ns
+        self.agx_allocator_duration_ns = max(
+            0, int(self.agx_allocator_duration_ns)
+        )
+        (
+            self.agx_choose_goal_duration_ns,
+            self.agx_algorithm_epoch_reset_duration_ns,
+        ) = self._validated_allocator_components(
+            "AGX",
+            self.agx_allocator_duration_ns,
+            self.agx_choose_goal_duration_ns,
+            self.agx_algorithm_epoch_reset_duration_ns,
+        )
+        (
+            self.device_choose_goal_duration_ns,
+            self.algorithm_epoch_reset_duration_ns,
+        ) = self._validated_allocator_components(
+            "device",
+            int(self.device_allocator_duration_ns),
+            self.device_choose_goal_duration_ns,
+            self.algorithm_epoch_reset_duration_ns,
+        )
+        if self.compute_start_time_s is None:
+            self.compute_start_time_s = float(self.mission_time_s)
+        if self.compute_completion_time_s is None:
+            self.compute_completion_time_s = (
+                float(self.compute_start_time_s) + self.duration_s
+            )
+        if self.logical_context_id is None:
+            self.logical_context_id = str(self.robot_id)
+
+    @staticmethod
+    def _validated_allocator_components(
+        label: str,
+        total_ns: int,
+        choose_goal_ns: Optional[int],
+        epoch_reset_ns: Optional[int],
+    ) -> tuple[int, int]:
+        if choose_goal_ns is None and epoch_reset_ns is None:
+            choose_goal_ns = int(total_ns)
+            epoch_reset_ns = 0
+        elif choose_goal_ns is None or epoch_reset_ns is None:
+            raise ValueError(f"{label} allocator timing split is incomplete")
+        choose_goal_ns = int(choose_goal_ns)
+        epoch_reset_ns = int(epoch_reset_ns)
+        if choose_goal_ns < 0 or epoch_reset_ns < 0:
+            raise ValueError(f"{label} allocator timing split must be non-negative")
+        if int(total_ns) != choose_goal_ns + epoch_reset_ns:
+            raise ValueError(
+                f"{label} allocator duration must equal choose_goal plus "
+                "algorithm epoch reset"
+            )
+        return choose_goal_ns, epoch_reset_ns
 
     @property
     def duration_s(self) -> float:
         return self.duration_ns / 1_000_000_000.0
 
+    @property
+    def device_allocator_duration_s(self) -> float:
+        return int(self.device_allocator_duration_ns or 0) / 1_000_000_000.0
+
+    @property
+    def agx_allocator_duration_s(self) -> float:
+        return int(self.agx_allocator_duration_ns) / 1_000_000_000.0
+
+    @property
+    def agx_choose_goal_duration_s(self) -> float:
+        return int(self.agx_choose_goal_duration_ns or 0) / 1_000_000_000.0
+
+    @property
+    def agx_algorithm_epoch_reset_duration_s(self) -> float:
+        return int(
+            self.agx_algorithm_epoch_reset_duration_ns or 0
+        ) / 1_000_000_000.0
+
+    @property
+    def device_choose_goal_duration_s(self) -> float:
+        return int(self.device_choose_goal_duration_ns or 0) / 1_000_000_000.0
+
+    @property
+    def algorithm_epoch_reset_duration_s(self) -> float:
+        return int(self.algorithm_epoch_reset_duration_ns or 0) / 1_000_000_000.0
+
+    @property
+    def serial_roundtrip_s(self) -> float:
+        return int(self.serial_roundtrip_ns) / 1_000_000_000.0
+
+    @property
+    def host_serialization_setup_s(self) -> float:
+        return int(self.host_serialization_setup_ns) / 1_000_000_000.0
+
+    @property
+    def psetup_transaction_s(self) -> float:
+        return int(self.psetup_transaction_ns) / 1_000_000_000.0
+
+    @property
+    def device_pre_call_setup_s(self) -> Optional[float]:
+        return (
+            None
+            if self.device_pre_call_setup_ns is None
+            else int(self.device_pre_call_setup_ns) / 1_000_000_000.0
+        )
+
+    @property
+    def ptime_result_transaction_s(self) -> float:
+        return int(self.ptime_result_transaction_ns) / 1_000_000_000.0
+
+    @property
+    def host_prepare_cpu_s(self) -> float:
+        return int(self.host_prepare_cpu_ns) / 1_000_000_000.0
+
     def to_dict(self) -> dict:
         row = asdict(self)
         row["duration_s"] = self.duration_s
+        row["device_allocator_duration_s"] = self.device_allocator_duration_s
+        row["agx_allocator_duration_s"] = self.agx_allocator_duration_s
+        row["agx_choose_goal_duration_s"] = self.agx_choose_goal_duration_s
+        row["agx_algorithm_epoch_reset_duration_s"] = (
+            self.agx_algorithm_epoch_reset_duration_s
+        )
+        row["device_choose_goal_duration_s"] = (
+            self.device_choose_goal_duration_s
+        )
+        row["algorithm_epoch_reset_duration_s"] = (
+            self.algorithm_epoch_reset_duration_s
+        )
+        row["serial_roundtrip_s"] = self.serial_roundtrip_s
+        row["host_serialization_setup_s"] = self.host_serialization_setup_s
+        row["host_total_call_s"] = self.host_total_call_ns / 1_000_000_000.0
+        row["psetup_transaction_s"] = self.psetup_transaction_s
+        row["device_pre_call_setup_s"] = self.device_pre_call_setup_s
+        row["ptime_result_transaction_s"] = self.ptime_result_transaction_s
+        row["host_prepare_cpu_s"] = self.host_prepare_cpu_s
         return row
 
 
@@ -428,6 +623,7 @@ class OnlineReallocationScheduler:
         duration_ns: int,
         epoch_id: Optional[int],
         trigger_reason: str,
+        **causal_fields: Any,
     ) -> AllocatorCallRecord:
         record = AllocatorCallRecord(
             call_id=len(self.allocator_calls) + 1,
@@ -436,6 +632,7 @@ class OnlineReallocationScheduler:
             duration_ns=max(0, int(duration_ns)),
             epoch_id=epoch_id,
             trigger_reason=str(trigger_reason),
+            **causal_fields,
         )
         self.allocator_calls.append(record)
         epoch = self.epoch_by_id(epoch_id)
@@ -445,7 +642,13 @@ class OnlineReallocationScheduler:
             if robot_id not in epoch.called_robot_ids:
                 epoch.called_robot_ids.append(robot_id)
             if set(epoch.expected_robot_ids).issubset(epoch.called_robot_ids):
-                epoch.closed_time_s = float(now_s)
+                completion_times = [
+                    item.compute_completion_time_s
+                    for item in self.allocator_calls
+                    if item.call_id in epoch.allocator_call_ids
+                    and item.compute_completion_time_s is not None
+                ]
+                epoch.closed_time_s = max(completion_times, default=float(now_s))
         return record
 
     def epoch_by_id(self, epoch_id: Optional[int]) -> Optional[AllocationEpoch]:
@@ -536,8 +739,10 @@ def build_online_metrics(state: "TrialState") -> dict:
     """Return canonical, JSON/CSV-safe metrics for one online condition."""
 
     scheduler = state.reallocation_scheduler
-    calls = scheduler.allocator_calls if scheduler is not None else []
-    call_times = [call.duration_s for call in calls]
+    all_calls = scheduler.allocator_calls if scheduler is not None else []
+    calls = [call for call in all_calls if call.valid_for_mission and call.parity_passed]
+    call_times = [call.device_allocator_duration_s for call in calls]
+    agx_call_times = [call.agx_allocator_duration_s for call in calls]
     records = list(state.world.target_records.values())
     completed = [record for record in records if record.completed]
     release_to_assignment = [
@@ -552,50 +757,136 @@ def build_online_metrics(state: "TrialState") -> dict:
     ]
     queue = scheduler.queue_samples if scheduler is not None else []
     epochs = scheduler.epochs if scheduler is not None else []
-    allocator_time_s = sum(call_times)
-    allocator_parallel_s = allocator_parallel_critical_path_s(calls)
+    rp2040_choose_goal_ns = sum(
+        int(call.device_choose_goal_duration_ns or 0) for call in calls
+    )
+    rp2040_epoch_reset_ns = sum(
+        int(call.algorithm_epoch_reset_duration_ns or 0) for call in calls
+    )
+    agx_choose_goal_ns = sum(
+        int(call.agx_choose_goal_duration_ns or 0) for call in calls
+    )
+    agx_epoch_reset_ns = sum(
+        int(call.agx_algorithm_epoch_reset_duration_ns or 0) for call in calls
+    )
+    device_total_ns = sum(
+        int(call.device_allocator_duration_ns or 0) for call in calls
+    )
+    agx_total_ns = sum(int(call.agx_allocator_duration_ns) for call in calls)
+    if device_total_ns != rp2040_choose_goal_ns + rp2040_epoch_reset_ns:
+        raise AssertionError("RP2040 allocator work decomposition is inconsistent")
+    if agx_total_ns != agx_choose_goal_ns + agx_epoch_reset_ns:
+        raise AssertionError("AGX allocator work decomposition is inconsistent")
+    rp2040_choose_goal_s = rp2040_choose_goal_ns / 1_000_000_000.0
+    rp2040_epoch_reset_s = rp2040_epoch_reset_ns / 1_000_000_000.0
+    agx_choose_goal_s = agx_choose_goal_ns / 1_000_000_000.0
+    agx_epoch_reset_s = agx_epoch_reset_ns / 1_000_000_000.0
+    # Define the published totals from the published components so the JSON
+    # summary itself preserves the mechanism accounting identity exactly.
+    allocator_time_s = rp2040_choose_goal_s + rp2040_epoch_reset_s
+    agx_allocator_time_s = agx_choose_goal_s + agx_epoch_reset_s
+    grouped_critical_path_s = allocator_parallel_critical_path_s(calls)
+    all_tasks_completed = state.world.all_targets_completed()
+    mission_s = state.mission_elapsed_time_s if all_tasks_completed else None
     simulated_s = state.simulated_execution_time_s
-    mission_serial_s = simulated_s + allocator_time_s
-    mission_s = simulated_s + allocator_parallel_s
-    if abs(mission_s - state.mission_elapsed_time_s) > 1e-9:
-        raise AssertionError("mission time arithmetic invariant failed")
+    if all_tasks_completed and mission_s is not None and abs(mission_s - simulated_s) > 1e-9:
+        raise AssertionError("causal event clock must stop at final task completion")
+    movement_work_s = sum(
+        movement.duration_s for movement in getattr(state, "movement_records", [])
+    )
     total_steps = sum(robot.counters.steps_total for robot in state.robots.values())
     assignment_mean = mean(release_to_assignment) if release_to_assignment else 0.0
     completion_mean = mean(release_to_completion) if release_to_completion else 0.0
     return {
         "trial_id": state.scenario.trial_id,
-        "all_tasks_completed": state.world.all_targets_completed(),
+        "all_tasks_completed": all_tasks_completed,
         "max_robot_steps": max((robot.counters.steps_total for robot in state.robots.values()), default=0),
         "total_team_steps": total_steps,
-        # The legacy event clock already combines movement, turn, idle, and
-        # communication semantics, so it is retained as the physical/execution
-        # component and no unsupported decomposition is invented here.
-        "movement_time_s": simulated_s,
-        "other_execution_time_s": 0.0,
+        "movement_time_s": movement_work_s,
+        "movement_time_aggregation": "sum_of_explicit_robot_traversal_intervals",
+        "movement_event_count": len(getattr(state, "movement_records", [])),
+        "movement_timing_model": str(getattr(state, "movement_timing_model", "")),
+        "movement_timing_seed": int(getattr(state, "movement_timing_seed", 0)),
+        "movement_timing_trace_id": str(
+            getattr(state, "movement_timing_trace_id", "")
+        ),
         "simulated_execution_time_s": simulated_s,
-        "release_time_axis": "simulated_execution_time_s",
-        "execution_time_accounting": "event_clock_includes_move_turn_idle_and_communication",
+        "release_time_axis": "absolute_causal_mission_time_s",
+        "execution_time_accounting": "causal_event_clock_includes_overlapping_per_robot_compute_and_explicit_movement",
         "cumulative_allocator_time_s": allocator_time_s,
-        "allocator_time_aggregation": "team_serial_sum",
-        "allocator_parallel_critical_path_time_s": allocator_parallel_s,
-        "allocator_parallel_time_definition": "sum_over_epoch_timestamp_groups_of_max_per_robot_duration",
-        "mission_elapsed_time_serial_compute_s": mission_serial_s,
+        "rp2040_allocator_processor_work_s": allocator_time_s,
+        "rp2040_choose_goal_processor_work_s": rp2040_choose_goal_s,
+        "rp2040_epoch_reset_processor_work_s": rp2040_epoch_reset_s,
+        "W_alloc_rp2040_s": allocator_time_s,
+        "allocator_time_aggregation": "sum_of_valid_device_allocator_durations_processor_seconds",
+        "cumulative_agx_allocator_time_s": agx_allocator_time_s,
+        "agx_allocator_processor_work_s": agx_allocator_time_s,
+        "agx_choose_goal_processor_work_s": agx_choose_goal_s,
+        "agx_epoch_reset_processor_work_s": agx_epoch_reset_s,
+        "W_alloc_agx_s": agx_allocator_time_s,
+        # The former post-hoc additive field is neutralized.  The comparable
+        # group diagnostic remains available under an explicitly non-mission
+        # name and must never be added to the causal event clock.
+        "allocator_parallel_critical_path_time_s": 0.0,
+        "allocator_parallel_time_definition": "deprecated_zero_not_added_to_causal_mission",
+        "sum_same_start_group_max_device_duration_s": grouped_critical_path_s,
         "mission_elapsed_time_s": mission_s,
-        "mission_elapsed_time_definition": "simulated_execution_time_s_plus_allocator_parallel_critical_path_time_s",
+        "mission_elapsed_time_definition": "final_required_task_completion_timestamp_minus_mission_start",
+        "algorithmic_horizon_time_s": (
+            None if all_tasks_completed else simulated_s
+        ),
+        "algorithmic_horizon_time_definition": (
+            "causal_event_clock_at_predeclared_algorithmic_noncompletion_horizon; "
+            "not mission elapsed time"
+        ),
         "host_program_runtime_s": state.host_program_runtime_s,
         "allocator_call_count": len(calls),
+        "invalid_allocator_call_count": len(all_calls) - len(calls),
+        "compute_group_count": int(getattr(state, "compute_group_count", 0)),
+        "timing_provider": str(getattr(state, "timing_provider_name", "")),
+        "causal_timing_enabled": bool(getattr(state, "causal_timing_enabled", False)),
+        "algorithmic_status": (
+            "completed"
+            if state.world.all_targets_completed()
+            else "incomplete"
+        ),
+        "algorithmic_failure_type": getattr(
+            state, "algorithmic_failure_type", None
+        ),
+        "causal_event_horizon_events": int(
+            getattr(state, "causal_event_horizon_events", 0)
+        ),
+        "causal_stagnation_horizon_events": int(
+            getattr(state, "causal_stagnation_horizon_events", 0)
+        ),
         "allocation_epoch_count": len(epochs),
         "mean_allocator_call_time_s": mean(call_times) if call_times else 0.0,
         "median_allocator_call_time_s": median(call_times) if call_times else 0.0,
         "p95_allocator_call_time_s": _percentile(call_times, 0.95),
         "max_allocator_call_time_s": max(call_times, default=0.0),
+        "mean_rp2040_allocator_call_time_s": mean(call_times) if call_times else 0.0,
+        "median_rp2040_allocator_call_time_s": median(call_times) if call_times else 0.0,
+        "p95_rp2040_allocator_call_time_s": _percentile(call_times, 0.95),
+        "mean_agx_allocator_call_time_s": mean(agx_call_times) if agx_call_times else 0.0,
+        "median_agx_allocator_call_time_s": median(agx_call_times) if agx_call_times else 0.0,
+        "p95_agx_allocator_call_time_s": _percentile(agx_call_times, 0.95),
+        "rp2040_processor_work_per_call_s": allocator_time_s / len(calls) if calls else 0.0,
+        "rp2040_processor_work_per_reallocation_event_s": allocator_time_s / len(epochs) if epochs else 0.0,
         "allocator_time_per_completed_task_s": allocator_time_s / len(completed) if completed else 0.0,
+        "rp2040_processor_work_per_completed_task_s": allocator_time_s / len(completed) if completed else 0.0,
+        "processor_capacity_fraction": (
+            allocator_time_s / (len(state.robots) * mission_s)
+            if state.robots and mission_s is not None and mission_s > 0.0 else 0.0
+        ),
+        "processor_capacity_fraction_definition": "rp2040_processor_work_divided_by_robot_count_times_causal_mission_elapsed",
         "mean_release_to_first_assignment_latency_s": assignment_mean,
         "median_release_to_first_assignment_latency_s": median(release_to_assignment) if release_to_assignment else 0.0,
         "p95_release_to_first_assignment_latency_s": _percentile(release_to_assignment, 0.95),
+        "max_release_to_first_assignment_latency_s": max(release_to_assignment, default=0.0),
         "mean_release_to_completion_latency_s": completion_mean,
         "median_release_to_completion_latency_s": median(release_to_completion) if release_to_completion else 0.0,
         "p95_release_to_completion_latency_s": _percentile(release_to_completion, 0.95),
+        "max_release_to_completion_latency_s": max(release_to_completion, default=0.0),
         "arrival_induced_trigger_count": sum(epoch.trigger_reason in ARRIVAL_REASONS for epoch in epochs),
         "mandatory_trigger_count": sum(epoch.mandatory for epoch in epochs),
         "mandatory_reallocation_trigger_count": sum(
@@ -605,6 +896,10 @@ def build_online_metrics(state: "TrialState") -> dict:
         "initial_allocation_epoch_count": sum(
             epoch.trigger_reason == "initial_allocation" for epoch in epochs
         ),
+        "piggybacked_admission_epoch_count": sum(epoch.piggybacked_pending for epoch in epochs),
+        "timeout_trigger_count": sum(epoch.trigger_reason == "age_timeout" for epoch in epochs),
+        "batch_threshold_trigger_count": sum(epoch.trigger_reason == "batch_threshold" for epoch in epochs),
+        "final_flush_trigger_count": sum(epoch.trigger_reason == "final_release_flush" for epoch in epochs),
         "mean_pending_queue_depth": mean(sample.depth for sample in queue) if queue else 0.0,
         "max_pending_queue_depth": max((sample.depth for sample in queue), default=0),
         "mean_pending_age_s": mean(sample.oldest_age_s for sample in queue) if queue else 0.0,
@@ -614,4 +909,41 @@ def build_online_metrics(state: "TrialState") -> dict:
             reason: sum(epoch.trigger_reason == reason for epoch in epochs)
             for reason in sorted({epoch.trigger_reason for epoch in epochs})
         },
+    }
+
+
+def build_zero_compute_pair_metrics(
+    causal_state: "TrialState", zero_compute_state: "TrialState"
+) -> dict[str, Any]:
+    """Derive the paired causal allocation effect for one immutable condition."""
+
+    if causal_state.scenario.trial_id != zero_compute_state.scenario.trial_id:
+        raise ValueError("counterfactual pair has different trial IDs")
+    if causal_state.scenario.targets != zero_compute_state.scenario.targets:
+        raise ValueError("counterfactual pair has different scenarios")
+    left_scheduler = causal_state.reallocation_scheduler
+    right_scheduler = zero_compute_state.reallocation_scheduler
+    if left_scheduler is None or right_scheduler is None:
+        raise ValueError("counterfactual pairing requires online trials")
+    if left_scheduler.policy != right_scheduler.policy:
+        raise ValueError("counterfactual pair has different policies")
+    left_releases = [
+        record.release_time_s for record in causal_state.world.target_records.values()
+    ]
+    right_releases = [
+        record.release_time_s for record in zero_compute_state.world.target_records.values()
+    ]
+    if left_releases != right_releases:
+        raise ValueError("counterfactual pair has different release traces")
+    causal_s = causal_state.mission_elapsed_time_s
+    zero_s = zero_compute_state.mission_elapsed_time_s
+    difference_s = causal_s - zero_s
+    fraction = difference_s / causal_s if causal_s > 0.0 else 0.0
+    return {
+        "causal_mission_elapsed_time_s": causal_s,
+        "zero_compute_mission_elapsed_time_s": zero_s,
+        "D_alloc_s": difference_s,
+        "allocation_attributable_mission_fraction": fraction,
+        "negative_allocation_effect_flag": difference_s < 0.0,
+        "definition": "causal_makespan_difference_not_frozen_call_sum",
     }

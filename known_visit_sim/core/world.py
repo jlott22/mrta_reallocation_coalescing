@@ -22,10 +22,13 @@ class TargetRecord:
     released_time_s: Optional[float] = 0.0
     pending_time_s: Optional[float] = 0.0
     admission_time_s: Optional[float] = 0.0
+    first_eligible_allocator_start_time_s: Optional[float] = None
+    first_eligible_robot: Optional[str] = None
     first_assignment_time_s: Optional[float] = None
     first_assigned_robot: Optional[str] = None
     first_completion_time_s: Optional[float] = None
     first_found_by: Optional[str] = None
+    completion_mode: Optional[str] = None
     assignment_events: int = 0
     total_visits: int = 0
     state: TaskState = TaskState.ADMITTED
@@ -87,8 +90,11 @@ class World:
             record.release_time_s = release_s
             record.first_assignment_time_s = None
             record.first_assigned_robot = None
+            record.first_eligible_allocator_start_time_s = None
+            record.first_eligible_robot = None
             record.first_completion_time_s = None
             record.first_found_by = None
+            record.completion_mode = None
             record.assignment_events = 0
             record.total_visits = 0
             if release_s <= 0.0:
@@ -151,6 +157,24 @@ class World:
                     TaskStateEvent(TaskState.ASSIGNED, float(time_s), str(rid))
                 )
 
+    def record_allocator_start(
+        self, rid: str, cells: Iterable[Cell], time_s: float
+    ) -> None:
+        """Record the first safe-boundary call that can observe each task."""
+
+        for cell in cells:
+            record = self.target_records.get(cell)
+            if (
+                record is None
+                or record.admission_time_s is None
+                or record.completed
+                or float(time_s) + 1e-12 < record.admission_time_s
+            ):
+                continue
+            if record.first_eligible_allocator_start_time_s is None:
+                record.first_eligible_allocator_start_time_s = float(time_s)
+                record.first_eligible_robot = str(rid)
+
     def record_visit(self, rid: str, cell: Cell) -> bool:
         record = self.visits.setdefault(cell, VisitRecord())
         revisited = record.total_visits > 0
@@ -158,7 +182,13 @@ class World:
         record.by_robot[rid] = record.by_robot.get(rid, 0) + 1
         return revisited
 
-    def record_target_visit(self, rid: str, cell: Cell, time_s: float) -> tuple[bool, bool]:
+    def record_target_visit(
+        self,
+        rid: str,
+        cell: Cell,
+        time_s: float,
+        completion_mode: str = "movement_arrival",
+    ) -> tuple[bool, bool]:
         record = self.target_records.get(cell)
         if (
             record is None
@@ -183,6 +213,7 @@ class World:
                 )
             record.first_completion_time_s = time_s
             record.first_found_by = rid
+            record.completion_mode = str(completion_mode)
             record.state = TaskState.COMPLETED
             record.state_history.append(TaskStateEvent(TaskState.COMPLETED, float(time_s), str(rid)))
         return True, first_completion
@@ -194,20 +225,29 @@ class World:
             admission = record.admission_time_s
             assignment = record.first_assignment_time_s
             completion = record.first_completion_time_s
+            eligible = record.first_eligible_allocator_start_time_s
             rows.append({
                 "trial_id": self.scenario.trial_id if trial_id is None else trial_id,
                 "task_id": record.task_id,
                 "task_index": record.index,
                 "task_x": record.cell[0],
                 "task_y": record.cell[1],
+                "x": record.cell[0],
+                "y": record.cell[1],
                 "state": record.state.value,
                 "release_time_s": release,
+                "pending_time_s": record.pending_time_s,
                 "admission_time_s": admission,
+                "first_eligible_allocator_start_time_s": eligible,
+                "first_eligible_processing_time_s": eligible,
+                "first_eligible_robot": record.first_eligible_robot,
                 "first_assignment_time_s": assignment,
                 "first_assigned_robot": record.first_assigned_robot,
                 "completion_time_s": completion,
                 "completing_robot": record.first_found_by,
+                "completion_mode": record.completion_mode,
                 "assignment_events": record.assignment_events,
+                "reassignment_count": max(0, record.assignment_events - 1),
                 "release_to_admission_latency_s": (
                     admission - release if admission is not None and release is not None else None
                 ),
@@ -216,6 +256,9 @@ class World:
                 ),
                 "admission_to_first_assignment_latency_s": (
                     assignment - admission if assignment is not None and admission is not None else None
+                ),
+                "admission_to_first_eligible_allocator_start_latency_s": (
+                    eligible - admission if eligible is not None and admission is not None else None
                 ),
                 "release_to_completion_latency_s": (
                     completion - release if completion is not None and release is not None else None

@@ -102,6 +102,7 @@ class CollaborativeState:
             self.slot_by_cell[int(encoded)] = slot
         count = len(self.targets)
         self.active = bytearray([1] * count)
+        self.unavailable = bytearray(count)
         self.probability = array("f", [1.0] * count)
         self.claim_owner = array("h", [-1] * count)
         self.claim_value = array("f", [-1.0e18] * count)
@@ -156,6 +157,14 @@ class CollaborativeState:
             [],
         )
         self.complete_cells(completed, mark_revision=False)
+        self.replace_unavailable(
+            value_from(initial_state, ("searched",), ()),
+            value_from(initial_state, ("local_searched",), ()),
+            value_from(initial_state, ("known_obstacles",), ()),
+            value_from(initial_state, ("obstacles",), ()),
+            value_from(initial_state, ("blocked",), ()),
+            value_from(initial_state, ("blocked_cells",), ()),
+        )
         self._load_probabilities(value_from(initial_state, ("target_p", "probabilities"), None))
         self.update_peer_positions(
             value_from(initial_state, ("peer_positions", "team_positions"), {})
@@ -239,6 +248,15 @@ class CollaborativeState:
         if changed and mark_revision:
             self.task_revision += 1
             self.last_event = "target_completed"
+
+    def replace_unavailable(self, *collections):
+        """Replace the frozen set of active cells ineligible for allocation."""
+
+        wanted = set()
+        for cells in collections:
+            wanted.update(self._normalize_cell_collection(cells))
+        for slot, encoded in enumerate(self.targets):
+            self.unavailable[slot] = 1 if int(encoded) in wanted else 0
 
     def activate_cells(self, cells):
         changed = False
@@ -354,6 +372,13 @@ class CollaborativeState:
     def is_active(self, slot):
         return 0 <= int(slot) < len(self.active) and bool(self.active[int(slot)])
 
+    def is_candidate(self, slot):
+        slot = int(slot)
+        return self.is_active(slot) and not bool(self.unavailable[slot])
+
+    def candidate_slots(self):
+        return [slot for slot in self.active_slots() if self.is_candidate(slot)]
+
     def slot_for_cell(self, cell):
         try:
             return self.slot_by_cell.get(self.encode_cell(cell))
@@ -421,8 +446,6 @@ class CollaborativeState:
     def begin_allocator_call(self):
         self.filter_time_us = 0
         self.filter_invocations = 0
-        self.candidate_count_before = 0
-        self.candidate_count_after = 0
         del self.candidate_filter_time_us_samples[:]
         self.event_counter += 1
 
@@ -451,6 +474,11 @@ class CollaborativeState:
             "targets": [int(cell) for cell in self.targets],
             "active": [
                 int(self.targets[slot]) for slot in self.active_slots()
+            ],
+            "unavailable": [
+                int(self.targets[slot])
+                for slot in range(len(self.targets))
+                if self.unavailable[slot]
             ],
             "probability": [
                 float(value) for value in self.probability
@@ -488,6 +516,7 @@ class CollaborativeState:
             raise ValueError("collaborative resume target set mismatch")
 
         self._replace_active(resume.get("active", ()), mark_revision=False)
+        self.replace_unavailable(resume.get("unavailable", ()))
         probabilities = resume.get("probability", ())
         if len(probabilities) == len(self.probability):
             for slot, value in enumerate(probabilities):
@@ -564,6 +593,11 @@ class CollaborativeState:
             "robot_id": self.robot_id,
             "position": list(self.decode_cell(self.position)),
             "active_tasks": active_cells,
+            "ineligible_tasks": [
+                list(self.decode_cell(self.targets[slot]))
+                for slot in range(len(self.targets))
+                if self.unavailable[slot]
+            ],
             "active_task_count": len(active_cells),
             "peer_positions": peer_positions,
             "task_revision": int(self.task_revision),

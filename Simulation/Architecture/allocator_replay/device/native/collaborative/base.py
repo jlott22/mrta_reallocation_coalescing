@@ -18,7 +18,7 @@ class NativeAllocatorBase:
         started = ticks_us()
         try:
             state = self.state
-            slots = state.active_slots()
+            slots = state.candidate_slots()
             state.candidate_count_before = len(slots)
             limit = state.max_candidate_cells
             if always_rank or (limit is not None and limit < len(slots)):
@@ -140,7 +140,7 @@ class NativeAllocatorBase:
     def clean_path(self, require_ownership=False):
         cleaned = []
         for slot in self.path:
-            if not self.state.is_active(slot):
+            if not self.state.is_candidate(slot):
                 continue
             if require_ownership and self.state.claim_owner[slot] != self.state.robot_index:
                 break
@@ -181,7 +181,7 @@ class NativeAllocatorBase:
             return False
         try:
             slot = self.state.slot_for_cell((message["x"], message["y"]))
-            if slot is None or not self.state.is_active(slot):
+            if slot is None or not self.state.is_candidate(slot):
                 return False
             owner_id = message.get("owner", message.get("winner"))
             owner = self.state.owner_index(owner_id)

@@ -77,6 +77,10 @@ class DesktopReplayDevice:
             "expected_module_set_sha256": manifest[
                 "deployed_module_set_sha256"
             ],
+            "timer_unit": "us",
+            "timer_resolution_us": 1,
+            "timer_monotonic": True,
+            "timer_wraparound_safe": True,
         }
 
     def _scripted(self, fixture_id: str) -> str:
@@ -196,7 +200,18 @@ class DesktopReplayDevice:
             self.worker.ticks_diff(self.worker.ticks_us(), started),
         )
         reported = decision if isinstance(decision, dict) else {}
-        elapsed = int(reported.get("allocator_time_us", measured_elapsed))
+        choose_goal_us = int(
+            reported.get("allocator_time_us", measured_elapsed)
+        )
+        epoch_reset_method = getattr(
+            runtime, "algorithm_epoch_reset_time_us", None
+        )
+        algorithm_epoch_reset_us = (
+            max(0, int(epoch_reset_method()))
+            if callable(epoch_reset_method)
+            else 0
+        )
+        elapsed = max(0, choose_goal_us) + algorithm_epoch_reset_us
         filter_us = int(
             reported.get(
                 "candidate_filter_time_us",
@@ -256,6 +271,8 @@ class DesktopReplayDevice:
             },
             "resume_state": {} if sectioned else compact,
             "allocator_time_us": elapsed,
+            "choose_goal_time_us": choose_goal_us,
+            "algorithm_epoch_reset_us": algorithm_epoch_reset_us,
             "candidate_filter_time_us": filter_us,
             "allocator_exclusive_time_us": int(
                 reported.get(
@@ -409,6 +426,10 @@ class _LoopbackSerial:
                     -1,
                     replay_build.MODULE_SET_SHA256,
                     replay_build.MODULE_SET_SHA256,
+                    "us",
+                    1,
+                    1,
+                    1,
                 )
             elif command == "BEGIN":
                 self.fixture_meta = (
@@ -600,7 +621,7 @@ class _LoopbackSerial:
                     self._queue("AR1", "PTRIAL_READY", trial_key, -1)
             elif command == "PCLEAR":
                 context_id = fields[2]
-                self.persistent_slot.clear_context()
+                self.persistent_slot.clear_context(context_id)
                 self.context_clear_count += 1
                 self.fixture = None
                 self.fixture_buffer = None
@@ -614,6 +635,7 @@ class _LoopbackSerial:
                 )
             elif command == "PSETUP":
                 attempt_id = fields[2]
+                setup_started = self.worker.ticks_us()
                 try:
                     self.persistent_slot.prepare(
                         self.fixture["context_id"],
@@ -632,6 +654,12 @@ class _LoopbackSerial:
                         attempt_id,
                         context_id,
                         -1,
+                        max(
+                            0,
+                            self.worker.ticks_diff(
+                                self.worker.ticks_us(), setup_started
+                            ),
+                        ),
                     )
                 except Exception as exc:
                     encoded = base64.b64encode(
@@ -801,7 +829,18 @@ class _LoopbackSerial:
             )
             return
         reported = decision if isinstance(decision, dict) else {}
-        elapsed = int(reported.get("allocator_time_us", measured_elapsed))
+        choose_goal_us = int(
+            reported.get("allocator_time_us", measured_elapsed)
+        )
+        epoch_reset_method = getattr(
+            runtime, "algorithm_epoch_reset_time_us", None
+        )
+        algorithm_epoch_reset_us = (
+            max(0, int(epoch_reset_method()))
+            if callable(epoch_reset_method)
+            else 0
+        )
+        elapsed = max(0, choose_goal_us) + algorithm_epoch_reset_us
         filter_us = int(
             reported.get(
                 "candidate_filter_time_us",
@@ -853,6 +892,8 @@ class _LoopbackSerial:
             int(reported.get("candidate_count_before", before)),
             int(reported.get("candidate_count_after", after)),
             call_class,
+            choose_goal_us,
+            algorithm_epoch_reset_us,
         )
         try:
             goal = (
@@ -1005,4 +1046,5 @@ class LoopbackReplayDevice(SerialReplayDevice):
         identity = self.serial.restart_clean_worker()
         self.identity = identity
         self._persistent_ready_heap.clear()
+        self._persistent_prepare_metrics.clear()
         return identity

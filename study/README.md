@@ -1,5 +1,13 @@
 # Reallocation-coalescing study campaign layer
 
+> **Superseded campaign description.** This file documents the retained
+> first-generation, post-hoc timing campaign. Its 75%-of-core worker rule,
+> previously selected rates/W, and additive critical-path mission estimate do
+> not govern the causal paper campaign. Use `study/causal/`, the
+> `scripts/agx_*causal*` launchers, and the root `EXPERIMENTAL_PLAN.md` and
+> `AGX_NATIVE_RUNBOOK.md`. Historical material below is preserved so earlier
+> artifacts remain interpretable.
+
 This directory owns reproducible paired inputs, resumable AGX execution, and
 trial-level analysis. It intentionally does not implement allocator internals.
 
