@@ -168,7 +168,14 @@ def inspect_environment(
         ),
         "minimum_free_storage_5_gib": disk.free >= 5 * 1024**3,
         "nvpmodel_probe_succeeded": nvpmodel["returncode"] == 0,
-        "jetson_clocks_probe_succeeded": jetson_clocks["returncode"] == 0,
+        "jetson_clocks_state_recorded_or_permission_limitation_accepted": (
+            jetson_clocks["returncode"] == 0
+            or (
+                accept_recorded_power_clock_state
+                and jetson_clocks["available"] is True
+                and "root user" in jetson_clocks["stdout"].lower()
+            )
+        ),
         "recorded_power_clock_state_explicitly_accepted": bool(
             accept_recorded_power_clock_state
         ),
@@ -179,7 +186,7 @@ def inspect_environment(
         if name not in {
             "linux", "agx_orin_model", "serial_paths_present_and_rw",
             "exact_publication_board_bindings", "nvpmodel_probe_succeeded",
-            "jetson_clocks_probe_succeeded",
+            "jetson_clocks_state_recorded_or_permission_limitation_accepted",
             "recorded_power_clock_state_explicitly_accepted",
         }
     )
