@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/_agx_causal_common.sh"
 
 CONFIG="configs/agx_causal_rate_calibration_v1.json"
-"${PYTHON_BIN}" -m study.causal.orchestrator --repo-root "${REPO_ROOT}" --config "${CONFIG}"
+run_causal_with_tracker "${CONFIG}"
 mkdir -p study/native_gates/calibration
 
 REVIEW_ARGS=()

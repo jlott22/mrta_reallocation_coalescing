@@ -30,7 +30,7 @@
       {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1},
       {"policy_id": "count_b4", "mode": "count", "batch_size": 4}
     ],
-    "trace_limit": 2,
+    "trace_limit": 1,
     "schedule_seed": 2026081001,
     "max_technical_retries": 1,
     "runner_factory": "study.causal.worker:run_causal_job",
@@ -39,7 +39,7 @@
       "study/native_gates/preflight/native_preflight_report.json"
     ],
     "require_clean_source": true,
-    "notes": "32-mission native causal smoke: four algorithms, Eager/B4, provisional sparse/heavy loads, two paired traces. Rates are not frozen paper values."
+    "notes": "Final minimal plan engineering smoke: four algorithms x Eager/B4 x sparse/heavy loads x one paired trace = 16 three-board causal hardware missions. The user explicitly approved three-board execution."
   },
   "hardware": {
     "bindings_file": "configs/local/agx_board_bindings.json",

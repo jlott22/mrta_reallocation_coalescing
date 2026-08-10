@@ -12,7 +12,7 @@ CONFIG="study/native_gates/calibration/variance_stage_config.json"
   --timeout-config "${TIMEOUT_CONFIG}" \
   --timeout-report "${TIMEOUT_REPORT}" \
   --output "${CONFIG}"
-"${PYTHON_BIN}" -m study.causal.orchestrator --repo-root "${REPO_ROOT}" --config "${CONFIG}"
+run_causal_with_tracker "${CONFIG}"
 
 CAMPAIGN_ID="$(${PYTHON_BIN} -c 'import json,sys; print(json.load(open(sys.argv[1]))["campaign"]["campaign_id"])' "${CONFIG}")"
 REVIEW_ARGS=()

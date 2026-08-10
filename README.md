@@ -4,8 +4,8 @@
 > simulation/HIL workflow described later in this file is retained as historical
 > evidence and is superseded for the paper experiment by
 > `CAUSAL_IMPLEMENTATION_REPORT.md`, `EXPERIMENTAL_PLAN.md`, and
-> `AGX_NATIVE_RUNBOOK.md`. The current design uses exactly four AGX workers and
-> four RP2040 timing boards, feeds device allocator durations (`choose_goal()`
+> `AGX_NATIVE_RUNBOOK.md`. The current design uses exactly three AGX workers and
+> three RP2040 timing boards, feeds device allocator durations (`choose_goal()`
 > plus any policy-induced allocation-epoch reset callback) into a causal
 > four-logical-processor mission, and requires fresh native calibration plus an
 > explicit design freeze. Do not launch the old `run_agx_full_campaign.sh` path
@@ -14,7 +14,7 @@
 The native causal entry sequence is:
 
 ```bash
-bash scripts/agx_prepare_rp2040_boards.sh PORT_A,PORT_B,PORT_C,PORT_D
+bash scripts/agx_prepare_rp2040_boards.sh PORT_A,PORT_B,PORT_C
 bash scripts/agx_native_environment_check.sh
 bash scripts/agx_rp2040_preflight.sh
 bash scripts/agx_causal_smoke.sh

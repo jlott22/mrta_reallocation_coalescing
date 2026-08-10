@@ -460,7 +460,7 @@ class _LoopbackSerial:
                     self._queue("AR1", "ERROR", "END", "missing")
                 else:
                     fixture_id, length, crc = self.fixture_meta
-                    raw = bytes(self.fixture_buffer)
+                    raw = self.fixture_buffer
                     if len(raw) != length or self._crc(raw) != crc:
                         self._queue("AR1", "ERROR", "END", "crc")
                     else:
@@ -498,7 +498,7 @@ class _LoopbackSerial:
                 if self.part_buffer is None or self.part_meta is None:
                     self._queue("AR1", "ERROR", "PEND", "missing")
                 else:
-                    raw = bytes(self.part_buffer)
+                    raw = self.part_buffer
                     if (
                         len(raw) != self.part_meta["length"]
                         or self._crc(raw) != self.part_meta["crc32"]

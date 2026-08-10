@@ -17,7 +17,7 @@ from typing import Any, Iterable
 
 from study.manifests import canonical_json_bytes, sha256_file
 
-from .model import CausalConfig, load_causal_config
+from .model import PUBLICATION_WORKER_COUNT, CausalConfig, load_causal_config
 from .freeze import _source_hash
 
 
@@ -140,15 +140,23 @@ def inspect_environment(
         "linux": is_linux,
         "agx_orin_model": is_agx_orin,
         "at_least_four_logical_cores": logical_cores >= 4,
-        "four_workers_within_75_percent_logical_core_cap": (
-            4 <= math.floor(0.75 * logical_cores)
+        "publication_workers_within_75_percent_logical_core_cap": (
+            PUBLICATION_WORKER_COUNT <= math.floor(0.75 * logical_cores)
         ),
-        "four_distinct_affinities": len(config.core_affinities) == 4 and len(set(config.core_affinities)) == 4,
+        "publication_worker_affinities_are_distinct": (
+            len(config.core_affinities) == PUBLICATION_WORKER_COUNT
+            and len(set(config.core_affinities)) == PUBLICATION_WORKER_COUNT
+        ),
         "affinities_exist": all(0 <= core < logical_cores for core in config.core_affinities),
-        "exactly_four_bindings": len(config.boards) == 4,
-        "serial_paths_present_and_rw": len(board_rows) == 4 and all(
+        "exact_publication_board_bindings": (
+            len(config.boards) == PUBLICATION_WORKER_COUNT
+        ),
+        "serial_paths_present_and_rw": (
+            len(board_rows) == PUBLICATION_WORKER_COUNT
+            and all(
             row["serial_path_exists"] and row["serial_readable"] and row["serial_writable"]
             for row in board_rows
+            )
         ),
         "repository_clean": git["dirty"] is False,
         "manifest_index_hash_matches_config_load": (
@@ -166,7 +174,7 @@ def inspect_environment(
         value for name, value in checks.items()
         if name not in {
             "linux", "agx_orin_model", "serial_paths_present_and_rw",
-            "exactly_four_bindings", "nvpmodel_probe_succeeded",
+            "exact_publication_board_bindings", "nvpmodel_probe_succeeded",
             "jetson_clocks_probe_succeeded",
             "recorded_power_clock_state_explicitly_accepted",
         }

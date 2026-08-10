@@ -14,7 +14,7 @@ hash. Any required FAIL means the data are not publication-valid.
   symlink, or runtime dependency. Evidence: ______________________________
 - [ ] PASS  [ ] FAIL — AGX Orin model, JetPack/L4T, kernel, Python, logical CPU
   count, and Git/source identity recorded. Evidence: ______________________
-- [ ] PASS  [ ] FAIL — Four distinct selected affinities exist; exactly four
+- [ ] PASS  [ ] FAIL — Three distinct selected affinities exist; exactly three
   workers fit within 75% of logical cores. Evidence: _______________________
 - [ ] PASS  [ ] FAIL — OMP/OpenBLAS/MKL/NumExpr/vecLib/BLIS thread count is one
   for workers. Evidence: _________________________________________________
@@ -23,7 +23,7 @@ hash. Any required FAIL means the data are not publication-valid.
   silent script-side change. Evidence/rationale: __________________________
 - [ ] PASS  [ ] FAIL — Temperatures, memory, and at least 5 GiB free storage
   recorded and acceptable. Evidence: _____________________________________
-- [ ] PASS  [ ] FAIL — Four stable by-ID serial paths exist and are readable/
+- [ ] PASS  [ ] FAIL — Three stable by-ID serial paths exist and are readable/
   writable. Evidence: ____________________________________________________
 - [ ] PASS  [ ] FAIL — Config, manifest index, hardware binding, source-tree,
   and Git identities agree. Evidence: ____________________________________
@@ -34,7 +34,7 @@ Overall environment gate: [ ] PASS  [ ] FAIL
 
 ## B. Required twenty-item RP2040 preflight
 
-1. [ ] PASS  [ ] FAIL — Four unique intended RP2040 boards detected.
+1. [ ] PASS  [ ] FAIL — Three unique intended RP2040 boards detected.
    Evidence: _____________________________________________________________
 2. [ ] PASS  [ ] FAIL — Each board identity is stable across live queries.
    Evidence: _____________________________________________________________
@@ -108,7 +108,7 @@ Overall preflight gate: [ ] PASS  [ ] FAIL
 ## D. Causal smoke
 
 - [ ] PASS  [ ] FAIL — 32 planned smoke missions accounted for across all four
-  algorithms, Eager/B4, two loads, two traces, four boards/workers.
+  algorithms, Eager/B4, two loads, two traces, three boards/workers.
 - [ ] PASS  [ ] FAIL — Second invocation resumed and revalidated completed jobs
   without recomputing/overwriting them.
 - [ ] PASS  [ ] FAIL — Every promoted call has clean parity and exact board/
@@ -117,7 +117,7 @@ Overall preflight gate: [ ] PASS  [ ] FAIL
   releases during compute occur where expected; other robots continue.
 - [ ] PASS  [ ] FAIL — No assignment predates release; movement completion
   arithmetic and final mission elapsed arithmetic are exact.
-- [ ] PASS  [ ] FAIL — Four pinned workers remained mapped one-to-one to four
+- [ ] PASS  [ ] FAIL — Three pinned workers remained mapped one-to-one to three
   boards with no hidden numerical oversubscription.
 
 Smoke report: `study/native_gates/smoke/causal_smoke_report.json`

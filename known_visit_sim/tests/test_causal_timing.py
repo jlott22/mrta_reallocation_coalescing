@@ -31,7 +31,10 @@ from known_visit_sim.core.timing import (
     ZeroComputeTimingProvider,
 )
 from known_visit_sim.core.types import AllocationDecision, TrialScenario, manhattan
-from known_visit_sim.run_causal_trials import run_causal_manifest_job
+from known_visit_sim.run_causal_trials import (
+    _positive_release_times,
+    run_causal_manifest_job,
+)
 from study.causal.model import (
     BoardBinding,
     CausalConfig,
@@ -328,6 +331,21 @@ class CausalComputeTests(unittest.TestCase):
         with self.assertRaisesRegex(CausalTimingError, "parity"):
             run_probe(1, [(1, 2)], [0.0], BadParityProvider({"00": 0.2}))
 
+    def test_primary_failure_is_not_masked_by_cleanup_failure(self) -> None:
+        class FailingProvider(DeterministicTimingProvider):
+            def measure_group(self, calls):
+                raise RuntimeError("primary measurement failure")
+
+            def end_mission(self):
+                raise RuntimeError("cleanup failure")
+
+        with self.assertRaisesRegex(RuntimeError, "primary measurement") as caught:
+            run_probe(1, [(1, 2)], [0.0], FailingProvider({"00": 0.2}))
+        self.assertEqual(
+            caught.exception.cleanup_failure,
+            "RuntimeError: cleanup failure",
+        )
+
     def test_true_parity_flag_cannot_hide_a_mismatched_device_result(self) -> None:
         class LyingProvider(DeterministicTimingProvider):
             def measure_group(self, calls):
@@ -614,6 +632,16 @@ class CausalMovementAndMetricTests(unittest.TestCase):
 
 
 class CausalRawOutputTests(unittest.TestCase):
+    def test_unreleased_incomplete_rows_do_not_break_release_metrics(self) -> None:
+        rows = [
+            {"release_time_s": 0.0},
+            {"release_time_s": 2.5},
+            {"release_time_s": None},
+            {},
+        ]
+
+        self.assertEqual(_positive_release_times(rows), [2.5])
+
     def test_manifest_adapter_writes_canonical_causal_tables(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

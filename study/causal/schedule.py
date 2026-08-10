@@ -1,4 +1,4 @@
-"""Deterministic paired-block scheduling across four stable boards."""
+"""Deterministic paired-block scheduling across three stable boards."""
 
 from __future__ import annotations
 
@@ -72,8 +72,8 @@ def plan_paired_blocks(config: CausalConfig, *, zero_compute: bool = False) -> l
         board = config.boards[worker_index]
         core_id = config.core_affinities[worker_index]
         # Cycle policy order independently within each board.  For the final
-        # 75 blocks/board and five policies, every policy occupies every order
-        # position exactly 15 times on each physical board.
+        # 100 blocks/board and five policies, every policy occupies every order
+        # position exactly 20 times on each physical board.
         rotation = board_rotation_count[worker_index] % policy_count
         board_rotation_count[worker_index] += 1
         ordered_policies = config.policies[rotation:] + config.policies[:rotation]

@@ -74,7 +74,6 @@ REQUIRED_SUMMARY_INTEGER_METRICS = {
 
 REQUIRED_SUMMARY_FLOAT_METRICS = {
     "movement_time_s",
-    "other_execution_time_s",
     "simulated_execution_time_s",
     "cumulative_allocator_time_s",
     "mission_elapsed_time_s",
@@ -169,14 +168,37 @@ def _git_metadata(
 
 def _source_files(repo_root: Path) -> dict[str, str]:
     files: dict[str, str] = {}
+    transient_study_roots = {
+        "__pycache__",
+        "frozen",
+        "generated",
+        "native_device_leases",
+        "native_gates",
+        "output",
+    }
     for source_root_name in ("known_visit_sim", "study"):
         source_root = repo_root / source_root_name
         if not source_root.is_dir():
             continue
-        for path in sorted(source_root.rglob("*.py")):
+        source_paths: list[Path] = []
+        for directory, names, filenames in os.walk(source_root, topdown=True):
+            names[:] = sorted(
+                name
+                for name in names
+                if name != "__pycache__"
+                and not (
+                    source_root_name == "study"
+                    and Path(directory) == source_root
+                    and name in transient_study_roots
+                )
+            )
+            source_paths.extend(
+                Path(directory) / filename
+                for filename in sorted(filenames)
+                if filename.endswith(".py")
+            )
+        for path in sorted(source_paths):
             relative = path.relative_to(repo_root)
-            if "__pycache__" in relative.parts:
-                continue
             files[relative.as_posix()] = sha256_file(path)
     return files
 
@@ -686,7 +708,6 @@ def validate_job_outputs(job: CampaignJob, directory: Path) -> dict[str, Any]:
     ):
         raise OutputValidationError("max_robot_steps cannot exceed total_team_steps")
     movement = _finite_number(summary["movement_time_s"], "movement_time_s")
-    other = _finite_number(summary["other_execution_time_s"], "other_execution_time_s")
     simulated = _finite_number(summary["simulated_execution_time_s"], "simulated_execution_time_s")
     allocator = _finite_number(
         summary["cumulative_allocator_time_s"], "cumulative_allocator_time_s"
@@ -700,9 +721,22 @@ def validate_job_outputs(job: CampaignJob, directory: Path) -> dict[str, Any]:
             "allocator parallel critical path cannot exceed cumulative allocator time"
         )
     mission = _finite_number(summary["mission_elapsed_time_s"], "mission_elapsed_time_s")
-    _close(simulated, movement + other, "simulated_execution_time_s")
-    _close(mission, simulated + allocator_parallel, "mission_elapsed_time_s")
-    if "mission_elapsed_time_serial_compute_s" in summary:
+    if summary.get("causal_timing_enabled") is True:
+        # In the causal scheduler, movement and per-robot allocation intervals
+        # overlap on the event clock.  ``movement_time_s`` is processor-style
+        # summed movement work, while mission elapsed time is the timestamp of
+        # final task completion.  The legacy additive identity is therefore
+        # neither defined nor scientifically valid for schema-v2 causal rows.
+        _close(mission, simulated, "mission_elapsed_time_s")
+    else:
+        if "other_execution_time_s" not in summary:
+            raise OutputValidationError(
+                "legacy trial_summary.json missing metric other_execution_time_s"
+            )
+        other = _finite_number(summary["other_execution_time_s"], "other_execution_time_s")
+        _close(simulated, movement + other, "simulated_execution_time_s")
+        _close(mission, simulated + allocator_parallel, "mission_elapsed_time_s")
+    if summary.get("causal_timing_enabled") is not True and "mission_elapsed_time_serial_compute_s" in summary:
         _close(
             _finite_number(
                 summary["mission_elapsed_time_serial_compute_s"],

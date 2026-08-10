@@ -1,4 +1,4 @@
-"""Exactly-four-worker native causal campaign orchestrator."""
+"""Exactly-three-worker native causal campaign orchestrator."""
 
 from __future__ import annotations
 
@@ -27,7 +27,14 @@ from study.manifests import canonical_json_bytes, sha256_file
 from .freeze import _source_hash
 from .gates import GateError, verify_sealed_gate
 from .locks import OUTPUT_LOCK_KIND, OUTPUT_LOCK_SCHEMA_VERSION
-from .model import BoardBinding, CausalConfig, CausalJob, PairedBlock, load_causal_config
+from .model import (
+    PUBLICATION_WORKER_COUNT,
+    BoardBinding,
+    CausalConfig,
+    CausalJob,
+    PairedBlock,
+    load_causal_config,
+)
 from .outputs import CausalOutputError, completion_fingerprint, validate_causal_outputs
 from .schedule import plan_paired_blocks, validate_schedule
 
@@ -40,7 +47,15 @@ THREAD_ENV = {
     "VECLIB_MAXIMUM_THREADS": "1",
     "BLIS_NUM_THREADS": "1",
 }
-SCIENTIFIC_STAGES = frozenset({"smoke", "calibrate_rates", "calibrate_timeout", "variance", "full"})
+SCIENTIFIC_STAGES = frozenset({
+    "smoke",
+    "calibrate_rates",
+    "calibrate_timeout",
+    "variance",
+    "full",
+    "publication_core",
+    "publication_bounded",
+})
 
 
 class CampaignError(RuntimeError):
@@ -195,12 +210,21 @@ def _validate_full_freeze(config: CausalConfig, source: Mapping[str, Any]) -> di
 def validate_campaign_gates(config: CausalConfig, source: Mapping[str, Any], zero_compute: bool) -> dict[str, Any] | None:
     if config.stage in SCIENTIFIC_STAGES and config.development_override:
         raise GateError("scientific stages cannot use development_override")
-    if config.stage in SCIENTIFIC_STAGES and len(config.boards) != 4:
-        raise GateError("scientific stages require exactly four boards/workers")
-    logical_cores = os.cpu_count() or 1
-    if config.stage in SCIENTIFIC_STAGES and 4 > math.floor(0.75 * logical_cores):
+    if (
+        config.stage in SCIENTIFIC_STAGES
+        and len(config.boards) != PUBLICATION_WORKER_COUNT
+    ):
         raise GateError(
-            "four publication workers would exceed the 75%-of-logical-cores safety cap"
+            "scientific stages require exactly "
+            f"{PUBLICATION_WORKER_COUNT} boards/workers"
+        )
+    logical_cores = os.cpu_count() or 1
+    if (
+        config.stage in SCIENTIFIC_STAGES
+        and PUBLICATION_WORKER_COUNT > math.floor(0.75 * logical_cores)
+    ):
+        raise GateError(
+            "publication workers would exceed the 75%-of-logical-cores safety cap"
         )
     if config.raw["campaign"].get("require_clean_source", config.stage == "full") and source["relevant_dirty"]:
         raise GateError("relevant source tree is dirty; commit or explicitly use a development config")
@@ -484,6 +508,12 @@ def _worker_entry(
                             "worker": metadata,
                             "retry_index": retry_index,
                         }
+                        diagnostics = getattr(error, "diagnostics", None)
+                        if isinstance(diagnostics, Mapping):
+                            failure["diagnostics"] = dict(diagnostics)
+                        cleanup_failure = getattr(error, "cleanup_failure", None)
+                        if isinstance(cleanup_failure, str):
+                            failure["cleanup_failure"] = cleanup_failure
                         _atomic_json(attempt / "failure.json", failure)
                         result_queue.put({
                             "type": "attempt_failure", "status": "technical_failure",
@@ -636,8 +666,14 @@ def run_campaign(
         blocks = [block for block in blocks if block.worker_index < selected_workers]
     else:
         selected_workers = len(config.boards)
-    if not config.development_override and selected_workers != 4:
-        raise CampaignError("native causal campaign must launch exactly four workers")
+    if (
+        not config.development_override
+        and selected_workers != PUBLICATION_WORKER_COUNT
+    ):
+        raise CampaignError(
+            "native causal campaign must launch exactly "
+            f"{PUBLICATION_WORKER_COUNT} workers"
+        )
     config.output_root.mkdir(parents=True, exist_ok=True)
     schedule_path = config.output_root / ("zero_compute_schedule.json" if zero_compute else "causal_schedule.json")
     schedule_record = _build_schedule_record(
@@ -665,7 +701,10 @@ def run_campaign(
         ),
         "schedule_sha256": schedule_summary["schedule_sha256"],
         "worker_count": selected_workers,
-        "exactly_four_publication_workers": selected_workers == 4,
+        "required_publication_workers": PUBLICATION_WORKER_COUNT,
+        "exact_publication_worker_count": (
+            selected_workers == PUBLICATION_WORKER_COUNT
+        ),
         "board_bindings": [board.to_dict() for board in config.boards[:selected_workers]],
         "core_affinities": list(config.core_affinities[:selected_workers]),
         "thread_environment": THREAD_ENV,
@@ -748,7 +787,7 @@ def run_campaign(
         # All workers receive SIGTERM together.  Give the Python handler enough
         # time to emerge from one configured serial-call timeout and execute
         # provider/lease/output-lock cleanup, using one shared deadline rather
-        # than multiplying the grace period by four workers.
+        # than multiplying the grace period by the worker count.
         grace_seconds = (
             max(10.0, config.device_timeout_seconds + 5.0)
             if interrupted else 10.0

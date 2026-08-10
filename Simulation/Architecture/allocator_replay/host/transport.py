@@ -10,16 +10,129 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from allocator_replay.capture.codec import canonical_json_bytes
+from allocator_replay.capture.codec import canonical_json_bytes, decode_value
 from allocator_replay.device.common.replay_fingerprint import logical_sha256
 
 
 PROTOCOL = "AR1"
 DEFAULT_BAUDRATE = 115_200
 CHUNK_BYTES = 384
-PART_PAYLOAD_BYTES = 768
+PART_PAYLOAD_BYTES = 384
 ARRAY_PART_RAW_BYTES = 384
 TRANSFER_RETRIES = 3
+
+
+_CAUSAL_MESSAGE_FIELDS = (
+    "type",
+    "sender",
+    "x",
+    "y",
+    "owner",
+    "winner",
+    "significance",
+    "bid",
+    "value",
+    "timestamp",
+    "order",
+    "path_cells",
+    "path_size",
+    "bundle_cells",
+    "bundle_size",
+    "released",
+    "released_winner",
+    "released_owner",
+    "released_bid",
+    "released_value",
+    "cell",
+)
+_CAUSAL_COMMON_MESSAGE_FIELDS = {
+    "type",
+    "sender",
+    "path_cells",
+    "path_size",
+    "bundle_cells",
+    "bundle_size",
+}
+
+
+def _compact_cell_sequence(value: Any) -> list[int]:
+    result: list[int] = []
+    for cell in value or ():
+        if isinstance(cell, dict):
+            result.extend((int(cell["x"]), int(cell["y"])))
+        else:
+            result.extend((int(cell[0]), int(cell[1])))
+    return result
+
+
+def _compact_message_fields(
+    payload: dict[str, Any], *, common: bool
+) -> tuple[int, list[Any]]:
+    mask = 0
+    values: list[Any] = []
+    for index, name in enumerate(_CAUSAL_MESSAGE_FIELDS):
+        if (name in _CAUSAL_COMMON_MESSAGE_FIELDS) != common or name not in payload:
+            continue
+        value = payload[name]
+        if name in {"path_cells", "bundle_cells"}:
+            value = _compact_cell_sequence(value)
+        elif name == "cell" and value is not None:
+            value = [int(value[0]), int(value[1])]
+        mask |= 1 << index
+        values.append(value)
+    return mask, values
+
+
+def _compact_causal_events(events: Any) -> list[Any]:
+    """Pack verbose captured causal events without changing their order/effect.
+
+    Consecutive allocator snapshot entries share type/sender/path metadata.
+    Keeping that metadata once per group materially reduces transient RP2040
+    heap while each message is still reconstructed and applied individually.
+    """
+
+    decoded = decode_value(events) or []
+    if not isinstance(decoded, (list, tuple)):
+        return decoded
+    result: list[Any] = []
+    group_key: bytes | None = None
+    group: list[Any] | None = None
+    for event in decoded:
+        if not isinstance(event, dict):
+            result.append([3, "", event])
+            group_key = None
+            group = None
+            continue
+        kind = str(event.get("kind", ""))
+        payload = decode_value(event.get("payload", {}))
+        if kind == "allocator_message" and isinstance(payload, dict):
+            common_mask, common_values = _compact_message_fields(
+                payload, common=True
+            )
+            row_mask, row_values = _compact_message_fields(
+                payload, common=False
+            )
+            key = canonical_json_bytes([common_mask, common_values])
+            if group is None or key != group_key:
+                group = [0, common_mask, common_values, []]
+                result.append(group)
+                group_key = key
+            group[3].append([row_mask, row_values])
+            continue
+        group_key = None
+        group = None
+        if kind == "allocation_epoch" and isinstance(payload, dict):
+            result.append(
+                [
+                    1,
+                    int(payload.get("epoch_index", -1)),
+                    str(payload.get("trigger_reason", "")),
+                    _compact_cell_sequence(payload.get("admitted_cells", ())),
+                ]
+            )
+        else:
+            result.append([3, kind, payload])
+    return result
 
 
 class ReplayTransportError(RuntimeError):
@@ -745,10 +858,16 @@ class SerialReplayDevice:
                     if retry + 1 == TRANSFER_RETRIES:
                         raise
         self._write_line(PROTOCOL, "PEND")
-        fields = self._read_protocol(
-            deadline=time.monotonic() + 8.0,
-            expected={"PART"},
-        )
+        try:
+            fields = self._read_protocol(
+                deadline=time.monotonic() + 8.0,
+                expected={"PART"},
+            )
+        except ReplayMemoryError as exc:
+            raise ReplayMemoryError(
+                f"{exc}; part={section}.{name} kind={kind} "
+                f"payload_bytes={len(payload)}"
+            ) from exc
         if len(fields) < 4 or fields[2] != section or fields[3] != encoded_name:
             raise ReplayTransportError("wrong PART response")
 
@@ -759,10 +878,30 @@ class SerialReplayDevice:
             else fixture
         )
         state = projected["pre_state"]
+        # Persistent call metadata can grow with delivered allocator events.
+        # Keep it out of the one-piece header just like pre_state so the
+        # controller never needs a multi-kilobyte contiguous header buffer.
+        root_parts = {
+            name: projected[name]
+            for name in (
+                "deleted",
+                "events",
+                "resume_state",
+                "state_aliases",
+            )
+            if name in projected
+        }
+        if (
+            projected.get("setup_mode") == "causal_context"
+            and "events" in root_parts
+        ):
+            root_parts["events"] = _compact_causal_events(
+                root_parts["events"]
+            )
         header = {
             key: value
             for key, value in projected.items()
-            if key != "pre_state"
+            if key != "pre_state" and key not in root_parts
         }
         header["pre_state"] = {
             "robot_attrs": {},
@@ -772,6 +911,30 @@ class SerialReplayDevice:
             "allocator_attrs": {},
         }
         self._load_header(header)
+        for name, value in root_parts.items():
+            encoded_size = len(canonical_json_bytes(value))
+            if isinstance(value, list) and encoded_size > PART_PAYLOAD_BYTES:
+                for index, batch in enumerate(self._batch(value)):
+                    self._send_part(
+                        "__fixture__",
+                        name,
+                        "json_list_items",
+                        index == 0,
+                        batch,
+                    )
+            elif isinstance(value, dict) and encoded_size > PART_PAYLOAD_BYTES:
+                for index, batch in enumerate(self._batch(list(value.items()))):
+                    self._send_part(
+                        "__fixture__",
+                        name,
+                        "json_dict_items",
+                        index == 0,
+                        batch,
+                    )
+            else:
+                self._send_part(
+                    "__fixture__", name, "json_value", True, value
+                )
         for section in (
             "robot_attrs",
             "views",

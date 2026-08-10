@@ -54,7 +54,7 @@ class CBAAAllocator(NativeAllocatorBase):
                 or bid > best_bid + self.EPS
                 or (
                     abs(bid - best_bid) <= self.EPS
-                    and state.targets[slot] < state.targets[best_slot]
+                    and self._cell_precedes(slot, best_slot)
                 )
             ):
                 best_slot = slot
@@ -71,6 +71,16 @@ class CBAAAllocator(NativeAllocatorBase):
         )
         self.last_call_path = "allocated"
         return self.goal_cell()
+
+    def _cell_precedes(self, slot, other_slot):
+        """Match the desktop allocator's lexicographic ``(x, y)`` tie-break."""
+
+        state = self.state
+        cell = state.decode_cell(state.targets[slot])
+        other = state.decode_cell(state.targets[other_slot])
+        return cell[0] < other[0] or (
+            cell[0] == other[0] and cell[1] < other[1]
+        )
 
     def handle_message(self, message):
         if not isinstance(message, dict):

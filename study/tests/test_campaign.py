@@ -15,6 +15,7 @@ from study.campaign import (
     CampaignOrchestrator,
     OutputValidationError,
     _default_executor,
+    _source_files,
     effective_workers,
     validate_job_outputs,
     worker_cap,
@@ -23,6 +24,20 @@ from study.tests.helpers import test_config, write_config, write_valid_outputs
 
 
 class CampaignTests(unittest.TestCase):
+    def test_source_files_exclude_transient_study_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tracked = root / "study" / "module.py"
+            generated = root / "study" / "output" / "attempt" / "generated.py"
+            tracked.parent.mkdir(parents=True)
+            generated.parent.mkdir(parents=True)
+            tracked.write_text("VALUE = 1\n", encoding="utf-8")
+            generated.write_text("VALUE = 2\n", encoding="utf-8")
+
+            files = _source_files(root)
+
+            self.assertEqual({"study/module.py"}, set(files))
+
     def test_worker_limit_never_exceeds_three_quarters(self) -> None:
         self.assertEqual(16, worker_cap(22))
         self.assertEqual(6, worker_cap(8))
@@ -142,6 +157,24 @@ class CampaignTests(unittest.TestCase):
             write_valid_outputs(job, valid)
             validated = validate_job_outputs(job, valid)
             self.assertTrue(validated["all_tasks_completed"])
+
+            causal = root / "causal"
+            causal.mkdir()
+            write_valid_outputs(job, causal)
+            causal_summary_path = causal / "trial_summary.json"
+            causal_summary = json.loads(
+                causal_summary_path.read_text(encoding="utf-8")
+            )
+            causal_summary["schema_version"] = 2
+            causal_summary["causal_timing_enabled"] = True
+            causal_summary.pop("other_execution_time_s")
+            causal_summary["simulated_execution_time_s"] = causal_summary[
+                "mission_elapsed_time_s"
+            ]
+            causal_summary_path.write_text(
+                json.dumps(causal_summary), encoding="utf-8"
+            )
+            self.assertTrue(validate_job_outputs(job, causal)["all_tasks_completed"])
 
             task_bad = root / "task_bad"
             task_bad.mkdir()

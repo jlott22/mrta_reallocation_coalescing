@@ -987,8 +987,24 @@ def _apply_part(fixture, meta, raw):
     name = meta["name"]
     kind = meta["kind"]
     reset = meta["reset"]
-    target = fixture["pre_state"][section]
     payload = json.loads(raw.decode("utf-8"))
+    if section == "__fixture__":
+        if kind == "json_value":
+            fixture[name] = payload
+            return
+        if kind == "json_list_items":
+            if reset:
+                fixture[name] = []
+            fixture[name].extend(payload)
+            return
+        if kind == "json_dict_items":
+            if reset:
+                fixture[name] = {}
+            for key, value in payload:
+                fixture[name][key] = value
+            return
+        raise ValueError("unknown fixture-root part kind")
+    target = fixture["pre_state"][section]
     if kind == "value":
         target[name] = decode_value(payload)
         return
@@ -1176,7 +1192,7 @@ def main():
                     raise ValueError("fixture length mismatch")
                 if _crc32(fixture_buffer) != fixture_meta["crc32"]:
                     raise ValueError("fixture crc mismatch")
-                fixture = json.loads(bytes(fixture_buffer).decode("utf-8"))
+                fixture = json.loads(fixture_buffer.decode("utf-8"))
                 if fixture["fixture_id"] != fixture_meta["fixture_id"]:
                     raise ValueError("fixture id mismatch")
                 # Offline legacy fixtures need their generated replay class
@@ -1222,7 +1238,7 @@ def main():
                     raise ValueError("part length mismatch")
                 if _crc32(part_buffer) != part_meta["crc32"]:
                     raise ValueError("part crc mismatch")
-                _apply_part(fixture, part_meta, bytes(part_buffer))
+                _apply_part(fixture, part_meta, part_buffer)
                 section = part_meta["section"]
                 encoded_name = binascii.b2a_base64(
                     part_meta["name"].encode("utf-8")

@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping, Sequence
 from allocator_replay.device.native.collaborative import create_persistent_runtime
 
 from .binding import (
+    REQUIRED_HARDWARE_WORKERS,
     BoardFingerprint,
     StableBoardBinding,
     bind_hardware_workers,
@@ -25,7 +26,10 @@ from .types import DecisionSignature, FrozenCall, MissionBinding, PRIMARY_ALGORI
 
 
 PREFLIGHT_REQUIREMENTS: tuple[tuple[str, str], ...] = (
-    ("four_unique_boards", "Four unique intended RP2040 boards detected"),
+    (
+        "required_unique_boards",
+        f"{REQUIRED_HARDWARE_WORKERS} unique intended RP2040 boards detected",
+    ),
     ("stable_identity", "Board identity is stable across live queries"),
     ("sealed_build", "Firmware/build/module hashes match deployment"),
     ("native_runtime", "MicroPython/native runtime version is correct"),
@@ -128,12 +132,12 @@ class CausalPreflightRecorder:
                 expected_firmware_sha256=expected_firmware_sha256,
             )
         except Exception as exc:
-            self.fail("four_unique_boards", error=str(exc))
+            self.fail("required_unique_boards", error=str(exc))
             raise
         self.fingerprints = [item.fingerprint for item in bindings]
-        production_count = len(bindings) == 4
+        production_count = len(bindings) == REQUIRED_HARDWARE_WORKERS
         self.set(
-            "four_unique_boards",
+            "required_unique_boards",
             "PASS" if production_count else "PENDING",
             board_ids=[item.board_id for item in bindings],
             development_override=bool(development_override),
@@ -207,10 +211,11 @@ class CausalPreflightRecorder:
         checks = [self._checks[check_id].as_dict() for check_id in REQUIRED_CHECK_IDS]
         statuses = {item["check_id"]: item["status"] for item in checks}
         identities = [item.as_dict() for item in self.fingerprints]
-        exact_native_four = (
+        exact_native_cohort = (
             self.native_hardware
-            and len(identities) == 4
-            and len({item["device_id"] for item in identities}) == 4
+            and len(identities) == REQUIRED_HARDWARE_WORKERS
+            and len({item["device_id"] for item in identities})
+            == REQUIRED_HARDWARE_WORKERS
             and all(
                 _native_implementation(item["implementation"])
                 and bool(item["build_id"])
@@ -225,7 +230,7 @@ class CausalPreflightRecorder:
                 for item in identities
             )
         )
-        hardware_valid = exact_native_four and all(
+        hardware_valid = exact_native_cohort and all(
             statuses[item] == "PASS" for item in REQUIRED_CHECK_IDS
         )
         unsigned: dict[str, Any] = {
@@ -274,9 +279,14 @@ def verify_preflight_report(
     if not bool(value.get("native_hardware")) or not bool(value.get("hardware_valid")):
         raise BoardBindingError("report is not valid native hardware evidence")
     boards = value.get("boards")
-    if not isinstance(boards, list) or len(boards) != 4:
-        raise BoardBindingError("preflight must seal exactly four boards")
-    if len({str(item.get("device_id")) for item in boards}) != 4:
+    if not isinstance(boards, list) or len(boards) != REQUIRED_HARDWARE_WORKERS:
+        raise BoardBindingError(
+            f"preflight must seal exactly {REQUIRED_HARDWARE_WORKERS} boards"
+        )
+    if (
+        len({str(item.get("device_id")) for item in boards})
+        != REQUIRED_HARDWARE_WORKERS
+    ):
         raise BoardBindingError("preflight board identities are not unique")
     if _hash(boards) != value.get("board_binding_sha256"):
         raise BoardBindingError("preflight board binding hash mismatch")

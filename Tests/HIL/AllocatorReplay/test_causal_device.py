@@ -56,7 +56,9 @@ from allocator_replay.device.native.collaborative import runtime as native_runti
 from allocator_replay.coalescing.build import (  # noqa: E402
     build_device_bundle,
 )
+from allocator_replay.capture.codec import canonical_json_bytes  # noqa: E402
 from allocator_replay.host.emulator import LoopbackReplayDevice  # noqa: E402
+from allocator_replay.host.transport import _compact_causal_events  # noqa: E402
 from known_visit_sim.algorithms.registry import load_allocator_class  # noqa: E402
 from known_visit_sim.comms.models import IdealModel  # noqa: E402
 from known_visit_sim.config import (  # noqa: E402
@@ -345,28 +347,28 @@ class CausalSessionTests(unittest.TestCase):
 
 
 class BoardBindingAndLeaseTests(unittest.TestCase):
-    def test_production_binding_requires_exactly_four_and_stable_ids(self) -> None:
-        devices = [DeterministicVirtualDevice(f"board-{index}") for index in range(4)]
+    def test_production_binding_requires_exactly_three_and_stable_ids(self) -> None:
+        devices = [DeterministicVirtualDevice(f"board-{index}") for index in range(3)]
         try:
             bindings = bind_hardware_workers(devices)
-            self.assertEqual([item.worker_index for item in bindings], [0, 1, 2, 3])
+            self.assertEqual([item.worker_index for item in bindings], [0, 1, 2])
             self.assertEqual([item.board_id for item in bindings], sorted(item.board_id for item in bindings))
-            with self.assertRaisesRegex(BoardBindingError, "exactly four"):
-                bind_hardware_workers(devices[:3])
+            with self.assertRaisesRegex(BoardBindingError, "exactly 3"):
+                bind_hardware_workers(devices[:2])
             duplicate = DeterministicVirtualDevice("board-0")
             with self.assertRaisesRegex(BoardBindingError, "duplicate"):
-                bind_hardware_workers(devices[:3] + [duplicate])
+                bind_hardware_workers(devices[:2] + [duplicate])
             duplicate.close()
         finally:
             for item in devices:
                 item.close()
 
     def test_explicit_mapping_is_by_identity_not_serial_order(self) -> None:
-        devices = [DeterministicVirtualDevice(f"id-{index}") for index in range(4)]
+        devices = [DeterministicVirtualDevice(f"id-{index}") for index in range(3)]
         try:
-            mapping = {0: "id-3", 1: "id-1", 2: "id-0", 3: "id-2"}
+            mapping = {0: "id-2", 1: "id-1", 2: "id-0"}
             bindings = bind_hardware_workers(devices, explicit_mapping=mapping)
-            self.assertEqual([item.board_id for item in bindings], ["id-3", "id-1", "id-0", "id-2"])
+            self.assertEqual([item.board_id for item in bindings], ["id-2", "id-1", "id-0"])
         finally:
             for item in devices:
                 item.close()
@@ -412,7 +414,7 @@ class BoardBindingAndLeaseTests(unittest.TestCase):
             DeterministicVirtualDevice(
                 f"firmware-{index}", firmware_sha256="actual-firmware"
             )
-            for index in range(4)
+            for index in range(3)
         ]
         try:
             with self.assertRaisesRegex(BoardBindingError, "firmware hash mismatch"):
@@ -539,6 +541,240 @@ class NativeFourContextSlotTests(unittest.TestCase):
         self.assertEqual(runtime.state.claim_value[slot], -1.0)
         self.assertEqual(messages, [])
 
+    def test_acbba_refresh_matching_last_sent_is_not_rebroadcast(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "ACBBA", ROBOT_IDS[0]
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, copy.deepcopy(pre_state))
+        cells = ((1, 1), (3, 3), (5, 5))
+        slots = [runtime.state.slot_for_cell(cell) for cell in cells]
+        runtime.allocator.path = list(slots)
+        runtime._pre_choose_path = list(slots)
+        runtime._post_choose_path = list(slots)
+        runtime.synchronized_authoritative_state = True
+        runtime.behavior_last_sent = []
+        for index, (slot, cell) in enumerate(zip(slots, cells), start=1):
+            runtime.state.set_claim(
+                slot, runtime.state.robot_index, -float(index), index
+            )
+            message = {
+                "type": "acbba_entry",
+                "sender": ROBOT_IDS[0],
+                "x": cell[0],
+                "y": cell[1],
+                "winner": ROBOT_IDS[0],
+                "bid": -float(index),
+                "timestamp": index,
+            }
+            runtime.state.queue_message(message)
+            runtime.behavior_last_sent.append(
+                {
+                    "cell": [cell[0], cell[1]],
+                    "owner": ROBOT_IDS[0],
+                    "value": -float(index),
+                    "timestamp": index,
+                }
+            )
+
+        messages = runtime.drain_messages()
+
+        self.assertEqual(messages, [])
+
+    def test_collision_mechanism_survives_allocation_epoch_snapshot(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "PI", ROBOT_IDS[0]
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, copy.deepcopy(pre_state))
+        runtime.last_call_had_epoch_reallocation = True
+        runtime.allocator.last_call_path = "collision_replan"
+
+        post_state = runtime.snapshot_minimal()
+
+        behavior = post_state["allocator_attrs"][
+            "native_collaborative_resume"
+        ]["behavior"]
+        self.assertEqual(behavior["call_mechanism"], "collision_replan")
+
+    def test_hipc_unobserved_peers_are_not_reported_as_dropped(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "HIPC", ROBOT_IDS[0]
+        )
+        pre_state["views"]["peer_positions"] = {}
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+
+        self.assertEqual(runtime.allocator._team_indices(), [0])
+        self.assertEqual(runtime.allocator.dropped_peers, [])
+
+    def test_hipc_equal_score_uses_desktop_xy_tie_break(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "HIPC", ROBOT_IDS[0]
+        )
+        tasks = [[1, 4], [6, 7], [9, 4]]
+        config["all_tasks"] = tasks
+        pre_state["views"]["all_tasks"] = tasks
+        pre_state["views"]["active_tasks"] = tasks
+        pre_state["views"]["target_p"] = [1.0] * len(tasks)
+        pre_state["views"]["peer_positions"] = {}
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+
+        runtime.choose_goal()
+
+        path = [
+            runtime.state.decode_cell(runtime.state.targets[slot])
+            for slot in runtime.allocator.path
+        ]
+        self.assertEqual(path, [(1, 4), (6, 7), (9, 4)])
+
+    def test_pi_equal_cost_inclusion_uses_desktop_xy_tie_break(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "PI", ROBOT_IDS[0]
+        )
+        tasks = [[1, 4], [6, 7], [9, 4]]
+        config["all_tasks"] = tasks
+        pre_state["views"]["all_tasks"] = tasks
+        pre_state["views"]["active_tasks"] = tasks
+        pre_state["views"]["target_p"] = [1.0] * len(tasks)
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+
+        runtime.choose_goal()
+
+        path = [
+            runtime.state.decode_cell(runtime.state.targets[slot])
+            for slot in runtime.allocator.path
+        ]
+        self.assertEqual(path, [(1, 4), (9, 4), (6, 7)])
+
+    def test_pi_choose_clears_invalid_peer_claims(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "PI", ROBOT_IDS[0]
+        )
+        invalid = (3, 3)
+        pre_state["views"]["searched"] = {invalid}
+        pre_state["robot_attrs"].update(
+            {
+                "pi_owner_by_cell": {invalid: ROBOT_IDS[1]},
+                "pi_significance_by_cell": {invalid: 2.0},
+                "pi_time_by_cell": {invalid: 4.0},
+                "pi_path": [],
+            }
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+        slot = runtime.state.slot_for_cell(invalid)
+        self.assertEqual(runtime.state.claim_owner[slot], 1)
+
+        runtime.choose_goal()
+
+        self.assertEqual(runtime.state.claim_owner[slot], -1)
+
+    def test_cbaa_equal_bid_uses_desktop_xy_tie_break(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "CBAA", ROBOT_IDS[0]
+        )
+        tasks = [[1, 4], [4, 1]]
+        config["all_tasks"] = tasks
+        pre_state["views"]["all_tasks"] = tasks
+        pre_state["views"]["active_tasks"] = tasks
+        pre_state["views"]["target_p"] = [1.0] * len(tasks)
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+
+        decision = runtime.choose_goal()
+
+        self.assertEqual(decision.goal, (1, 4))
+
+    def test_acbba_equal_bid_uses_desktop_xy_tie_break(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "ACBBA", ROBOT_IDS[0]
+        )
+        tasks = [[0, 1], [1, 4], [6, 7], [9, 4]]
+        config["all_tasks"] = tasks
+        pre_state["views"]["all_tasks"] = tasks
+        pre_state["views"]["active_tasks"] = tasks
+        pre_state["views"]["target_p"] = [1.0] * len(tasks)
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+
+        runtime.choose_goal()
+
+        path = [
+            runtime.state.decode_cell(runtime.state.targets[slot])
+            for slot in runtime.allocator.path
+        ]
+        self.assertEqual(path, [(0, 1), (1, 4), (6, 7)])
+
+    def test_acbba_no_time_sentinel_survives_rp2040_float_rounding(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "ACBBA", ROBOT_IDS[0]
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+
+        normalized = runtime._normalize_last_sent(
+            {
+                (1, 1): (
+                    "acbba_entry",
+                    None,
+                    -1.0e18,
+                    -999999984306749440,
+                )
+            }
+        )
+
+        self.assertEqual(normalized[0]["timestamp"], -1_000_000_000_000_000_000)
+
+    def test_compact_causal_events_preserve_effect_and_reduce_payload(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "PI", ROBOT_IDS[0]
+        )
+        path = [(1, 1), (3, 3), (5, 5)]
+        events = []
+        for snapshot in range(14):
+            sender = ROBOT_IDS[1 + snapshot % 3]
+            for order, cell in enumerate(path):
+                events.append(
+                    {
+                        "kind": "allocator_message",
+                        "payload": {
+                            "type": "pi_entry",
+                            "sender": sender,
+                            "x": cell[0],
+                            "y": cell[1],
+                            "owner": sender,
+                            "significance": float(order + 1),
+                            "timestamp": float(snapshot + order + 1),
+                            "order": order,
+                            "path_cells": [
+                                {"x": item[0], "y": item[1]}
+                                for item in path
+                            ],
+                            "path_size": len(path),
+                        },
+                    }
+                )
+        compact = _compact_causal_events(events)
+        self.assertLess(
+            len(canonical_json_bytes(compact)),
+            len(canonical_json_bytes(events)) // 2,
+        )
+
+        verbose_runtime = create_persistent_runtime(config)
+        compact_runtime = create_persistent_runtime(config)
+        verbose_runtime.reset_trial(config, copy.deepcopy(pre_state))
+        compact_runtime.reset_trial(config, copy.deepcopy(pre_state))
+        verbose_runtime.apply_delta({"events": copy.deepcopy(events)})
+        compact_runtime.apply_delta({"events": copy.deepcopy(compact)})
+
+        self.assertEqual(
+            compact_runtime.snapshot_minimal(),
+            verbose_runtime.snapshot_minimal(),
+        )
+
     def test_epoch_reset_times_populated_resident_state_before_checkpoint(self) -> None:
         reset_state = {
             "CBAA": {
@@ -659,6 +895,36 @@ class NativeFourContextSlotTests(unittest.TestCase):
                     self.assertEqual(
                         runtime.allocator.seen_peer_bundle_signature, {}
                     )
+
+    def test_completed_admission_is_active_during_epoch_then_finally_inactive(self) -> None:
+        config, pre_state, event = CausalLoopbackProtocolTests._inputs(
+            "HIPC", ROBOT_IDS[0]
+        )
+        admitted = (3, 3)
+        pre_state["views"]["active_tasks"] = {(1, 1), (5, 5)}
+        pre_state["views"]["searched"] = {admitted}
+        event["payload"]["admitted_cells"] = [admitted]
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, copy.deepcopy(pre_state))
+        slot = runtime.state.slot_for_cell(admitted)
+        observed: dict[str, bool] = {}
+        original_reset = runtime.allocator.on_allocation_epoch
+
+        def inspect_then_reset(reason, cells, epoch_index=None):
+            observed["active"] = runtime.state.is_active(slot)
+            observed["candidate"] = runtime.state.is_candidate(slot)
+            return original_reset(reason, cells, epoch_index)
+
+        runtime.allocator.on_allocation_epoch = inspect_then_reset
+
+        runtime.apply_delta(
+            {"set": copy.deepcopy(pre_state), "events": [copy.deepcopy(event)]}
+        )
+
+        self.assertTrue(observed["active"])
+        self.assertTrue(observed["candidate"])
+        self.assertFalse(runtime.state.is_active(slot))
+        self.assertFalse(runtime.state.is_candidate(slot))
 
 
 class CausalLoopbackProtocolTests(unittest.TestCase):
@@ -825,13 +1091,85 @@ class CausalLoopbackProtocolTests(unittest.TestCase):
                     session.close()
                     device.close()
 
+    def test_large_persistent_event_batch_is_streamed_outside_header(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            device = LoopbackReplayDevice(
+                "causal-large-events", build_root=self.build_root
+            )
+            binding = bind_hardware_workers(
+                [device], development_override=True
+            )[0]
+            session = CausalBoardSession(
+                binding, lock_root=Path(temporary)
+            )
+            headers = []
+            original_load_header = device._load_header
+
+            def capture_header(value):
+                headers.append(copy.deepcopy(value))
+                return original_load_header(value)
+
+            device._load_header = capture_header
+            try:
+                algorithm = "PI"
+                config, pre_state, event = self._inputs(
+                    algorithm, ROBOT_IDS[0]
+                )
+                session.begin_mission(
+                    MissionBinding(
+                        "trial-large-events",
+                        "condition-large-events",
+                        algorithm,
+                        73,
+                        ROBOT_IDS,
+                        config,
+                        {
+                            robot_id: self._inputs(algorithm, robot_id)[1]
+                            for robot_id in ROBOT_IDS
+                        },
+                    )
+                )
+                padding = [
+                    {
+                        "kind": "diagnostic_noop",
+                        "payload": {"index": index, "padding": "x" * 256},
+                    }
+                    for index in range(32)
+                ]
+                call = FrozenCall(
+                    call_id="call-large-events",
+                    group_id="group-large-events",
+                    trial_id="trial-large-events",
+                    logical_robot_id=ROBOT_IDS[0],
+                    algorithm=algorithm,
+                    virtual_start_s=10.0,
+                    device_setup={
+                        "pre_state": pre_state,
+                        "events": [event, *padding],
+                    },
+                    authoritative=self._authoritative_signature(
+                        algorithm, ROBOT_IDS[0]
+                    ),
+                    agx_allocator_time_us=1,
+                )
+
+                measured = session.measure_group((call,))
+
+                self.assertTrue(measured[0].parity_ok)
+                setup_header = headers[-1]
+                self.assertNotIn("events", setup_header)
+                self.assertLess(len(json.dumps(setup_header)), 1024)
+            finally:
+                session.close()
+                device.close()
+
     def test_automated_preflight_exercises_all_checks_but_labels_loopback_pending(self) -> None:
         manifest = json.loads(
             (self.build_root / "manifest.json").read_text(encoding="utf-8")
         )
         devices = [
             LoopbackReplayDevice(f"preflight-{index}", build_root=self.build_root)
-            for index in range(4)
+            for index in range(3)
         ]
         try:
             with tempfile.TemporaryDirectory() as temporary:
@@ -1335,7 +1673,7 @@ class PreflightReportTests(unittest.TestCase):
                 timer_monotonic=True,
                 timer_wraparound_safe=True,
             )
-            for index in range(4)
+            for index in range(3)
         ]
 
     def test_zero_timer_resolution_cannot_be_hardware_valid(self) -> None:
@@ -1349,6 +1687,17 @@ class PreflightReportTests(unittest.TestCase):
         self.assertFalse(report["hardware_valid"])
         self.assertFalse(report["passed"])
         self.assertFalse(report["hardware_validated"])
+
+    def test_reconnect_identity_allows_timer_resolution_jitter(self) -> None:
+        fingerprint = self.native_fingerprints()[0]
+        jittered = replace(
+            fingerprint,
+            timer_resolution_us=fingerprint.timer_resolution_us + 10,
+        )
+        non_monotonic = replace(fingerprint, timer_monotonic=False)
+
+        self.assertEqual(fingerprint.reconnect_key(), jittered.reconnect_key())
+        self.assertNotEqual(fingerprint.reconnect_key(), non_monotonic.reconnect_key())
 
     def test_machine_and_human_reports_are_sealed_and_fail_closed(self) -> None:
         recorder = CausalPreflightRecorder(native_hardware=True)
@@ -1376,7 +1725,7 @@ class PreflightReportTests(unittest.TestCase):
 
     def test_pending_or_virtual_evidence_can_never_be_hardware_valid(self) -> None:
         recorder = CausalPreflightRecorder(native_hardware=False)
-        devices = [DeterministicVirtualDevice(f"virtual-{index}") for index in range(4)]
+        devices = [DeterministicVirtualDevice(f"virtual-{index}") for index in range(3)]
         try:
             recorder.bind_boards(devices)
             report = recorder.report()

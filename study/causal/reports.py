@@ -15,7 +15,7 @@ from typing import Any, Iterable
 from study.manifests import canonical_json_bytes, sha256_file
 
 from .freeze import ANALYSIS_VERSION
-from .model import CausalConfig, load_causal_config
+from .model import PUBLICATION_WORKER_COUNT, CausalConfig, load_causal_config
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -162,8 +162,14 @@ def build_smoke_report(
         "all_planned_missions_complete": execution.get("completed_jobs") == execution.get("planned_jobs"),
         "exact_planned_promoted_directory_set": exact_promoted_set,
         "all_promoted_jobs_revalidated": semantically_valid_jobs == expected_ids,
-        "exactly_four_workers": execution.get("worker_count") == 4,
-        "four_unique_worker_board_bindings": len(ready_bindings) == 4 and len({item[1] for item in ready_bindings}) == 4,
+        "exact_publication_worker_count": (
+            execution.get("worker_count") == PUBLICATION_WORKER_COUNT
+        ),
+        "unique_publication_worker_board_bindings": (
+            len(ready_bindings) == PUBLICATION_WORKER_COUNT
+            and len({item[1] for item in ready_bindings})
+            == PUBLICATION_WORKER_COUNT
+        ),
         "all_missions_scientifically_complete": bool(summaries) and all(row.get("all_tasks_completed") is True for row in summaries),
         "all_calls_parity_clean": bool(summaries) and all(row.get("parity_passed") is True for row in summaries),
         "hardware_validated": bool(summaries) and all(row.get("hardware_validated") is True for row in summaries),
@@ -174,7 +180,7 @@ def build_smoke_report(
             bool(invocation_id)
             and skipped == expected_ids
             and not executed_or_failed
-            and len(ready) == 4
+            and len(ready) == PUBLICATION_WORKER_COUNT
         ),
         "no_technical_failures": execution.get("technical_attempt_failures") == 0,
         "all_promoted_outputs_semantically_validated": (

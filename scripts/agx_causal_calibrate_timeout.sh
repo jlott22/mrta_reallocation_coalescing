@@ -10,7 +10,7 @@ CONFIG="study/native_gates/calibration/timeout_stage_config.json"
   --rate-report "${RATE_REPORT}" \
   --rate-config configs/agx_causal_rate_calibration_v1.json \
   --output "${CONFIG}"
-"${PYTHON_BIN}" -m study.causal.orchestrator --repo-root "${REPO_ROOT}" --config "${CONFIG}"
+run_causal_with_tracker "${CONFIG}"
 
 CAMPAIGN_ID="$(${PYTHON_BIN} -c 'import json,sys; print(json.load(open(sys.argv[1]))["campaign"]["campaign_id"])' "${CONFIG}")"
 REVIEW_ARGS=()

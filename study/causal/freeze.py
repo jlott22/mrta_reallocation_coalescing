@@ -24,7 +24,7 @@ from study.manifests import (
 )
 
 from .gates import GateError, validate_gate_set
-from .model import PRIMARY_ALGORITHMS, load_causal_config
+from .model import PUBLICATION_WORKER_COUNT, PRIMARY_ALGORITHMS, load_causal_config
 
 
 ANALYSIS_VERSION = "causal-analysis-v1"
@@ -139,8 +139,14 @@ def _require_gate_identity(
 
     expected_boards = {board.board_id: board for board in base.boards}
     expected_uids = {board.expected_device_uid: board for board in base.boards}
-    if len(expected_boards) != 4 or len(expected_uids) != 4:
-        raise GateError("freeze requires four unique board labels and device UIDs")
+    if (
+        len(expected_boards) != PUBLICATION_WORKER_COUNT
+        or len(expected_uids) != PUBLICATION_WORKER_COUNT
+    ):
+        raise GateError(
+            "freeze requires exactly "
+            f"{PUBLICATION_WORKER_COUNT} unique board labels and device UIDs"
+        )
     preflight_boards = preflight.get("boards")
     if not isinstance(preflight_boards, list) or {
         str(row.get("device_id")) for row in preflight_boards
@@ -411,7 +417,7 @@ def freeze_design(
                 str(gate.path.relative_to(repo_root)) for gate in gates.values()
             ],
             "design_freeze_path": str((output_dir / "design_freeze.json").relative_to(repo_root)),
-            "require_exactly_four_workers": True,
+            "required_worker_count": PUBLICATION_WORKER_COUNT,
             "require_clean_source": True,
         },
         "hardware": {
@@ -498,7 +504,7 @@ Source hash: `{freeze['source_tree_sha256']}`
 - Policies: Eager/B1, B2, B4, B8, bounded B4/W={float(timeout_s)} s
 - Paired traces: {trace_count}
 - Causal missions: {freeze['research_design']['causal_trial_count']}
-- Workers/boards: exactly four, one stable RP2040 binding per worker
+- Workers/boards: exactly {PUBLICATION_WORKER_COUNT}, one stable RP2040 binding per worker
 
 Manifest index SHA-256: `{manifest_index_hash}`
 Full config SHA-256: `{freeze['full_config_sha256']}`

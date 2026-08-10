@@ -1,4 +1,4 @@
-# AGX Orin + four-RP2040 native runbook
+# AGX Orin + three-RP2040 native runbook
 
 ## Purpose and stop rule
 
@@ -11,15 +11,16 @@ The clone command below targets the published `main` branch. Record its exact
 commit before starting the scientific gates and do not mix outputs produced by
 different commits.
 
-No physical hardware validation has been performed on the development machine.
-The first AGX execution establishes the real evidence.
+The current AGX checkout has passed a three-board native preflight and focused
+PI/ACBBA parity probes. Publication evidence still begins from a clean commit
+and follows every gate below.
 
 ## 1. Hardware and software prerequisites
 
 Required hardware:
 
 - one NVIDIA Jetson AGX Orin;
-- exactly four intended RP2040/Pololu boards, each with a data-capable USB
+- exactly three intended RP2040/Pololu boards, each with a data-capable USB
   connection and stable unique identity; and
 - enough free storage for calibration, 1,500 causal missions, 1,500
   zero-compute conditions, failed attempts, and analysis (the environment gate
@@ -30,7 +31,7 @@ Required host software:
 - Linux/JetPack with `python3` 3.10 or newer;
 - Git;
 - access to `nvpmodel`, `jetson_clocks`, and `lsusb` for provenance;
-- permission to read/write the four serial devices; and
+- permission to read/write the three serial devices; and
 - Python packages in
   `Simulation/Architecture/allocator_replay/requirements-host.txt`
   (`pyserial`, `mpremote`, and compatible `mpy-cross`).
@@ -70,34 +71,34 @@ PYTHONPATH="$PWD/Simulation/Architecture${PYTHONPATH:+:$PYTHONPATH}" \
   python -m unittest discover -s Tests/HIL/AllocatorReplay -v
 ```
 
-## 3. Identify four stable ports
+## 3. Identify three stable ports
 
-Connect all four boards and prefer stable by-ID links:
+Connect all three boards and prefer stable by-ID links:
 
 ```bash
 ls -l /dev/serial/by-id/
 lsusb
 ```
 
-Choose exactly four distinct `/dev/serial/by-id/...` paths. If the account lacks
+Choose exactly three distinct `/dev/serial/by-id/...` paths. If the account lacks
 serial permission, add it to the distribution's serial group (commonly
 `dialout`), log out/in, and verify access before continuing. Do not run the
 campaign as root merely to bypass an unresolved ownership problem.
 
-Select worker cores if cores 0-3 are not suitable. They must be four distinct
-online logical cores and four workers must fit within 75% of the detected
+Select worker cores if cores 0-2 are not suitable. They must be three distinct
+online logical cores and three workers must fit within 75% of the detected
 logical cores:
 
 ```bash
-export CAUSAL_CORE_AFFINITIES=0,1,2,3
+export CAUSAL_CORE_AFFINITIES=0,1,2
 ```
 
 ## 4. Build, deploy, discover, and seal board bindings
 
-Set the ports in the intended A/B/C/D order and run the preparation command:
+Set the ports in the intended A/B/C order and run the preparation command:
 
 ```bash
-PORTS=/dev/serial/by-id/<A>,/dev/serial/by-id/<B>,/dev/serial/by-id/<C>,/dev/serial/by-id/<D>
+PORTS=/dev/serial/by-id/<A>,/dev/serial/by-id/<B>,/dev/serial/by-id/<C>
 bash scripts/agx_prepare_rp2040_boards.sh "$PORTS"
 ```
 
@@ -105,7 +106,7 @@ This command:
 
 - installs/checks host dependencies;
 - builds compiled device modules;
-- deploys them to all four explicit ports;
+- deploys them to all three explicit ports;
 - queries live UID, firmware, build, module-set, MicroPython, CPU-frequency,
   and timer evidence; and
 - writes the effective local binding to
@@ -114,7 +115,7 @@ This command:
 It also writes
 `study/native_gates/device_build/device_build_deployment.json`. Identity files
 are immutable: a different rerun is refused rather than overwriting earlier
-evidence. Verify that the four UIDs are distinct and that all boards report the
+evidence. Verify that the three UIDs are distinct and that all boards report the
 same intended build/module set:
 
 ```bash
@@ -145,7 +146,7 @@ Confirm at minimum:
 
 - the model is AGX Orin and the JetPack/L4T/kernel/Python identity is plausible;
 - the selected cores exist and are distinct;
-- four workers fit within the 75%-of-logical-cores safety cap;
+- three workers fit within the 75%-of-logical-cores safety cap;
 - all serial paths exist and are readable/writable;
 - the repository is clean and manifest/config hashes match;
 - storage is sufficient;
@@ -198,7 +199,7 @@ study/output/agx_causal_smoke_v1/campaign_execution_report.json
 ```
 
 Require all four algorithms, both policies, both provisional loads, multiple
-traces, and all four boards; exact worker/core binding; completed missions;
+traces, and all three boards; exact worker/core binding; completed missions;
 clean parity; no cross-board or stale-context evidence; valid compute/movement
 arithmetic; and a successful no-recompute resume.
 
@@ -323,7 +324,7 @@ study/frozen/native_causal_v1/
 At minimum inspect `design_freeze.json`, `FINAL_DESIGN_FREEZE.md`, and
 `agx_full_causal_frozen.json`. Confirm final rates, W, n, algorithm/policy list,
 independent final seed, manifest/release hashes, source/commit, analysis version,
-and four UID/build/firmware/module identities. Do not edit frozen JSON.
+and three UID/build/firmware/module identities. Do not edit frozen JSON.
 
 ## 12. Run/resume the full causal campaign
 
@@ -331,11 +332,17 @@ and four UID/build/firmware/module identities. Do not edit frozen JSON.
 bash scripts/agx_run_full_causal_campaign.sh
 ```
 
-The target n=25 run contains 1,500 missions. Exactly four workers run at a time,
+The target n=25 run contains 1,500 missions. Exactly three workers run at a time,
 each fixed to its core and board. It is safe to rerun the same command after a
 normal interruption: completed jobs are hashed and semantically revalidated,
 then skipped. Failed attempts remain in the attempts tree; bounded technical
 retries are explicit. Algorithmic incompletions remain scientific outcomes.
+
+Every causal launcher starts an atomic live tracker at
+`<campaign-output-root>/LIVE_TRACKER.md`. It refreshes after campaign events,
+reports per-worker progress, measured throughput, and a provisional ETA, then
+writes one final snapshot after the orchestrator exits. The zero-compute
+launcher uses the same file for its own schedule.
 
 Monitor the machine without modifying campaign files. Useful read-only checks:
 
@@ -344,7 +351,7 @@ ps -eo pid,psr,pcpu,pmem,cmd | grep -E 'study.causal|run_causal_trials'
 watch -n 10 'find study/output -name completion.json | wc -l'
 ```
 
-Do not start a second orchestrator against the same four boards. UID leases
+Do not start a second orchestrator against the same three boards. UID leases
 will refuse it, but avoiding concurrent operators keeps diagnostics clear.
 
 Review the causal execution report in the frozen config's `campaign.output_root`.
@@ -416,9 +423,9 @@ python -m study.causal.native --repo-root "$PWD" recover-stale-locks \
   --config study/frozen/native_causal_v1/agx_full_causal_frozen.json
 ```
 
-The recovery command derives exactly eight possible paths from that validated
-config: four locks under its configured `campaign.output_root/board_locks/` and
-four UID-hashed leases under `study/native_device_leases/`. It does not list a
+The recovery command derives exactly six possible paths from that validated
+config: three locks under its configured `campaign.output_root/board_locks/` and
+three UID-hashed leases under `study/native_device_leases/`. It does not list a
 directory, expand a glob, or remove an unconfigured filename. Before deleting
 anything, it validates every present lock's JSON schema, current hostname,
 configured board/serial/worker binding or immutable UID, and uses the POSIX
@@ -430,10 +437,10 @@ remove a lock merely to make the next launch proceed.
 
 ## 16. Common failures
 
-### Fewer than four boards or duplicate UID
+### Fewer than three boards or duplicate UID
 
 Check cables, by-ID paths, permissions, and board identity. Rerun preparation
-and all subsequent gates only with four unique intended devices. A development
+and all subsequent gates only with three unique intended devices. A development
 override is not publication evidence.
 
 ### Build/firmware/module mismatch
@@ -482,7 +489,7 @@ Provide the reviewer with:
 - the final design-freeze directory;
 - causal and zero schedules/execution reports and retained failure summaries;
 - `FULL_CAMPAIGN_REPORT.md` plus analysis metadata/tables; and
-- repository commit/status and the four board/build identities.
+- repository commit/status and the three board/build identities.
 
 Do not label the reviewer package hardware-valid until every applicable item in
 `NATIVE_VALIDATION_CHECKLIST.md` is marked PASS with its evidence path.

@@ -2,7 +2,9 @@
 
 This file lists the remaining operator/reviewer decisions and the assumptions
 that must be disclosed. It does not reopen the fixed architecture in the study
-request. Hardware evidence is still pending.
+request. Three-board preflight and focused parity evidence now exist, but the
+environment, smoke, calibration, freeze, and full-campaign gates are still
+pending.
 
 ## Decisions required before design freeze
 
@@ -47,9 +49,9 @@ results.
 
 Reviewed n and rationale: _________________________________________________
 
-### 5. Confirm the four-board cohort
+### 5. Confirm the three-board cohort
 
-Verify that the four selected UIDs, firmware hashes, native build/module hashes,
+Verify that the three selected UIDs, firmware hashes, native build/module hashes,
 timer evidence, and physical connections are suitable as one timing cohort.
 If a board is materially different or unstable, replace it before freeze and
 repeat upstream gates. Board is a paired blocking variable, not a planned paper
@@ -150,7 +152,7 @@ Reviewer acceptance/comments: _____________________________________________
 - Primary algorithms: CBAA, ACBBA, PI, HIPC.
 - Mission: Collaborative Visit, 19 x 19, four robots, 50 tasks, eight initial.
 - Policies: Eager/B1, B2, B4, B8, bounded B4/W.
-- Exactly four AGX workers and four permanently assigned RP2040 boards.
+- Exactly three AGX workers and three permanently assigned RP2040 boards.
 - All policies in an algorithm/load/trace block stay on one board.
 - Calibration seed `20260808`; independent final seed `2026080905`.
 - No Top-K, no forced trajectory equality, no post-hoc allocator-time addition.

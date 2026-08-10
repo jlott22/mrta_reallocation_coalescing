@@ -1,6 +1,6 @@
 # Causal implementation report
 
-Date: 2026-08-09 (America/Los_Angeles)
+Date: 2026-08-10 (America/Los_Angeles)
 
 ## Status and scope
 
@@ -11,11 +11,11 @@ blocked by its own measured allocation duration. Movement is also represented
 as an interval, so position and task completion are committed only at movement
 completion.
 
-The implementation is software-testable on a development computer, but it has
-**not been validated on an AGX Orin or physical RP2040 boards in this
-environment**. Virtual devices, loopback sessions, protocol fixtures, and
-known-answer simulations are not hardware evidence. The native launchers fail
-closed until four physical boards and all native gates pass.
+The implementation has now passed its software suites plus a physical
+three-board AGX preflight and focused longitudinal parity probes. Virtual
+devices and loopback tests remain non-hardware evidence. Publication launchers
+still fail closed until the controlled AGX environment, smoke, calibration,
+freeze, full causal, and counterfactual gates pass from a clean commit.
 
 This work is confined to the standalone `mrta_reallocation_coalescing`
 repository. The previous implementation and pilot reports remain in place as
@@ -30,7 +30,7 @@ The correct description of one publication mission is:
 > virtual four-processor decentralized team model.
 
 Suitable short names are **RP2040-timed causal virtual mission** and
-**hardware-timed four-processor simulation**. Four boards run four independent
+**hardware-timed four-processor simulation**. Three boards run three independent
 missions concurrently. The implementation must not be described as four
 physical RP2040 processors executing one mission, a moving-robot hardware
 experiment, or a measurement of physical mission elapsed time.
@@ -231,30 +231,30 @@ reconnection is allowed only between missions and only after exact
 identity/build revalidation. CBAA, ACBBA, PI, and HIPC are the blocking primary
 algorithms. Optional DMCHBA/DGA support is outside the full-campaign gate.
 
-## Four-worker native orchestration
+## Three-worker native orchestration
 
-Publication stages require exactly four processes and four unique bindings:
+Publication stages require exactly three processes and three unique bindings:
 
 ```text
 worker 0 / one mission at a time -> RP2040 A -> four logical contexts
 worker 1 / one mission at a time -> RP2040 B -> four logical contexts
 worker 2 / one mission at a time -> RP2040 C -> four logical contexts
-worker 3 / one mission at a time -> RP2040 D -> four logical contexts
 ```
 
 Stable device UID/build/firmware/module identities are used rather than
 `/dev/ttyACM*` enumeration order. Global UID leases prevent two processes or
 campaigns from opening one board. On native Linux each worker is pinned to its
 configured distinct core. OMP, OpenBLAS, MKL, NumExpr, vecLib, and BLIS thread
-counts are forced to one. The environment gate also verifies that four workers
+counts are forced to one. The environment gate also verifies that three workers
 do not exceed 75% of available logical cores; the campaign worker count itself
-is fixed at four, not computed from that percentage.
+is fixed at three, not computed from that percentage.
 
 The paired block is `(algorithm, load, trace)`. All five policies remain on one
 physical board. Blocks use a crossed Latin board assignment, deterministic
 hash-based execution order, and per-board cyclic policy rotations. For the
-target 4 x 3 x 25 design, each board receives 75 blocks and every policy occurs
-in every order position 15 times on each board.
+target 4 x 3 x 25 design, each board receives 100 blocks and every policy occurs
+in every order position 20 times on each board. At n=50 those values become 200
+blocks and 40 occurrences per policy position on each board.
 
 ## Calibration, freeze, and campaign gates
 
@@ -263,7 +263,7 @@ generated from master seed `2026080905`; freeze validation rejects calibration/
 final trace overlap. The pipeline is:
 
 1. read-only AGX environment report;
-2. twenty-check four-board native parity preflight;
+2. twenty-check three-board native parity preflight;
 3. 32-mission causal smoke, including a second content-validated resume pass;
 4. 280-mission native rate calibration;
 5. 300-mission bounded-timeout calibration;
@@ -275,7 +275,7 @@ final trace overlap. The pipeline is:
 
 The design freeze seals source/commit identity, effective config and manifest
 hashes, final rates, W, n, algorithms, policies, final release manifests,
-four-board UID/build/firmware/module cohort, gate hashes, schedule inputs, and
+three-board UID/build/firmware/module cohort, gate hashes, schedule inputs, and
 analysis version. A source, configuration, manifest, board, or build change
 after freeze fails closed rather than silently creating a mixed campaign.
 
@@ -363,14 +363,10 @@ significance direction is hard-coded.
 
 ## Validation status
 
-Final local validation passed 167/167 automated tests: 55 simulator/core, 45
-study/campaign/reporting, and 67 device/HIL protocol tests. Python compilation,
-all twelve AGX shell-script syntax checks, six causal CLI entry points, and
-patch hygiene also passed. The final source-bound development integration ran
-eight causal and eight paired zero-compute missions through exactly four
-virtual workers/bindings; every mission completed and remained explicitly
-non-hardware-valid. Immediate second invocations semantically revalidated and
-skipped all eight jobs in each arm without recomputation.
+Current local validation passes 185/185 automated tests: 57 simulator/core, 48
+study/campaign/reporting, and 80 device/HIL protocol tests. Python compilation,
+all AGX shell-script syntax checks, causal CLI entry points, and patch hygiene
+also pass. Development providers remain explicitly non-hardware-valid.
 
 The integration process found and fixed two cross-layer defects before the
 final v5 run: device timing-component schema drift and loss of precision when a
@@ -383,18 +379,25 @@ post-hook checkpoint for goal-selection parity. Failed versioned development
 attempts were retained instead of overwritten. Exact commands, hashes, and row
 counts are in `IMPLEMENTATION_TEST_REPORT.md`.
 
-Hardware-only work still required:
+Physical evidence obtained on the AGX:
 
-- identify, deploy, and bind four intended RP2040 boards;
+- three stable Pololu UIDs bound to three fixed workers/cores;
+- sealed MicroPython 1.24 build
+  `micropython_1_24_o0_coalescing_collaborative_178fdb38cac5` deployed without
+  changing `main.py` or initializing motors/sensors;
+- all twenty native preflight checks PASS on all three boards, including 72
+  parity-valid calls and 51--54 microsecond timer-resolution evidence; and
+- the exact prior PI and ACBBA failure trajectories pass through call 115 on
+  hardware (115 parity-valid calls each).
+
+Publication work still required:
+
 - record and deliberately accept a stable AGX power/clock/thermal state;
-- pass all twenty native preflight requirements on each board;
-- verify native timer behavior, physical call parity, disconnect/reconnect, and
-  context cleanup under the deployed build;
 - complete smoke, calibration, reviewed freeze, full causal, and zero-compute
   stages without identity drift; and
 - review the generated reports before using any value in the paper.
 
-Until those checks pass, the implementation is **software validated and native
-hardware validation is pending**. See
+Until those checks pass, the implementation is **software validated and
+physical-preflight validated, but not publication-campaign validated**. See
 `AGX_NATIVE_RUNBOOK.md` for the only publication execution sequence and
 `NATIVE_VALIDATION_CHECKLIST.md` for the operator record.

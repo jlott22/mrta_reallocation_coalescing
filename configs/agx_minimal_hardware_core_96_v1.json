@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "manifest": {
+    "manifest_set_id": "collaborative_visit_g19_t50_n25_calibrated_v2",
+    "root": "study/generated/manifests",
+    "master_seed": 20260808,
+    "final_campaign_master_seed": 2026080905,
+    "trace_count": 25,
+    "grid_size": 19,
+    "robot_count": 4,
+    "task_count": 50,
+    "initial_task_count": 8,
+    "arrival_loads": {
+      "low": 0.075,
+      "medium": 0.3,
+      "high": 1.2
+    },
+    "arrival_rate_units": "tasks_per_mission_second",
+    "design_status": "final_minimal_plan_n25_three_board_user_override"
+  },
+  "campaign": {
+    "campaign_id": "agx_minimal_hardware_core_96_v1",
+    "stage": "publication_core",
+    "output_root": "study/output/agx_minimal_hardware_core_96_v1",
+    "algorithms": [
+      "CBAA",
+      "ACBBA",
+      "PI",
+      "HIPC"
+    ],
+    "loads": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "policies": [
+      {
+        "policy_id": "eager_b1",
+        "mode": "eager",
+        "batch_size": 1
+      },
+      {
+        "policy_id": "count_b4",
+        "mode": "count",
+        "batch_size": 4
+      }
+    ],
+    "trace_limit": 4,
+    "schedule_seed": 2026081101,
+    "max_technical_retries": 1,
+    "runner_factory": "study.causal.worker:run_causal_job",
+    "required_gate_paths": [
+      "study/native_gates/environment/native_environment_report.json",
+      "study/native_gates/preflight/native_preflight_report.json",
+      "study/native_gates/smoke/causal_smoke_report.json"
+    ],
+    "require_clean_source": true,
+    "notes": "Final minimal plan publication hardware core: 4 algorithms x 3 loads x Eager/B4 x 4 paired traces = 96 RP2040-timed causal missions. User-approved three-board execution; paired policies remain on one board."
+  },
+  "hardware": {
+    "bindings_file": "configs/local/agx_board_bindings.json",
+    "development_override": false,
+    "provider_factory": "study.causal.worker:create_timing_provider"
+  }
+}

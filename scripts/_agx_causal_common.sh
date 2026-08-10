@@ -22,3 +22,42 @@ require_file() {
     exit 2
   fi
 }
+
+run_causal_with_tracker() {
+  if [[ $# -lt 1 ]]; then
+    echo "run_causal_with_tracker requires a config path" >&2
+    return 2
+  fi
+  local config="$1"
+  shift
+  local output_root
+  local tracker_path
+  local tracker_pid
+  local orchestrator_status
+  output_root="$(${PYTHON_BIN} -c 'import json,sys; print(json.load(open(sys.argv[1]))["campaign"]["output_root"])' "${config}")"
+  tracker_path="${REPO_ROOT}/${output_root}/LIVE_TRACKER.md"
+  mkdir -p "${REPO_ROOT}/${output_root}"
+  "${PYTHON_BIN}" -m study.causal.tracker \
+    --repo-root "${REPO_ROOT}" \
+    --config "${config}" \
+    --output "${tracker_path}" \
+    --watch \
+    "$@" &
+  tracker_pid=$!
+  echo "Live tracker: ${tracker_path}"
+  if "${PYTHON_BIN}" -m study.causal.orchestrator \
+    --repo-root "${REPO_ROOT}" --config "${config}" "$@"; then
+    orchestrator_status=0
+  else
+    orchestrator_status=$?
+  fi
+  kill -TERM "${tracker_pid}" 2>/dev/null || true
+  wait "${tracker_pid}" 2>/dev/null || true
+  # Render one final snapshot after the orchestrator has flushed its events.
+  "${PYTHON_BIN}" -m study.causal.tracker \
+    --repo-root "${REPO_ROOT}" \
+    --config "${config}" \
+    --output "${tracker_path}" \
+    "$@" >/dev/null 2>&1 || true
+  return "${orchestrator_status}"
+}

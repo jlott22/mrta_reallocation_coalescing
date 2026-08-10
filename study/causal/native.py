@@ -11,7 +11,7 @@ from typing import Any
 
 from study.manifests import canonical_json_bytes
 
-from .model import load_causal_config
+from .model import PUBLICATION_WORKER_COUNT, load_causal_config
 from .locks import LockRecoveryError, recover_stale_locks
 
 
@@ -68,8 +68,14 @@ def build_and_optionally_deploy(
     root, manifest = _build_manifest(imports, build_root)
     deployments: list[dict[str, Any]] = []
     if deploy_requested:
-        if len(ports) != 4 or len(set(ports)) != 4:
-            raise ValueError("deployment requires exactly four distinct explicit ports")
+        if (
+            len(ports) != PUBLICATION_WORKER_COUNT
+            or len(set(ports)) != PUBLICATION_WORKER_COUNT
+        ):
+            raise ValueError(
+                "deployment requires exactly "
+                f"{PUBLICATION_WORKER_COUNT} distinct explicit ports"
+            )
         deployments = imports["deploy"](ports, build_root=root)
     report = {
         "schema_version": 1,
@@ -101,10 +107,23 @@ def discover_bindings(
         if failures:
             print(json.dumps({"skipped_or_failed_ports": failures}, indent=2), file=sys.stderr)
         selected_ports = [device.port for device in discovered]
-    if len(selected_ports) != 4 or len(set(selected_ports)) != 4:
-        raise RuntimeError("binding requires exactly four unique intended RP2040 ports")
-    if len(core_affinities) != 4 or len(set(core_affinities)) != 4 or min(core_affinities) < 0:
-        raise ValueError("exactly four distinct nonnegative core affinities are required")
+    if (
+        len(selected_ports) != PUBLICATION_WORKER_COUNT
+        or len(set(selected_ports)) != PUBLICATION_WORKER_COUNT
+    ):
+        raise RuntimeError(
+            "binding requires exactly "
+            f"{PUBLICATION_WORKER_COUNT} unique intended RP2040 ports"
+        )
+    if (
+        len(core_affinities) != PUBLICATION_WORKER_COUNT
+        or len(set(core_affinities)) != PUBLICATION_WORKER_COUNT
+        or min(core_affinities) < 0
+    ):
+        raise ValueError(
+            f"exactly {PUBLICATION_WORKER_COUNT} distinct nonnegative core "
+            "affinities are required"
+        )
     devices = [imports["SerialReplayDevice"](port) for port in selected_ports]
     try:
         bindings = imports["causal"].bind_hardware_workers(
@@ -112,7 +131,10 @@ def discover_bindings(
             expected_build_id=str(manifest["build_id"]),
             expected_module_set_sha256=str(manifest["deployed_module_set_sha256"]),
         )
-        labels = ("rp2040_a", "rp2040_b", "rp2040_c", "rp2040_d")
+        labels = tuple(
+            f"rp2040_{chr(ord('a') + index)}"
+            for index in range(PUBLICATION_WORKER_COUNT)
+        )
         rows = []
         timer_evidence = []
         for label, binding in zip(labels, bindings, strict=True):
@@ -158,8 +180,11 @@ def native_preflight(
     markdown_path: Path,
 ) -> dict[str, Any]:
     config = load_causal_config(config_path, repo_root)
-    if len(config.boards) != 4 or config.development_override:
-        raise RuntimeError("native preflight requires exactly four non-development bindings")
+    if len(config.boards) != PUBLICATION_WORKER_COUNT or config.development_override:
+        raise RuntimeError(
+            "native preflight requires exactly "
+            f"{PUBLICATION_WORKER_COUNT} non-development bindings"
+        )
     imports = _imports(repo_root)
     devices = [imports["SerialReplayDevice"](board.serial_device) for board in config.boards]
     try:
@@ -168,7 +193,9 @@ def native_preflight(
         module_hashes = {board.expected_module_set_sha256 for board in config.boards}
         firmware = {board.expected_device_uid: board.expected_firmware_sha256 for board in config.boards}
         if len(build_ids) != 1 or len(module_hashes) != 1:
-            raise RuntimeError("all four primary timing boards must use one build/module set")
+            raise RuntimeError(
+                "all primary timing boards must use one build/module set"
+            )
         helper = getattr(imports["causal"], "run_native_preflight", None)
         if not callable(helper):
             raise RuntimeError(
@@ -220,14 +247,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=Path("."))
     sub = parser.add_subparsers(dest="command", required=True)
     build = sub.add_parser("build-deploy")
-    build.add_argument("--ports", help="four comma-separated explicit ports")
+    build.add_argument(
+        "--ports",
+        help=f"{PUBLICATION_WORKER_COUNT} comma-separated explicit ports",
+    )
     build.add_argument("--build-root", type=Path)
-    build.add_argument("--deploy", action="store_true", help="explicitly write compiled modules to all four boards")
+    build.add_argument(
+        "--deploy",
+        action="store_true",
+        help="explicitly write compiled modules to every publication board",
+    )
     build.add_argument("--output", type=Path, required=True)
     binding = sub.add_parser("discover-bindings")
     binding.add_argument("--ports", default="auto")
     binding.add_argument("--build-root", type=Path, required=True)
-    binding.add_argument("--core-affinities", default="0,1,2,3")
+    binding.add_argument("--core-affinities", default="0,1,2")
     binding.add_argument("--output", type=Path, required=True)
     preflight = sub.add_parser("preflight")
     preflight.add_argument("--config", type=Path, required=True)

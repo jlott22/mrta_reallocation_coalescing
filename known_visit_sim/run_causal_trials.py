@@ -122,6 +122,25 @@ def _trigger_class(epoch: Any) -> str:
     return "arrival_driven"
 
 
+def _positive_release_times(task_rows: Iterable[Mapping[str, Any]]) -> list[float]:
+    """Return released online-task times while retaining incomplete rows.
+
+    An algorithmic horizon can be reached before every scheduled task release.
+    Those retained task rows intentionally carry ``release_time_s=None`` and
+    must not turn the scientific incomplete outcome into a reporting failure.
+    """
+
+    values: set[float] = set()
+    for row in task_rows:
+        raw = row.get("release_time_s")
+        if raw is None or raw == "":
+            continue
+        value = float(raw)
+        if value > 0.0:
+            values.add(value)
+    return sorted(values)
+
+
 def run_causal_manifest_job(
     *,
     scenario_manifest: Path,
@@ -489,11 +508,7 @@ def run_causal_manifest_job(
         })
 
     metrics = state.online_metrics()
-    online_release_times = sorted({
-        float(row["release_time_s"])
-        for row in task_rows
-        if float(row["release_time_s"]) > 0.0
-    })
+    online_release_times = _positive_release_times(task_rows)
     releases_during_compute = sum(
         any(
             float(call["virtual_compute_start_s"]) < release_time

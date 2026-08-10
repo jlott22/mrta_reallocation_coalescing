@@ -44,6 +44,13 @@ class PIAllocator(NativeAllocatorBase):
 
     def choose(self):
         state = self.state
+        # Desktop PI clears every invalid/completed table entry before path
+        # repair, including claims owned by peers.  Keeping such a claim would
+        # make the compact native consensus table observably stale even when
+        # this robot's chosen path and outbound messages still match.
+        for slot in range(len(state.targets)):
+            if state.claim_owner[slot] >= 0 and not state.is_candidate(slot):
+                state.clear_claim(slot)
         if self.collision_rising():
             self.release_own_path("pi_entry")
             trigger = "collision_replan"
@@ -180,7 +187,11 @@ class PIAllocator(NativeAllocatorBase):
             return probability > best_probability
         if index != best_index:
             return index < best_index
-        return state.targets[slot] < state.targets[best_slot]
+        cell = state.decode_cell(state.targets[slot])
+        best_cell = state.decode_cell(state.targets[best_slot])
+        return cell[0] < best_cell[0] or (
+            cell[0] == best_cell[0] and cell[1] < best_cell[1]
+        )
 
     def handle_message(self, message):
         return self.parse_claim_message(

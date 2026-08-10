@@ -837,6 +837,7 @@ class AsyncTrialRunner:
         state.causal_event_horizon_events = event_horizon
         state.causal_stagnation_horizon_events = stagnation_horizon
         began = False
+        primary_failure: BaseException | None = None
         try:
             provider.begin_mission(binding)
             began = True
@@ -953,9 +954,24 @@ class AsyncTrialRunner:
                         state, reasons
                     )
                     break
+        except BaseException as exc:
+            primary_failure = exc
+            raise
         finally:
             if began:
-                provider.end_mission()
+                try:
+                    provider.end_mission()
+                except BaseException as cleanup_error:
+                    if primary_failure is None:
+                        raise
+                    # Preserve the scientific/transport failure that caused
+                    # the unwind. The cleanup problem remains available to the
+                    # orchestrator as structured retained evidence.
+                    setattr(
+                        primary_failure,
+                        "cleanup_failure",
+                        f"{type(cleanup_error).__name__}: {cleanup_error}",
+                    )
             state.host_program_runtime_s = max(0.0, perf_counter() - host_started)
         if not state.done and state.algorithmic_failure_type is None:
             state.algorithmic_failure_type = "event_queue_exhausted"

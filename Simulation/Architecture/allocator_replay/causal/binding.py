@@ -1,4 +1,4 @@
-"""Stable RP2040 identity, exact-four binding, and cross-process leases."""
+"""Stable RP2040 identity, publication-cohort binding, and process leases."""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from typing import Any, Mapping, Sequence
 from .errors import BoardBindingError, BoardLeaseError
 
 
-REQUIRED_HARDWARE_WORKERS = 4
+REQUIRED_HARDWARE_WORKERS = 3
+MAX_DEVELOPMENT_WORKERS = 4
 _PROCESS_LEASES: set[str] = set()
 _PROCESS_LEASE_LOCK = threading.Lock()
 
@@ -131,7 +132,6 @@ class BoardFingerprint:
             self.implementation,
             self.frequency_hz,
             self.timer_unit,
-            self.timer_resolution_us,
             self.timer_monotonic,
             self.timer_wraparound_safe,
             self.virtual_device,
@@ -198,20 +198,24 @@ def bind_hardware_workers(
     expected_module_set_sha256: str | None = None,
     expected_firmware_sha256: str | Mapping[str, str] | None = None,
 ) -> tuple[StableBoardBinding, ...]:
-    """Bind stable identities to worker slots; production requires exactly four.
+    """Bind stable identities to worker slots for the publication cohort.
 
     Serial enumeration order is never an identity.  Without an explicit map,
-    stable device IDs are sorted.  The development override permits 1--3
-    virtual/loopback devices, but never more than four or duplicate boards.
+    stable device IDs are sorted.  The development override permits fewer
+    virtual/loopback devices, but never more than the publication cohort.
     """
 
     count = len(devices)
     if count != REQUIRED_HARDWARE_WORKERS and not development_override:
         raise BoardBindingError(
-            f"hardware campaign requires exactly four boards; detected {count}"
+            "hardware campaign requires exactly "
+            f"{REQUIRED_HARDWARE_WORKERS} boards; detected {count}"
         )
-    if count < 1 or count > REQUIRED_HARDWARE_WORKERS:
-        raise BoardBindingError("development board count must be between one and four")
+    if count < 1 or count > MAX_DEVELOPMENT_WORKERS:
+        raise BoardBindingError(
+            "development board count must be between one and "
+            f"{MAX_DEVELOPMENT_WORKERS}"
+        )
     inspected = [
         (
             BoardFingerprint.inspect(
@@ -281,14 +285,17 @@ def bind_single_hardware_worker(
 ) -> StableBoardBinding:
     """Revalidate one preflight-sealed board inside its owning process.
 
-    Global exact-four uniqueness belongs to discovery/preflight.  Each spawned
+    Global cohort uniqueness belongs to discovery/preflight.  Each spawned
     worker opens only its assigned serial endpoint and uses this helper before
     it acquires a board lease or starts a mission.
     """
 
     index = int(worker_index)
     if index < 0 or index >= REQUIRED_HARDWARE_WORKERS:
-        raise BoardBindingError("worker index must be in the exact-four range 0..3")
+        raise BoardBindingError(
+            "worker index must be in the publication range 0.."
+            f"{REQUIRED_HARDWARE_WORKERS - 1}"
+        )
     fingerprint = BoardFingerprint.inspect(
         device,
         expected_build_id=expected_build_id,

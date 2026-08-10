@@ -27,6 +27,69 @@ RESUME_ATTRIBUTE = "native_collaborative_resume"
 DGA_POPULATION_PREFIX = "native_collaborative_dga_population_"
 DGA_RECEIVED_PREFIX = "native_collaborative_dga_received_"
 
+_CAUSAL_MESSAGE_FIELDS = (
+    "type",
+    "sender",
+    "x",
+    "y",
+    "owner",
+    "winner",
+    "significance",
+    "bid",
+    "value",
+    "timestamp",
+    "order",
+    "path_cells",
+    "path_size",
+    "bundle_cells",
+    "bundle_size",
+    "released",
+    "released_winner",
+    "released_owner",
+    "released_bid",
+    "released_value",
+    "cell",
+)
+
+
+def _expand_compact_message(mask, values):
+    result = {}
+    value_index = 0
+    for field_index, name in enumerate(_CAUSAL_MESSAGE_FIELDS):
+        if not (int(mask) & (1 << field_index)):
+            continue
+        value = values[value_index]
+        value_index += 1
+        if name in ("path_cells", "bundle_cells"):
+            value = [
+                (int(value[index]), int(value[index + 1]))
+                for index in range(0, len(value), 2)
+            ]
+        elif name == "cell" and value is not None:
+            value = (int(value[0]), int(value[1]))
+        result[name] = value
+    if value_index != len(values):
+        raise ValueError("compact causal message field count mismatch")
+    return result
+
+
+def _compact_cells(values):
+    if len(values) % 2:
+        raise ValueError("compact causal cell sequence has odd length")
+    return [
+        (int(values[index]), int(values[index + 1]))
+        for index in range(0, len(values), 2)
+    ]
+
+
+def _protocol_timestamp(value):
+    """Preserve the logical no-time sentinel on single-precision ports."""
+
+    parsed = float(value)
+    if parsed <= -5.0e17:
+        return -1000000000000000000
+    return int(parsed)
+
 
 class NativeDecision:
     """Small worker-compatible allocation result."""
@@ -418,7 +481,7 @@ class PersistentCollaborativeRuntime:
                         "value": float(values[2]),
                     }
                     if self.algorithm == "ACBBA":
-                        item["timestamp"] = int(float(values[3]))
+                        item["timestamp"] = _protocol_timestamp(values[3])
                     result.append(item)
                 except (TypeError, ValueError, IndexError):
                     continue
@@ -435,7 +498,7 @@ class PersistentCollaborativeRuntime:
                     {
                         "cell": [int(cell[0]), int(cell[1])],
                         "value": float(entry[1]),
-                        "timestamp": int(float(entry[2])),
+                        "timestamp": _protocol_timestamp(entry[2]),
                     }
                 )
             except (TypeError, ValueError, IndexError):
@@ -468,8 +531,8 @@ class PersistentCollaborativeRuntime:
                         "value": float(value),
                     }
                     if self.algorithm == "ACBBA":
-                        record["timestamp"] = int(
-                            float(message["timestamp"])
+                        record["timestamp"] = _protocol_timestamp(
+                            message["timestamp"]
                         )
                     by_cell[cell] = record
                 except (KeyError, TypeError, ValueError):
@@ -538,8 +601,6 @@ class PersistentCollaborativeRuntime:
                     {},
                 )
             )
-        if "active_tasks" in flattened:
-            state._replace_active(flattened["active_tasks"])
         if "candidate_count_before_filter" in flattened:
             state.candidate_count_before = max(
                 0, int(flattened["candidate_count_before_filter"])
@@ -556,10 +617,6 @@ class PersistentCollaborativeRuntime:
             "blocked",
             "blocked_cells",
         )
-        if any(name in flattened for name in unavailable_names):
-            state.replace_unavailable(
-                *(flattened.get(name, ()) for name in unavailable_names)
-            )
         completed = value_from(
             flattened,
             (
@@ -570,22 +627,9 @@ class PersistentCollaborativeRuntime:
             ),
             None,
         )
-        if completed is not None:
-            if isinstance(completed, (tuple, dict)):
-                # A single (x, y) tuple/dict is one cell, while a tuple of
-                # tuples is already a collection.
-                if isinstance(completed, dict) or (
-                    isinstance(completed, tuple)
-                    and len(completed) == 2
-                    and isinstance(completed[0], int)
-                ):
-                    completed = [completed]
-            state.complete_cells(completed)
         activated = value_from(
             flattened, ("activated_tasks", "targets_activated"), None
         )
-        if activated is not None:
-            state.activate_cells(activated)
         probabilities = value_from(
             flattened, ("target_p", "probabilities"), None
         )
@@ -621,10 +665,34 @@ class PersistentCollaborativeRuntime:
 
         saw_allocation_epoch = False
         for event in delta.get("events", ()) or ():
-            if not isinstance(event, dict):
-                continue
-            kind = str(event.get("kind", ""))
-            payload = decode_value(event.get("payload", {}))
+            if isinstance(event, (list, tuple)) and event:
+                tag = int(event[0])
+                if tag == 0:
+                    common = _expand_compact_message(event[1], event[2])
+                    for row in event[3]:
+                        payload = dict(common)
+                        payload.update(
+                            _expand_compact_message(row[0], row[1])
+                        )
+                        self.allocator.handle_message(payload)
+                    continue
+                if tag == 1:
+                    kind = "allocation_epoch"
+                    payload = {
+                        "epoch_index": int(event[1]),
+                        "trigger_reason": str(event[2]),
+                        "admitted_cells": _compact_cells(event[3]),
+                    }
+                elif tag == 3:
+                    kind = str(event[1])
+                    payload = event[2]
+                else:
+                    raise ValueError("unknown compact causal event tag")
+            else:
+                if not isinstance(event, dict):
+                    continue
+                kind = str(event.get("kind", ""))
+                payload = decode_value(event.get("payload", {}))
             if kind == "allocator_message":
                 # Replay against the resident pre-hook context.  A complete
                 # frozen checkpoint is loaded below, after all ordered events,
@@ -637,6 +705,15 @@ class PersistentCollaborativeRuntime:
                 epoch_index = int(payload.get("epoch_index", -1))
                 reason = str(payload.get("trigger_reason", ""))
                 admitted = payload.get("admitted_cells", ())
+                # The frozen checkpoint is post-hook and can already show an
+                # admitted task as completed.  Replay the ordered admission
+                # against resident pre-hook state first, including the
+                # desktop behavior that reopens a previously traversed cell.
+                state.activate_cells(admitted)
+                for encoded in state._normalize_cell_collection(admitted):
+                    slot = state.slot_by_cell.get(encoded)
+                    if slot is not None:
+                        state.unavailable[slot] = 0
                 if state.apply_allocation_epoch(
                     epoch_index, reason, admitted
                 ):
@@ -668,6 +745,30 @@ class PersistentCollaborativeRuntime:
                 "collision_avoidance",
             ):
                 state.set_collision(True)
+
+        # Environmental values in ``set`` are the authoritative post-hook
+        # checkpoint.  Apply them after ordered event replay so a task that
+        # was admitted and then completed before this allocator call is active
+        # while its callback runs, but inactive for choose_goal.
+        if "active_tasks" in flattened:
+            state._replace_active(flattened["active_tasks"])
+        if any(name in flattened for name in unavailable_names):
+            state.replace_unavailable(
+                *(flattened.get(name, ()) for name in unavailable_names)
+            )
+        if completed is not None:
+            if isinstance(completed, (tuple, dict)):
+                # A single (x, y) tuple/dict is one cell, while a tuple of
+                # tuples is already a collection.
+                if isinstance(completed, dict) or (
+                    isinstance(completed, tuple)
+                    and len(completed) == 2
+                    and isinstance(completed[0], int)
+                ):
+                    completed = [completed]
+            state.complete_cells(completed)
+        if activated is not None:
+            state.activate_cells(activated)
 
         # The AGX snapshot is intentionally post-hook.  Event replay above
         # therefore starts from the still-resident native pre-hook context so
@@ -830,15 +931,13 @@ class PersistentCollaborativeRuntime:
             else:
                 extras.append(message)
         messages = extras + [by_cell[key] for key in sorted(by_cell)]
-        if algorithm == "CBAA":
-            # Desktop CBAA treats its pending table as a delta cache.  A
-            # movement can refresh the resident claim during choose(), but
-            # build_cbaa_messages suppresses that refresh when its logical
-            # (cell, winner, bid) signature is identical to the last one sent.
-            # Apply the same suppression *after* native and frozen pending
-            # deltas have been coalesced per cell: a native refresh that
-            # returns to the last-sent signature must also cancel an older
-            # frozen pending delta for that cell.
+        if algorithm in ("CBAA", "ACBBA"):
+            # Desktop consensus allocators treat their pending tables as delta
+            # caches. A refresh during choose() is suppressed when its logical
+            # signature is identical to the last one sent. Apply the same
+            # suppression *after* native and frozen pending deltas have been
+            # coalesced per cell: a native refresh that returns to the
+            # last-sent signature must also cancel an older frozen delta.
             last_sent = {}
             for item in self.behavior_last_sent:
                 try:
@@ -867,7 +966,17 @@ class PersistentCollaborativeRuntime:
                         and abs(float(previous["value"]) - value)
                         <= self.allocator.EPS
                     )
-                    if same_owner and same_value:
+                    same_time = True
+                    if algorithm == "ACBBA":
+                        same_time = (
+                            previous is not None
+                            and abs(
+                                float(previous["timestamp"])
+                                - float(_protocol_timestamp(message["timestamp"]))
+                            )
+                            <= self.allocator.EPS
+                        )
+                    if same_owner and same_value and same_time:
                         continue
                 except (KeyError, TypeError, ValueError):
                     pass
@@ -934,9 +1043,13 @@ class PersistentCollaborativeRuntime:
             "allocator": self.allocator.export_resume(),
             "behavior": {
                 "call_mechanism": (
-                    "allocation_epoch"
-                    if self.last_call_had_epoch_reallocation
-                    else self.allocator.last_call_path
+                    self.allocator.last_call_path
+                    if "collision" in str(self.allocator.last_call_path)
+                    else (
+                        "allocation_epoch"
+                        if self.last_call_had_epoch_reallocation
+                        else self.allocator.last_call_path
+                    )
                 ),
                 "pending_messages": [],
                 "pending_snapshot": False,

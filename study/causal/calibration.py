@@ -20,7 +20,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from study.manifests import canonical_json_bytes, sha256_file
 
-from .model import CausalConfig, load_causal_config
+from .model import PUBLICATION_WORKER_COUNT, CausalConfig, load_causal_config
 
 
 PRIMARY_ALGORITHMS = {"CBAA", "ACBBA", "PI", "HIPC"}
@@ -215,8 +215,11 @@ def _validate_native_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             raise ValueError(f"native calibration rows do not share one {field}")
         common[field] = next(iter(values))
     board_ids = {str(row.get("board_id", "")) for row in rows}
-    if "" in board_ids or len(board_ids) != 4:
-        raise ValueError("native calibration must use exactly four recorded boards")
+    if "" in board_ids or len(board_ids) != PUBLICATION_WORKER_COUNT:
+        raise ValueError(
+            "native calibration must use exactly "
+            f"{PUBLICATION_WORKER_COUNT} recorded boards"
+        )
     device_rows: dict[str, dict[str, str]] = {}
     for board_id in sorted(board_ids):
         group = [row for row in rows if str(row.get("board_id")) == board_id]
@@ -230,7 +233,10 @@ def _validate_native_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 raise ValueError(f"board {board_id} has inconsistent {field}")
             identity[field] = next(iter(values))
         device_rows[board_id] = identity
-    if len({value["expected_device_uid"] for value in device_rows.values()}) != 4:
+    if (
+        len({value["expected_device_uid"] for value in device_rows.values()})
+        != PUBLICATION_WORKER_COUNT
+    ):
         raise ValueError("native calibration board UIDs are not unique")
     common["boards"] = device_rows
     common["hardware_binding_sha256"] = next(iter({

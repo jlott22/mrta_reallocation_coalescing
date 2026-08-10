@@ -38,8 +38,6 @@ class HIPCAllocator(NativeAllocatorBase):
         dropped = []
         for index, robot_id in enumerate(state.robot_ids):
             if not state.peer_position_valid[index]:
-                if index != state.robot_index:
-                    dropped.append(str(robot_id))
                 continue
             if (
                 index != state.robot_index
@@ -82,10 +80,12 @@ class HIPCAllocator(NativeAllocatorBase):
                         and score < known_value - self.EPS
                     ):
                         continue
+                    cell = state.decode_cell(state.targets[slot])
                     key = (
                         -score,
                         state.robot_id_key(state.robot_ids[owner]),
-                        int(state.targets[slot]),
+                        int(cell[0]),
+                        int(cell[1]),
                     )
                     if best is None or key < best[0]:
                         best = (key, owner, slot, score)

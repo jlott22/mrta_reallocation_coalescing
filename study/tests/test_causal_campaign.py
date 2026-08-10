@@ -125,10 +125,10 @@ class CausalStudyTests(unittest.TestCase):
     def test_native_config_fails_closed_on_board_and_path_errors(self) -> None:
         bad = self._config()
         bad["hardware"]["development_override"] = False
-        bad["hardware"]["boards"] = self._boards(3)
-        bad["hardware"]["core_affinities"] = [0, 1, 2]
+        bad["hardware"]["boards"] = self._boards(2)
+        bad["hardware"]["core_affinities"] = [0, 1]
         self.config_path.write_bytes(canonical_json_bytes(bad))
-        with self.assertRaisesRegex(ValueError, "exactly four"):
+        with self.assertRaisesRegex(ValueError, "exactly 3"):
             load_causal_config(self.config_path, self.root)
         bad = self._config()
         bad["campaign"]["output_root"] = "../donor"
@@ -154,6 +154,8 @@ class CausalStudyTests(unittest.TestCase):
     def test_inline_frozen_config_preserves_sealed_binding_identity(self) -> None:
         config = self._config()
         config["hardware"]["development_override"] = False
+        config["hardware"]["boards"] = config["hardware"]["boards"][:3]
+        config["hardware"]["core_affinities"] = [0, 1, 2]
         config["hardware"]["bindings_file_sha256"] = SHA_A
         self.config_path.write_bytes(canonical_json_bytes(config))
         loaded = load_causal_config(self.config_path, self.root)
@@ -205,7 +207,7 @@ class CausalStudyTests(unittest.TestCase):
                         board_index = (
                             ("CBAA", "ACBBA", "PI", "HIPC").index(algorithm)
                             + load_index + trace
-                        ) % 4
+                        ) % 3
                         rows.append({
                             "algorithm": algorithm,
                             "arrival_load": load,

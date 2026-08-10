@@ -107,12 +107,10 @@ class ACBBAAllocator(NativeAllocatorBase):
                     or bid > best_bid + self.EPS
                     or (
                         abs(bid - best_bid) <= self.EPS
-                        and (
-                            state.targets[slot],
+                        and self._insertion_precedes(
+                            slot,
                             insertion_index,
-                        )
-                        < (
-                            state.targets[best_slot],
+                            best_slot,
                             best_index,
                         )
                     )
@@ -144,6 +142,18 @@ class ACBBAAllocator(NativeAllocatorBase):
         else:
             self.last_call_path = trigger or "no_claimable_candidate"
         return self.goal_cell()
+
+    def _insertion_precedes(self, slot, index, other_slot, other_index):
+        """Match desktop ties: lexicographic cell first, insertion index second."""
+
+        state = self.state
+        cell = state.decode_cell(state.targets[slot])
+        other = state.decode_cell(state.targets[other_slot])
+        if cell[0] != other[0]:
+            return cell[0] < other[0]
+        if cell[1] != other[1]:
+            return cell[1] < other[1]
+        return index < other_index
 
     def handle_message(self, message):
         if not isinstance(message, dict) or message.get("type") not in (

@@ -15,6 +15,7 @@ from study.manifests import canonical_json_bytes, sha256_file, validate_manifest
 
 
 SCHEMA_VERSION = 1
+PUBLICATION_WORKER_COUNT = 3
 PRIMARY_ALGORITHMS = ("CBAA", "ACBBA", "PI", "HIPC")
 POLICY_MODES = frozenset({"eager", "count", "bounded"})
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -313,8 +314,11 @@ def load_causal_config(path: Path | str, repo_root: Path | str = ".") -> CausalC
         raise ValueError("hardware.boards must be a list")
     boards = tuple(BoardBinding.from_mapping(item) for item in board_values)
     development_override = bool(hardware.get("development_override", False))
-    if len(boards) != 4 and not development_override:
-        raise ValueError("native causal campaigns require exactly four board bindings")
+    if len(boards) != PUBLICATION_WORKER_COUNT and not development_override:
+        raise ValueError(
+            "native causal campaigns require exactly "
+            f"{PUBLICATION_WORKER_COUNT} board bindings"
+        )
     if not development_override and binding_sha256 is None:
         raise ValueError(
             "native causal configs require a sealed hardware binding SHA-256"
