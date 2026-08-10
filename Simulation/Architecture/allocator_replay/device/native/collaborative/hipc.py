@@ -105,9 +105,31 @@ class HIPCAllocator(NativeAllocatorBase):
             ]
         return plans
 
+    def _truncate_invalid_suffix(self):
+        """Apply desktop HIPC's first-bad-item bundle repair rule."""
+
+        state = self.state
+        first_bad = None
+        for index, slot in enumerate(self.path):
+            if (
+                not state.is_candidate(slot)
+                or state.claim_owner[slot] != state.robot_index
+            ):
+                first_bad = index
+                break
+        if first_bad is None:
+            return False
+        # HIPC bundle entries are causally dependent.  Losing one item drops
+        # the complete suffix, not just that item; retained self claims in the
+        # suffix must be released before the local team plan is rebuilt.
+        for slot in self.path[first_bad:]:
+            if state.claim_owner[slot] == state.robot_index:
+                state.clear_claim(slot)
+        self.path = self.path[:first_bad]
+        return True
+
     def choose(self):
         state = self.state
-        starting_path = list(self.path)
         for slot in range(len(state.targets)):
             if state.claim_owner[slot] >= 0 and not state.is_candidate(slot):
                 state.clear_claim(slot)
@@ -116,13 +138,13 @@ class HIPCAllocator(NativeAllocatorBase):
             self.release_own_path("hipc_entry")
             trigger = "collision_replan"
 
-        self.clean_path(require_ownership=True)
-        repaired_path = self.path != starting_path
+        repaired_path = self._truncate_invalid_suffix()
         candidates = self.candidates(always_rank=True)
         plans = self._team_plan(candidates)
         new_path = plans.get(state.robot_index, [])[: state.commitment_horizon]
-        changed = new_path != self.path or repaired_path
-        if changed:
+        plan_changed = new_path != self.path
+        changed = plan_changed or repaired_path
+        if plan_changed:
             old_path = list(self.path)
             for slot in old_path:
                 if (

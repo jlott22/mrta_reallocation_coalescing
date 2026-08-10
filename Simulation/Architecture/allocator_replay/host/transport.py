@@ -433,6 +433,8 @@ def project_persistent_setup(setup: dict[str, Any]) -> dict[str, Any]:
         "persistent": True,
         "context_id": str(setup["context_id"]),
         "setup_mode": setup["setup_mode"],
+        "begin_call_setup": bool(setup.get("begin_call_setup", True)),
+        "end_call_setup": bool(setup.get("end_call_setup", True)),
         "deleted": setup.get("deleted", {}),
         "events": _project_value(setup.get("events", [])),
         "resume_state": _project_value(setup.get("resume_state", {})),

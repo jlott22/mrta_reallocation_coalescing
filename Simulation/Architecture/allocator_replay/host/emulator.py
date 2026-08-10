@@ -182,6 +182,8 @@ class DesktopReplayDevice:
             projected.get("events", []),
             projected.get("resume_state", {}),
             projected.get("state_aliases", []),
+            projected.get("begin_call_setup", True),
+            projected.get("end_call_setup", True),
         )
         runtime = self.persistent_slot.runtime
         counters = self.worker._persistent_counters(runtime)
@@ -645,6 +647,8 @@ class _LoopbackSerial:
                         self.fixture.get("events", []),
                         self.fixture.get("resume_state", {}),
                         self.fixture.get("state_aliases", []),
+                        self.fixture.get("begin_call_setup", True),
+                        self.fixture.get("end_call_setup", True),
                     )
                     context_id = self.persistent_slot.context_id
                     self.fixture = None

@@ -1319,22 +1319,54 @@ def main():
                     raise ValueError("PSETUP without loaded setup state")
                 attempt_id = fields[2]
                 setup_started = ticks_us()
+                context_id = None
+                setup_mode = None
+                pre_state = None
+                deleted = None
+                events = None
+                resume_state = None
+                state_aliases = None
                 try:
-                    persistent_slot.prepare(
-                        fixture["context_id"],
-                        fixture["setup_mode"],
-                        fixture.pop("pre_state"),
-                        fixture.get("deleted", {}),
-                        fixture.get("events", []),
-                        fixture.get("resume_state", {}),
-                        fixture.get("state_aliases", []),
+                    context_id = fixture["context_id"]
+                    setup_mode = fixture["setup_mode"]
+                    begin_call_setup = bool(
+                        fixture.get("begin_call_setup", True)
                     )
-                    context_id = persistent_slot.context_id
+                    end_call_setup = bool(
+                        fixture.get("end_call_setup", True)
+                    )
+                    pre_state = fixture.pop("pre_state")
+                    deleted = fixture.pop("deleted", {})
+                    events = fixture.pop("events", [])
+                    resume_state = fixture.pop("resume_state", {})
+                    state_aliases = fixture.pop("state_aliases", [])
+                    # Drop the transfer/header container before native setup;
+                    # the four resident contexts leave little contiguous heap
+                    # for an otherwise unnecessary wrapper dictionary.
+                    fixture = None
                     fixture_buffer = None
                     fixture_meta = None
-                    fixture = None
                     part_buffer = None
                     part_meta = None
+                    gc.collect()
+                    persistent_slot.prepare(
+                        context_id,
+                        setup_mode,
+                        pre_state,
+                        deleted,
+                        events,
+                        resume_state,
+                        state_aliases,
+                        begin_call_setup,
+                        end_call_setup,
+                    )
+                    context_id = persistent_slot.context_id
+                    setup_mode = None
+                    pre_state = None
+                    deleted = None
+                    events = None
+                    resume_state = None
+                    state_aliases = None
                     gc.collect()
                     device_setup_us = max(
                         0, ticks_diff(ticks_us(), setup_started)
@@ -1353,6 +1385,12 @@ def main():
                     fixture = None
                     part_buffer = None
                     part_meta = None
+                    setup_mode = None
+                    pre_state = None
+                    deleted = None
+                    events = None
+                    resume_state = None
+                    state_aliases = None
                     gc.collect()
                     _send_persistent_failure(
                         attempt_id,

@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from allocator_replay.capture.codec import decode_value
+from allocator_replay.capture.codec import canonical_json_bytes, decode_value
 
 from .binding import BoardFingerprint, BoardLease, StableBoardBinding
 from .errors import (
@@ -30,6 +30,48 @@ from .types import (
     semantic_hash,
     validate_same_time_group,
 )
+
+
+PERSISTENT_EVENT_BATCH_BYTES = 768
+
+
+def persistent_event_batches(
+    events: Sequence[Mapping[str, Any]],
+    max_bytes: int = PERSISTENT_EVENT_BATCH_BYTES,
+) -> list[list[Mapping[str, Any]]]:
+    """Return one bounded PSETUP stage per ordered callback event.
+
+    An allocator callback is atomic and cannot be split safely.  Reject an
+    unexpectedly large event on the host instead of reconstructing an
+    unbounded event queue beside four resident contexts on the controller.
+    """
+
+    if max_bytes < 2:
+        raise ValueError("max_bytes must fit an empty JSON array")
+    batches: list[list[Mapping[str, Any]]] = []
+    for event in events:
+        batch = [event]
+        encoded_size = len(canonical_json_bytes(batch))
+        if encoded_size > max_bytes:
+            raise ValueError(
+                "persistent callback event exceeds bounded setup payload: "
+                f"{encoded_size} > {max_bytes} bytes"
+            )
+        batches.append(batch)
+    return batches
+
+
+def _empty_persistent_state() -> dict[str, dict[str, Any]]:
+    return {
+        section: {}
+        for section in (
+            "robot_attrs",
+            "views",
+            "cfg",
+            "belief",
+            "allocator_attrs",
+        )
+    }
 
 
 def _field(value: Any, *names: str, default: Any = None) -> Any:
@@ -448,6 +490,95 @@ class CausalBoardSession:
             "mismatches": mismatches,
         }
 
+    def _prepare_persistent_stages(
+        self,
+        setup: Mapping[str, Any],
+        attempt_id: str,
+    ) -> dict[str, int | None]:
+        """Prepare one logical call with bounded ordered event transactions.
+
+        Existing contexts receive callbacks against their resident pre-hook
+        state before the complete authoritative checkpoint is synchronized.
+        A context's first call must bootstrap its state first, matching the
+        original create-then-apply behavior.  All stages remain outside the
+        timed allocator region and share one scientific attempt ID.
+        """
+
+        prepare = getattr(self.device, "prepare_persistent_call")
+        context_id = str(setup["context_id"])
+        events = list(setup.get("events", ()) or ())
+        event_stages = persistent_event_batches(events)
+        first_context_call = self.context_call_count.get(context_id, 0) == 0
+
+        checkpoint = dict(setup)
+        checkpoint["events"] = []
+        stages: list[dict[str, Any]] = []
+
+        def event_stage(
+            index: int,
+            batch: list[Mapping[str, Any]],
+        ) -> dict[str, Any]:
+            return {
+                "schema": int(setup.get("schema", 1)),
+                "fixture_id": (
+                    str(setup["fixture_id"])
+                    + f"/event_stage_{index:04d}"
+                ),
+                "condition_id": setup["condition_id"],
+                "mission": setup["mission"],
+                "algorithm": setup["algorithm"],
+                "context_id": context_id,
+                "setup_mode": "causal_context",
+                "deleted": {},
+                "events": batch,
+                "resume_state": {},
+                "state_aliases": [],
+                "pre_state": _empty_persistent_state(),
+            }
+
+        if first_context_call:
+            stages.append(checkpoint)
+            stages.extend(
+                event_stage(index, batch)
+                for index, batch in enumerate(event_stages)
+            )
+        else:
+            stages.extend(
+                event_stage(index, batch)
+                for index, batch in enumerate(event_stages)
+            )
+            stages.append(checkpoint)
+
+        psetup_total = 0
+        host_cpu_total = 0
+        device_setup_total = 0
+        device_setup_reported = True
+        for index, stage in enumerate(stages):
+            stage["begin_call_setup"] = index == 0
+            stage["end_call_setup"] = index + 1 == len(stages)
+            metrics = prepare(stage, attempt_id)
+            if not isinstance(metrics, Mapping):
+                device_setup_reported = False
+                continue
+            psetup_total += max(
+                0, int(metrics.get("psetup_transaction_us", 0) or 0)
+            )
+            host_cpu_total += max(
+                0, int(metrics.get("host_prepare_cpu_us", 0) or 0)
+            )
+            raw_device_setup = metrics.get("device_pre_call_setup_us")
+            if raw_device_setup is None:
+                device_setup_reported = False
+            else:
+                device_setup_total += max(0, int(raw_device_setup))
+        return {
+            "psetup_transaction_us": psetup_total,
+            "host_prepare_cpu_us": host_cpu_total,
+            "device_pre_call_setup_us": (
+                device_setup_total if device_setup_reported else None
+            ),
+        }
+
     def _measure_one(
         self,
         call: FrozenCall,
@@ -464,7 +595,9 @@ class CausalBoardSession:
         host_prepare_cpu_us = 0
         if callable(prepare) and callable(run):
             setup_started = time.perf_counter_ns()
-            prepare_metrics = prepare(dict(setup), attempt_id)
+            prepare_metrics = self._prepare_persistent_stages(
+                setup, attempt_id
+            )
             psetup_transaction_us = max(
                 0, (time.perf_counter_ns() - setup_started) // 1000
             )

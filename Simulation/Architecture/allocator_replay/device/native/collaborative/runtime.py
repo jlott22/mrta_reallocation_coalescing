@@ -148,6 +148,8 @@ def _sequence(value):
 class PersistentCollaborativeRuntime:
     """One native allocator instance assigned to one robot for one trial."""
 
+    accepts_sectioned_delta = True
+
     def __init__(self, config=None):
         self.config = dict(config or {})
         self.state = None
@@ -164,6 +166,7 @@ class PersistentCollaborativeRuntime:
         self.authoritative_last_sent = {}
         self.synchronized_authoritative_state = False
         self.behavior_last_sent = []
+        self.behavior_last_sent_initialized = False
         self.pending_algorithm_epoch_reset_us = 0
 
     def reset_trial(self, config, initial_state):
@@ -450,10 +453,22 @@ class PersistentCollaborativeRuntime:
                 if pending_snapshot_name else False,
             )
         ) if pending_snapshot_name else False
-        self.authoritative_last_sent = (
-            _decoded(flattened.get(last_sent_name), {})
-            if last_sent_name else {}
-        )
+        if last_sent_name:
+            raw_last_sent = flattened.get(last_sent_name)
+            try:
+                self.authoritative_last_sent = (
+                    None
+                    if raw_last_sent is None
+                    else decode_value(raw_last_sent)
+                )
+            except (TypeError, ValueError, KeyError, IndexError):
+                self.authoritative_last_sent = None
+            self.behavior_last_sent_initialized = (
+                self.authoritative_last_sent is not None
+            )
+        else:
+            self.authoritative_last_sent = {}
+            self.behavior_last_sent_initialized = False
         self.behavior_last_sent = self._normalize_last_sent(
             self.authoritative_last_sent
         )
@@ -554,7 +569,13 @@ class PersistentCollaborativeRuntime:
                     }
                 )
             self.behavior_last_sent = result
+            self.behavior_last_sent_initialized = True
         return messages
+
+    def begin_call_setup(self):
+        """Start one logical call that may span several bounded PSETUPs."""
+
+        self.pending_algorithm_epoch_reset_us = 0
 
     def _require_trial(self):
         if self.state is None or self.allocator is None:
@@ -567,7 +588,6 @@ class PersistentCollaborativeRuntime:
         # One setup transaction feeds exactly one subsequent allocator call.
         # Keep policy-induced allocator reset work separate from generic state
         # synchronization so the worker can add only the former to W_alloc.
-        self.pending_algorithm_epoch_reset_us = 0
         if not isinstance(delta, dict):
             raise TypeError("delta must be a mapping")
         changed = delta.get("set")
@@ -735,6 +755,7 @@ class PersistentCollaborativeRuntime:
                             self.authoritative_pending_snapshot = False
                             self.authoritative_last_sent = {}
                             self.behavior_last_sent = []
+                            self.behavior_last_sent_initialized = False
                     finally:
                         self.pending_algorithm_epoch_reset_us += max(
                             0, ticks_diff(ticks_us(), reset_started)
@@ -798,7 +819,8 @@ class PersistentCollaborativeRuntime:
             ):
                 state.set_collision(False)
 
-        state.event_counter += 1
+        if bool(delta.get("advance_event_counter", True)):
+            state.event_counter += 1
         if sequence is not None:
             self.last_delta_sequence = sequence
 
@@ -847,12 +869,20 @@ class PersistentCollaborativeRuntime:
         algorithm = self.algorithm
         if algorithm in ("PI", "HIPC"):
             path_changed = self._pre_choose_path != self._post_choose_path
+            snapshot_requested = bool(
+                getattr(self.allocator, "snapshot_requested", False)
+            )
+            if hasattr(self.allocator, "snapshot_requested"):
+                self.allocator.snapshot_requested = False
             if (
                 not self.authoritative_pending_snapshot
                 and not path_changed
                 and not generated
+                and not snapshot_requested
             ):
                 return self._record_message_behavior(generated)
+            if self._path_signature_matches_last_sent():
+                return self._record_message_behavior([])
             message_type = "pi_entry" if algorithm == "PI" else "hipc_entry"
             clear_type = (
                 "pi_clear_path" if algorithm == "PI"
@@ -871,6 +901,13 @@ class PersistentCollaborativeRuntime:
                 for slot in self.allocator.path
             ]
             if not self.allocator.path:
+                if algorithm == "HIPC" and not self.behavior_last_sent_initialized:
+                    # Desktop HIPC initializes an empty signature without an
+                    # initial clear message.  A later nonempty-to-empty change
+                    # still emits the required clear.
+                    self.behavior_last_sent = []
+                    self.behavior_last_sent_initialized = True
+                    return self._record_message_behavior([])
                 if algorithm == "PI":
                     timestamp = int(self.allocator._next_time())
                 else:
@@ -1029,6 +1066,36 @@ class PersistentCollaborativeRuntime:
                 ),
             )
         return self._record_message_behavior(messages)
+
+    def _path_signature_matches_last_sent(self):
+        """Match PI/HIPC's desktop full-path last-sent suppression rule."""
+
+        if not self.behavior_last_sent_initialized:
+            return False
+        if len(self.allocator.path) != len(self.behavior_last_sent):
+            return False
+        for slot, previous in zip(
+            self.allocator.path, self.behavior_last_sent
+        ):
+            try:
+                cell = self.state.decode_cell(self.state.targets[slot])
+                if [int(cell[0]), int(cell[1])] != list(previous["cell"]):
+                    return False
+                if (
+                    abs(
+                        float(self.state.claim_value[slot])
+                        - float(previous["value"])
+                    )
+                    > self.allocator.EPS
+                ):
+                    return False
+                if int(self.state.claim_epoch[slot]) != int(
+                    previous["timestamp"]
+                ):
+                    return False
+            except (KeyError, TypeError, ValueError, IndexError):
+                return False
+        return True
 
     def snapshot_minimal(self):
         """Return sectioned compact state sufficient to restore this context."""

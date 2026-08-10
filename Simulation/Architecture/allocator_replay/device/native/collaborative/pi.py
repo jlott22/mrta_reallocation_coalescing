@@ -10,6 +10,10 @@ class PIAllocator(NativeAllocatorBase):
     def __init__(self, state):
         NativeAllocatorBase.__init__(self, state)
         self.time_counter = 0
+        # Communication is serialized after the timed allocator call.  Keep a
+        # one-call marker for logical table changes that require a full PI
+        # snapshot even when the retained path itself is unchanged.
+        self.snapshot_requested = False
 
     def _next_time(self):
         self.time_counter += 1
@@ -48,9 +52,17 @@ class PIAllocator(NativeAllocatorBase):
         # repair, including claims owned by peers.  Keeping such a claim would
         # make the compact native consensus table observably stale even when
         # this robot's chosen path and outbound messages still match.
+        invalid_claim_cleared = False
         for slot in range(len(state.targets)):
             if state.claim_owner[slot] >= 0 and not state.is_candidate(slot):
                 state.clear_claim(slot)
+                invalid_claim_cleared = True
+        if invalid_claim_cleared:
+            # Desktop PI marks its snapshot cache pending whenever any stale
+            # table entry is cleared, including an entry outside an empty
+            # local path.  The runtime will apply last-sent suppression and
+            # emit either the current path or an explicit clear after timing.
+            self.snapshot_requested = True
         if self.collision_rising():
             self.release_own_path("pi_entry")
             trigger = "collision_replan"
@@ -100,6 +112,21 @@ class PIAllocator(NativeAllocatorBase):
                         "path_size": 0,
                     }
                 )
+
+        # Desktop PI treats its path as the complete set of local ownership
+        # claims.  Clear any valid but stale self-owned table entry outside
+        # that path before attempting inclusion; otherwise a full horizon can
+        # leave an unreachable local claim resident indefinitely.
+        stale_local_claim_cleared = False
+        for slot in range(len(state.targets)):
+            if (
+                state.claim_owner[slot] == state.robot_index
+                and slot not in self.path
+            ):
+                state.clear_claim(slot)
+                stale_local_claim_cleared = True
+        if stale_local_claim_cleared:
+            self.snapshot_requested = True
 
         changed = False
         horizon = state.commitment_horizon

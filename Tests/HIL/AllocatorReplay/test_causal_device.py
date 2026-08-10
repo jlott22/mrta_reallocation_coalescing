@@ -629,6 +629,183 @@ class NativeFourContextSlotTests(unittest.TestCase):
         ]
         self.assertEqual(path, [(1, 4), (6, 7), (9, 4)])
 
+    def test_hipc_invalid_first_item_releases_suffix_before_team_replan(self) -> None:
+        tasks = [
+            (7, 4),
+            (3, 5),
+            (1, 4),
+            (7, 6),
+            (7, 3),
+            (5, 0),
+            (3, 0),
+            (6, 3),
+        ]
+        invalid = (3, 0)
+        active = [cell for cell in tasks if cell != invalid]
+        old_path = [invalid, (3, 5), (1, 4)]
+        config = {
+            "mission": "collaborative",
+            "algorithm": "HIPC",
+            "robot_ids": list(ROBOT_IDS),
+            "grid_size": 8,
+            "all_tasks": tasks,
+            "active_tasks": active,
+            "max_candidate_cells": None,
+            "seed": 73,
+            "commitment_horizon": 3,
+        }
+        pre_state = {
+            "robot_attrs": {
+                "rid": ROBOT_IDS[0],
+                "robot_id": ROBOT_IDS[0],
+                "pos": (2, 7),
+                "grid_size": 8,
+                "hipc_path": old_path,
+                "hipc_bundle": old_path,
+                "hipc_winner_by_cell": {
+                    invalid: ROBOT_IDS[0],
+                    (3, 5): ROBOT_IDS[0],
+                    (1, 4): ROBOT_IDS[0],
+                    (7, 3): ROBOT_IDS[3],
+                    (6, 3): ROBOT_IDS[1],
+                },
+                "hipc_winning_bid_by_cell": {
+                    invalid: -14.0,
+                    (3, 5): -1.0,
+                    (1, 4): -6.0,
+                    (7, 3): -7.0,
+                    (6, 3): -13.0,
+                },
+                "hipc_bid_time_by_cell": {
+                    invalid: 1.0,
+                    (3, 5): 2.0,
+                    (1, 4): 3.0,
+                    (7, 3): 4.0,
+                    (6, 3): 5.0,
+                },
+                "hipc_pending_snapshot": False,
+                "hipc_last_sent_signature": None,
+                "hipc_bid_counter": 3,
+                "hipc_last_collision_active": False,
+                "collision_avoidance_active": False,
+                "hipc_bad_prediction_count": {},
+                "hipc_dropped_peers": set(),
+                "hipc_last_predicted_peer_first_task": {},
+                "hipc_seen_peer_bundle_signature": {},
+            },
+            "views": {
+                "all_tasks": tasks,
+                "active_tasks": active,
+                "searched": {invalid},
+                "local_searched": {invalid},
+                "target_p": {cell: 1.0 for cell in tasks},
+                "peer_positions": {
+                    ROBOT_IDS[1]: (4, 6),
+                    ROBOT_IDS[2]: (6, 5),
+                    ROBOT_IDS[3]: (6, 6),
+                },
+            },
+            "cfg": dict(config),
+            "belief": {},
+            "allocator_attrs": {},
+        }
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+
+        runtime.choose_goal()
+        messages = runtime.drain_messages()
+
+        path = [
+            runtime.state.decode_cell(runtime.state.targets[slot])
+            for slot in runtime.allocator.path
+        ]
+        self.assertEqual(path, [])
+        self.assertEqual(messages, [])
+        self.assertEqual(runtime.allocator.bid_counter, 3)
+        for cell in old_path:
+            slot = runtime.state.slot_for_cell(cell)
+            self.assertEqual(runtime.state.claim_owner[slot], -1)
+
+    def test_hipc_lost_middle_item_releases_owned_suffix_before_replan(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "HIPC", ROBOT_IDS[0]
+        )
+        cells = ((1, 1), (3, 3), (5, 5))
+        pre_state["robot_attrs"].update(
+            {
+                "hipc_path": list(cells),
+                "hipc_bundle": list(cells),
+                "hipc_winner_by_cell": {
+                    cells[0]: ROBOT_IDS[0],
+                    cells[1]: ROBOT_IDS[1],
+                    cells[2]: ROBOT_IDS[0],
+                },
+                "hipc_winning_bid_by_cell": {
+                    cells[0]: -1.0,
+                    cells[1]: -2.0,
+                    cells[2]: -3.0,
+                },
+                "hipc_bid_time_by_cell": {
+                    cells[0]: 1.0,
+                    cells[1]: 2.0,
+                    cells[2]: 3.0,
+                },
+                "hipc_pending_snapshot": False,
+                "hipc_last_sent_signature": None,
+                "hipc_bid_counter": 3,
+            }
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+        runtime.allocator._team_plan = lambda candidates: {}
+
+        runtime.choose_goal()
+
+        middle = runtime.state.slot_for_cell(cells[1])
+        suffix = runtime.state.slot_for_cell(cells[2])
+        self.assertEqual(runtime.state.claim_owner[middle], 1)
+        self.assertEqual(runtime.state.claim_owner[suffix], -1)
+
+    def test_hipc_prefix_only_repair_preserves_bid_timestamp(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "HIPC", ROBOT_IDS[0]
+        )
+        kept = (1, 1)
+        invalid = (3, 3)
+        pre_state["views"]["active_tasks"] = {kept, (5, 5)}
+        pre_state["views"]["searched"] = {invalid}
+        pre_state["views"]["local_searched"] = {invalid}
+        pre_state["robot_attrs"].update(
+            {
+                "hipc_path": [kept, invalid],
+                "hipc_bundle": [kept, invalid],
+                "hipc_winner_by_cell": {
+                    kept: ROBOT_IDS[0],
+                    invalid: ROBOT_IDS[0],
+                },
+                "hipc_winning_bid_by_cell": {kept: -1.0, invalid: -2.0},
+                "hipc_bid_time_by_cell": {kept: 1.0, invalid: 2.0},
+                "hipc_pending_snapshot": False,
+                "hipc_last_sent_signature": None,
+                "hipc_bid_counter": 2,
+            }
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+        kept_slot = runtime.state.slot_for_cell(kept)
+        runtime.allocator._team_plan = lambda candidates: {
+            runtime.state.robot_index: [kept_slot]
+        }
+
+        runtime.choose_goal()
+        messages = runtime.drain_messages()
+
+        self.assertEqual(runtime.allocator.path, [kept_slot])
+        self.assertEqual(runtime.state.claim_epoch[kept_slot], 1)
+        self.assertEqual(runtime.allocator.bid_counter, 2)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["timestamp"], 1)
+
     def test_pi_equal_cost_inclusion_uses_desktop_xy_tie_break(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
             "PI", ROBOT_IDS[0]
@@ -671,6 +848,118 @@ class NativeFourContextSlotTests(unittest.TestCase):
         runtime.choose_goal()
 
         self.assertEqual(runtime.state.claim_owner[slot], -1)
+
+    def test_pi_invalid_claim_emits_initial_empty_path_snapshot(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "PI", ROBOT_IDS[0]
+        )
+        invalid = (3, 3)
+        config["all_tasks"] = [invalid]
+        pre_state["cfg"] = dict(config)
+        pre_state["views"].update(
+            {
+                "all_tasks": [invalid],
+                "active_tasks": [],
+                "searched": {invalid},
+                "local_searched": {invalid},
+                "target_p": {invalid: 1.0},
+            }
+        )
+        pre_state["robot_attrs"].update(
+            {
+                "pi_owner_by_cell": {invalid: ROBOT_IDS[1]},
+                "pi_significance_by_cell": {invalid: 2.0},
+                "pi_time_by_cell": {invalid: 4.0},
+                "pi_path": [],
+                "pi_pending_snapshot": False,
+                "pi_last_sent_signature": None,
+                "pi_time_counter": 0,
+            }
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+
+        runtime.choose_goal()
+        messages = runtime.drain_messages()
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["type"], "pi_clear_path")
+        self.assertEqual(messages[0]["sender"], ROBOT_IDS[0])
+        self.assertEqual(messages[0]["path_cells"], [])
+        self.assertEqual(messages[0]["timestamp"], 1)
+        self.assertEqual(runtime.allocator.time_counter, 1)
+
+    def test_pi_invalid_claim_suppresses_initialized_empty_snapshot(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "PI", ROBOT_IDS[0]
+        )
+        invalid = (3, 3)
+        config["all_tasks"] = [invalid]
+        pre_state["cfg"] = dict(config)
+        pre_state["views"].update(
+            {
+                "all_tasks": [invalid],
+                "active_tasks": [],
+                "searched": {invalid},
+                "local_searched": {invalid},
+                "target_p": {invalid: 1.0},
+            }
+        )
+        pre_state["robot_attrs"].update(
+            {
+                "pi_owner_by_cell": {invalid: ROBOT_IDS[1]},
+                "pi_significance_by_cell": {invalid: 2.0},
+                "pi_time_by_cell": {invalid: 4.0},
+                "pi_path": [],
+                "pi_pending_snapshot": False,
+                "pi_last_sent_signature": (),
+                "pi_time_counter": 0,
+            }
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+
+        runtime.choose_goal()
+        messages = runtime.drain_messages()
+
+        self.assertEqual(messages, [])
+        self.assertEqual(runtime.allocator.time_counter, 0)
+
+    def test_pi_clears_stale_local_claim_outside_full_path(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "PI", ROBOT_IDS[0]
+        )
+        path_cell = (1, 1)
+        stale_cell = (3, 3)
+        config["commitment_horizon"] = 1
+        pre_state["cfg"] = dict(config)
+        pre_state["robot_attrs"].update(
+            {
+                "pi_owner_by_cell": {
+                    path_cell: ROBOT_IDS[0],
+                    stale_cell: ROBOT_IDS[0],
+                },
+                "pi_significance_by_cell": {
+                    path_cell: 2.0,
+                    stale_cell: 4.0,
+                },
+                "pi_time_by_cell": {path_cell: 1.0, stale_cell: 2.0},
+                "pi_path": [path_cell],
+                "pi_pending_snapshot": False,
+                "pi_last_sent_signature": None,
+                "pi_time_counter": 2,
+            }
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+
+        runtime.choose_goal()
+        messages = runtime.drain_messages()
+
+        stale_slot = runtime.state.slot_for_cell(stale_cell)
+        self.assertEqual(runtime.state.claim_owner[stale_slot], -1)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual((messages[0]["x"], messages[0]["y"]), path_cell)
 
     def test_cbaa_equal_bid_uses_desktop_xy_tie_break(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(

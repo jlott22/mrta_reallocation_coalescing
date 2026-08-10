@@ -659,17 +659,58 @@ class PersistentRuntimeSlot:
         return flattened
 
     @staticmethod
-    def _delta_payload(state, deleted, events):
+    def _delta_payload(
+        state,
+        deleted,
+        events,
+        flatten=True,
+        advance_event_counter=None,
+    ):
         payload = {
             "set": state,
             "delete": deleted or {},
             "events": events or [],
         }
+        if advance_event_counter is not None:
+            payload["advance_event_counter"] = bool(
+                advance_event_counter
+            )
         # Native compact runtimes consume physical-style named deltas.  Keep
         # the sectioned form too so generated replay adapters remain exact.
-        for section in ("cfg", "views", "robot_attrs"):
-            payload.update(state.get(section, {}))
+        if flatten:
+            for section in ("cfg", "views", "robot_attrs"):
+                payload.update(state.get(section, {}))
         return payload
+
+    @staticmethod
+    def _begin_call_setup(runtime, requested):
+        if not requested:
+            return
+        begin = getattr(runtime, "begin_call_setup", None)
+        if callable(begin):
+            begin()
+
+    @classmethod
+    def _runtime_delta(
+        cls,
+        runtime,
+        state,
+        deleted,
+        events,
+        advance_event_counter=True,
+    ):
+        accepts_sectioned = bool(
+            getattr(runtime, "accepts_sectioned_delta", False)
+        )
+        return cls._delta_payload(
+            state,
+            deleted,
+            events,
+            flatten=not accepts_sectioned,
+            advance_event_counter=(
+                advance_event_counter if accepts_sectioned else None
+            ),
+        )
 
     def prepare(
         self,
@@ -680,6 +721,8 @@ class PersistentRuntimeSlot:
         events=None,
         resume=None,
         aliases=None,
+        begin_call_setup=True,
+        end_call_setup=True,
     ):
         if self.trial_config is None:
             raise RuntimeError("persistent trial has not begun")
@@ -707,17 +750,31 @@ class PersistentRuntimeSlot:
                 )
                 runtime.reset_trial(self.trial_config, restore_state)
                 self.contexts[context_id] = runtime
+                self._begin_call_setup(runtime, begin_call_setup)
                 if events:
                     runtime.apply_delta(
-                        self._delta_payload({}, {}, events)
+                        self._runtime_delta(
+                            runtime,
+                            {},
+                            {},
+                            events,
+                            end_call_setup,
+                        )
                     )
             else:
                 # Simulator/environment fields and explicitly delivered
                 # messages/events advance this isolated context. Allocator
                 # state remains resident and is never copied from a context
                 # sampled earlier in the same physical serial sequence.
+                self._begin_call_setup(runtime, begin_call_setup)
                 runtime.apply_delta(
-                    self._delta_payload(state, deleted, events)
+                    self._runtime_delta(
+                        runtime,
+                        state,
+                        deleted,
+                        events,
+                        end_call_setup,
+                    )
                 )
             self.runtime = runtime
             self.context_id = context_id
@@ -733,11 +790,18 @@ class PersistentRuntimeSlot:
                 else self._native_state(state, resume)
             )
             runtime.reset_trial(self.trial_config, restore_state)
+            self._begin_call_setup(runtime, begin_call_setup)
             self.runtime = runtime
             self.context_id = str(context_id)
             if events:
                 runtime.apply_delta(
-                    self._delta_payload({}, {}, events)
+                    self._runtime_delta(
+                        runtime,
+                        {},
+                        {},
+                        events,
+                        end_call_setup,
+                    )
                 )
         elif mode == "delta":
             if self.runtime is None or self.context_id != str(context_id):
@@ -745,8 +809,15 @@ class PersistentRuntimeSlot:
                     "delta context is not the active persistent context"
                 )
             state = self._apply_state_aliases(state, aliases)
+            self._begin_call_setup(self.runtime, begin_call_setup)
             self.runtime.apply_delta(
-                self._delta_payload(state, deleted, events)
+                self._runtime_delta(
+                    self.runtime,
+                    state,
+                    deleted,
+                    events,
+                    end_call_setup,
+                )
             )
         else:
             raise ValueError("unknown persistent setup mode: " + str(mode))

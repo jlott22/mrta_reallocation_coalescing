@@ -436,6 +436,25 @@ def _worker_entry(
             _restore_worker_signal_mask(previous_mask)
         if hasattr(provider, "open"):
             provider.open()
+
+        def reopen_provider(current: Any) -> Any:
+            """Replace a possibly invalidated session with a clean one."""
+
+            if current is not None and hasattr(current, "close"):
+                current.close()
+            previous = _block_worker_sigterm()
+            try:
+                replacement = provider_factory(
+                    config=config,
+                    board=board,
+                    zero_compute=zero_compute,
+                )
+            finally:
+                _restore_worker_signal_mask(previous)
+            if hasattr(replacement, "open"):
+                replacement.open()
+            return replacement
+
         result_queue.put({
             "type": "worker_ready",
             "worker_index": worker_index,
@@ -447,6 +466,7 @@ def _worker_entry(
             "thread_environment": dict(THREAD_ENV),
             "python_hash_seed": os.environ.get("PYTHONHASHSEED"),
         })
+        provider_needs_refresh = False
         for block in blocks:
             if block.worker_index != worker_index or block.board.board_id != board.board_id:
                 raise CampaignError("worker received a block bound to another board")
@@ -458,6 +478,14 @@ def _worker_entry(
                 if state == "conflict":
                     result_queue.put({"type": "job", "status": "conflict", "job_id": job.job_id, "worker_index": worker_index})
                     continue
+                if provider_needs_refresh:
+                    # A job that exhausts its retries leaves the causal
+                    # session unusable.  Top-K's confirmed recovery pattern is
+                    # to start the next independent job from a clean,
+                    # identity/build-validated worker rather than cascading a
+                    # session timeout into unrelated evidence.
+                    provider = reopen_provider(provider)
+                    provider_needs_refresh = False
                 success = False
                 for retry_index in range(config.max_technical_retries + 1):
                     attempt = _next_attempt(config.output_root, job)
@@ -526,19 +554,9 @@ def _worker_entry(
                             # invalidate the session. Reopen a new, strictly
                             # identity/build-validated session for the retry;
                             # never continue a partially failed mission.
-                            if provider is not None and hasattr(provider, "close"):
-                                provider.close()
-                            previous_mask = _block_worker_sigterm()
-                            try:
-                                provider = provider_factory(
-                                    config=config, board=board,
-                                    zero_compute=zero_compute,
-                                )
-                            finally:
-                                _restore_worker_signal_mask(previous_mask)
-                            if hasattr(provider, "open"):
-                                provider.open()
+                            provider = reopen_provider(provider)
                 if not success:
+                    provider_needs_refresh = True
                     result_queue.put({"type": "job", "status": "failed", "job_id": job.job_id, "worker_index": worker_index})
         result_queue.put({"type": "worker_done", "worker_index": worker_index, "pid": os.getpid()})
     except _WorkerTermination as error:
