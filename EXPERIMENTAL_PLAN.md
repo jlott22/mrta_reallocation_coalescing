@@ -1,394 +1,688 @@
-# Experimental plan: causal reallocation coalescing
+FINAL MINIMAL EXPERIMENTAL EXECUTION PLAN
+MRTA Reallocation Coalescing — IPCCC Short Paper
 
-## 1. Research question
+GOAL
+Complete the paper within the available time by using the AGX Orin causal simulator for the full statistical study and limiting RP2040 hardware execution to exactly 120 publication trials. Do not run large hardware calibration, hardware variance, or full-factorial hardware campaigns.
 
-How does reallocation coalescing change total computational workload and task
-responsiveness in online multi-robot task allocation, including downstream
-changes it induces in allocation decisions and mission execution?
+============================================================
+1. FIXED STUDY SCOPE
+============================================================
 
-The estimand is a paired mission-level policy effect under common exogenous
-inputs. It is not a frozen-call replay effect. Policies may make different
-decisions, call the allocator different numbers of times, travel different
-paths, and finish at different times.
+Mission:
+- Collaborative Visit only
+- 19x19 grid
+- 4 robots
+- 50 tasks total
+- 8 initially visible
+- 42 released online
+- Ideal communication
+- Unrestricted candidate sets
+- No Top-K
 
-## 2. Hypotheses
+Primary algorithms:
+- CBAA
+- ACBBA
+- PI
+- HIPC
 
-The primary hypotheses are evaluated separately by allocator and arrival load.
+Policies:
+- Eager / B=1
+- Count B=2
+- Count B=4
+- Count B=8
+- Bounded B=4 with timeout W
 
-- H1 (mechanism): count/bounded coalescing changes arrival-driven reallocation
-  frequency and therefore total RP2040 allocator processor work relative to
-  Eager.
-- H2 (responsiveness): stronger coalescing changes trial-level
-  release-to-assignment and release-to-completion latency relative to Eager.
-- H3 (workload dependence): the paired B4-versus-Eager work effect varies over
-  low, medium, and high arrival pressure.
-- H4 (deployment consequence): nonzero device compute changes causal makespan
-  relative to the exact zero-compute condition.
-- H5 (bounded compromise): one common B4/W setting can limit sparse-load waiting
-  while retaining nonnegative median work saving at medium/high load.
+Arrival regimes:
+- Low
+- Medium
+- High
 
-These are scientific questions, not assertions about result direction. The
-prior noncausal pilot motivates the workload-dependent hypothesis but does not
-constrain the causal result.
+Paired design:
+For a given algorithm, arrival load, and trace ID, every policy receives exactly the same:
+- robot starts
+- task coordinates
+- initial visible tasks
+- absolute online task-release sequence
+- applicable random seeds
 
-## 3. Experimental unit, block, and factors
+Policies are NOT required to make the same assignments or trajectories. Different decisions, paths, completion events, allocator-call counts, and mission durations are valid downstream effects of the policy.
 
-The independent replicate is one complete mission/trace condition. The primary
-paired block is:
+============================================================
+2. TIMING MODEL TO USE
+============================================================
 
-`algorithm x arrival_load x trace_id`
+Use causal per-robot timing.
 
-All five policies in a block use the same scenario bytes, absolute release
-manifest, runtime seed, final-cohort seed derivation, and physical RP2040 board.
-The 50 task rows inside a mission are not independent replicates.
+Movement:
+- A robot starts a cell traversal.
+- The movement duration elapses.
+- Position/task completion is committed only at movement completion.
+- The final cell movement duration must be included before the mission can finish.
 
-Independent variables:
+Allocation:
+- A robot reaches a safe decision boundary.
+- Its allocator call starts at simulated time t.
+- The call has measured duration d.
+- That logical robot is compute-busy until t+d.
+- The allocator decision becomes visible only at t+d.
+- The robot cannot begin its next motion before t+d.
+- Other robots continue independently.
+- No global allocation pause.
 
-- allocator: CBAA, ACBBA, PI, HIPC;
-- arrival load: native-calibrated low, medium, high;
-- coalescing policy: Eager/B1, B2, B4, B8, bounded B4/W; and
-- compute counterfactual for deployment analysis: native RP2040 duration versus
-  zero duration under the same condition identity.
+Task releases:
+- Releases remain exogenous and occur at their predetermined absolute mission times.
+- A release can occur while robots are moving or computing.
+- An in-flight allocator call cannot use information that arrived after its compute-start time.
 
-Board is a blocking/provenance variable, not a planned paper factor. If native
-diagnostics show material board differences, report them and perform a
-sensitivity analysis rather than silently pooling incompatible devices.
+For the full AGX statistical study:
+- Use causal AGX allocator timing.
 
-## 4. Controlled mission inputs
+For selected hardware trials:
+- Use measured RP2040 allocator duration as the causal compute duration.
+- AGX allocation decisions remain authoritative.
+- RP2040 timing is used only if the call passes the required parity check.
 
-The primary mission is Collaborative Visit on a 19 x 19 grid with four logical
-robots and 50 tasks. Eight tasks are visible at time zero and 42 are released
-online. Candidate enumeration is unrestricted: no Top-K filtering or task/route
-bundling is used.
+Mission elapsed time:
+T_mission = final required task completion time - mission start time
 
-Controlled properties include:
+Do not add allocator time after the mission.
 
-- the same four robot starts within a trace;
-- identical task IDs and coordinates within a trace;
-- identical eight initially active tasks;
-- identical absolute release timestamps for the 42 online tasks;
-- identical runtime and applicable stochastic seeds;
-- ideal communication with a fixed 0.040 s delivery delay and zero jitter;
-- the same virtual movement-time model; and
-- common rates, W, trace count, firmware/module build, and analysis version for
-  every allocator.
+============================================================
+3. AGX-ONLY CALIBRATION — KEEP THIS MINIMAL
+============================================================
 
-The final cohort uses master seed `2026080905`, independently from the
-calibration cohort seed `20260808`. Freeze validation requires no calibration/
-final trace signature overlap. Exogenous pairing does not imply identical
-decisions or trajectories.
+Do NOT repeat the previous large calibration suites.
 
-## 5. Timing treatment
+Start with the already-supported candidate design:
+- low = 0.075 tasks/s
+- medium = 0.30 tasks/s
+- high = 1.20 tasks/s
+- bounded timeout W = 5 s
 
-Each mission is a four-logical-processor causal simulation. At an eligible safe
-control boundary, a robot freezes its pre-call state, the AGX computes the
-authoritative decision, and the bound RP2040 measures the parity-equivalent
-allocator duration `d_r`: goal selection plus any policy-induced allocation-
-epoch reset callback. That logical robot cannot move or publish the
-staged result until virtual time `t+d_r`. Other robots continue independently.
+Because timing is now causal, perform only a small AGX-only verification before freezing these values.
 
-For a same-time call group, every pre-call state is frozen before the first call
-result can become visible. Sequential physical requests on the one board are
-measurement order only. Each call completes at the common virtual start plus
-its own duration.
+A. Arrival-regime verification
+Run:
+4 algorithms x 3 proposed loads x 2 policies (Eager, B4) x 3 paired traces
+= 72 AGX-only trials
 
-Absolute task releases, scheduler timeouts, movement completions, and message
-deliveries remain in the event queue while any robot is compute-busy. New
-information cannot retroactively change an in-flight computation. The next
-eligible allocator invocation processes buffered information according to the
-allocator/scheduler protocol.
+Verify only that:
+LOW:
+- arrivals are sparse
+- limited coalescing opportunity
+- no persistent severe backlog
 
-Movement is an action interval. Position and any arrival-serviced task are
-committed at `movement_start + movement_duration`. `mission_elapsed_time_s` is
-the timestamp of the final required task completion, measured from mission
-start, for a completed mission. It is neither summed robot work nor host wall
-time. An incomplete mission has no defined final-completion makespan; retain its
-horizon/event clock as a diagnostic and exclude it from makespan inference.
+MEDIUM:
+- arrivals overlap regularly
+- clear opportunity for coalescing
+- missions remain healthy
 
-The RP2040 allocator duration is the checked sum of separate goal-selection and
-policy-induced allocation-epoch-reset timers. USB, generic state/message setup,
-explicit pre-call GC, and output serialization are excluded. Natural GC inside
-either measured allocator operation is included. AGX call time, RP2040 call time, protocol
-transaction wall times, device pre-call setup, host preparation, and host total
-time remain separate raw diagnostics. See `CAUSAL_IMPLEMENTATION_REPORT.md` for
-the schema-2 limitation: pure host serialization cannot be isolated and is
-explicitly marked unmeasured.
+HIGH:
+- arrivals overlap heavily
+- meaningful reallocation pressure
+- missions remain executable rather than universally saturated
 
-## 6. Policies and event decomposition
+If all three regimes meet these definitions, KEEP 0.075 / 0.30 / 1.20.
 
-The fixed policy set is:
+Do not search for better-looking rates.
 
-1. Eager / B=1;
-2. Count B=2;
-3. Count B=4;
-4. Count B=8; and
-5. Bounded Count B=4 with common timeout W.
+Only if one regime clearly fails its definition should adjacent rates be tested, and only for that regime.
 
-Pending arrivals are admitted when a count or age condition fires. A mandatory
-allocation may piggyback pending tasks before the count threshold. Residual
-pending work is flushed by terminal release-state logic so count batching does
-not deadlock.
+B. Timeout verification
+Run:
+4 algorithms x 2 loads (low, medium) x 3 policies (Eager, B4, bounded B4/W=5) x 3 paired traces
+= 72 AGX-only trials
 
-Mechanism analysis separates arrival-driven policy-controlled events from
-mandatory/execution-driven events and retains exact trigger reasons:
-`initial_allocation`, `task_arrival_eager`, `batch_threshold`, `age_timeout`,
-`final_release_flush`, `task_completion`, `invalid_goal`, `robot_idle`,
-consensus/internal, and other. Piggybacked admissions are counted explicitly.
+Verify that W=5:
+- limits excessive low-load task waiting
+- still allows meaningful coalescing
+- does not create obvious pathological behavior
 
-## 7. Hardware and execution design
+If acceptable, KEEP W=5.
 
-One AGX Orin runs exactly four worker processes. Worker i owns one permanent,
-exclusive RP2040 serial session and executes one mission at a time. Its board
-hosts four persistent logical allocator contexts during that mission. This is
-one timing board per mission, not one physical processor per logical robot.
+Only if W=5 clearly fails should W=2 and/or W=10 be tested.
 
-The four workers are pinned to four distinct configured logical cores. Relevant
-numerical-library thread counts are one. Stable device UID and sealed
-build/firmware/module hashes replace `/dev/ttyACM*` enumeration as identity.
-Four workers must fit within 75% of the detected logical-core count, but the
-publication concurrency is always four.
+C. Do NOT run a separate large variance pilot.
+Use the final AGX campaign for the inferential dataset.
 
-All five policies in a paired block remain on one board. A crossed Latin board
-assignment balances algorithm, load, and trace across four boards. A per-board
-cyclic Latin policy rotation counterbalances order. The deterministic hash
-schedule and exact worker/core/board mapping are sealed.
+============================================================
+4. FULL AGX STATISTICAL CAMPAIGN
+============================================================
 
-## 8. Native calibration protocol
+Run the complete factorial on the AGX causal simulator:
 
-Calibration is required because the old post-hoc rates and timeout are not
-final causal settings. It must run only after the environment check, twenty-item
-native preflight, and causal smoke pass.
+4 algorithms
+x 3 arrival loads
+x 5 policies
+x 25 paired traces
+= 1,500 AGX causal trials
 
-### 8.1 Smoke
+Policies:
+- Eager
+- B2
+- B4
+- B8
+- bounded B4/W
 
-The smoke contains four algorithms, Eager and B4, two provisional sparse/heavy
-loads, and two traces: 32 missions. It must use every board/worker, finish with
-clean parity and invariants, observe causal compute behavior, and pass a second
-content-validated resume invocation.
+This is the PRIMARY inferential experiment.
 
-### 8.2 Arrival-rate calibration
+Use exactly 4 AGX simulation workers/logical cores.
 
-Candidate rates are 0.03, 0.075, 0.15, 0.30, 0.60, 1.20, and 2.40 tasks per
-mission-second. The matrix is:
+The AGX campaign provides:
+- complete policy curves
+- all 25 paired replicates
+- statistical significance testing
+- causal task latency
+- causal mission elapsed time
+- movement metrics
+- event/call decomposition
 
-`7 rates x 4 algorithms x 2 policies (Eager, B4) x 5 traces = 280 missions`
+No RP2040 hardware is required for B2 or B8.
 
-One common low/medium/high set is selected across algorithms. Eligible endpoints
-must have at least 95% mission completion. The predeclared pressure index uses
-B4 median pending depth, B4 batch-threshold events per 42 online tasks, and the
-fraction of online releases strictly inside compute intervals. Processor work
-does not enter rate selection. Low/high are the lowest/highest healthy endpoints
-only if pressure increases; medium is the healthy interior rate closest to the
-pressure midpoint. Labels are relative to this candidate sweep. The operator
-must inspect per-algorithm diagnostics and explicitly seal all three choices.
+============================================================
+5. ZERO-COMPUTE COUNTERFACTUAL
+============================================================
 
-### 8.3 Bounded-timeout calibration
+Run a simulation-only zero-compute counterpart for the final AGX conditions if computationally inexpensive.
 
-After rates are reviewed, test W = 2, 5, 10, and 20 s with Eager and the four
-bounded candidates:
+For each condition:
+- same algorithm
+- same policy
+- same load
+- same trace
+- same exogenous inputs
+- allocator service duration set to zero
 
-`3 loads x 4 algorithms x 5 conditions x 5 traces = 300 missions`
+Do NOT force the same resulting trajectory.
 
-The common-W rule first keeps candidates with at least 95% completion and
-nonnegative median RP2040 work saving versus Eager over paired medium/high
-trials. Among those, choose the candidate with the smallest median low-load
-trial-p95 release-to-completion latency. Work is a feasibility constraint, not
-an objective to maximize. W is not tuned per allocator.
+Use this only to estimate:
 
-### 8.4 Variance and n check
+D_alloc = T_causal - T_zero_compute
+
+and:
+
+allocation_attributable_mission_fraction
+= D_alloc / T_causal
+
+This is a secondary explanatory metric, not the headline result.
+
+============================================================
+6. HARDWARE SETUP
+============================================================
+
+Hardware:
+- 1 AGX Orin
+- 4 connected RP2040/Pololu boards
+
+Run exactly 4 hardware-coupled simulations concurrently:
+
+Simulation Worker 0 -> RP2040 A
+Simulation Worker 1 -> RP2040 B
+Simulation Worker 2 -> RP2040 C
+Simulation Worker 3 -> RP2040 D
+
+Each physical RP2040 belongs to one active simulation.
+
+Each RP2040 maintains four persistent logical robot allocator contexts for that simulation.
+
+The physical board may time logical robot calls sequentially, but this MUST NOT serialize virtual mission timing.
+
+Example:
+If logical R0, R1, R2, and R3 all start allocating at virtual time 20.0 s and measured RP2040 durations are 0.40, 0.55, 0.37, and 0.61 s, virtual completion times are:
+
+R0 -> 20.40
+R1 -> 20.55
+R2 -> 20.37
+R3 -> 20.61
+
+Do NOT accumulate the physical measurement order into the virtual timeline.
+
+============================================================
+7. HARDWARE PREFLIGHT — BASIC ONLY
+============================================================
+
+Do not turn preflight into another experiment.
+
+Before publication hardware trials, verify:
+
+- all 4 intended boards are detected
+- unique board IDs are recorded
+- expected firmware/build is installed
+- timer units/resolution are correct
+- all 4 primary algorithms load
+- four persistent logical contexts can be created/reset
+- online task growth works
+- AGX/RP2040 deterministic known-answer goals match
+- required message/state parity check works
+- USB/serial overhead is excluded from RP2040 allocator timing
+- disconnect causes fail-closed termination
+- no worker can use another worker's board
+- same-time logical calls preserve frozen pre-call state
+- context reset between missions works
+
+No large hardware calibration is permitted.
+
+============================================================
+8. HARDWARE SMOKE TEST — BASIC ONLY
+============================================================
+
+Run no more than 8-16 total smoke missions.
+
+The smoke set only needs to confirm:
+- all 4 algorithms can complete causal hardware-timed missions
+- Eager and B4 both execute
+- at least low and high load are represented
+- all 4 worker/board pairs are exercised
+- parity remains valid
+- missions complete
+- no stale context/cross-board contamination occurs
+- resume/restart works
+
+Smoke trials are engineering validation only and are not part of the paper dataset.
+
+============================================================
+9. EXACT RP2040 PUBLICATION MATRIX — 120 TRIALS TOTAL
+============================================================
+
+Do not exceed this matrix unless a technical retry is required.
+
+A. Core Eager-vs-B4 hardware validation
 
 Run:
+4 algorithms
+x 3 loads
+x 2 policies (Eager, B4)
+x 4 paired traces
+= 96 RP2040-timed causal missions
 
-`3 loads x 4 algorithms x 2 policies (Eager, B4) x 10 traces = 240 missions`
+Use trace IDs 1-4 from the final sealed AGX trace set.
 
-For each algorithm/load cell, summarize paired RP2040 work, percent saving,
-median assignment latency, median and p95 completion latency, mission elapsed
-time, and event-count effects. The implemented exploratory rule carries the
-n=10 sample SD to n=25 using `2.064 * SD / sqrt(25)`. Retain n=25 when at least
-75% of algorithm/load cells have a projected half-width no larger than the
-observed absolute mean for both primary work and completion-latency effects;
-otherwise recommend 50. Zero effects and missing variance are inadequate. This
-is a planning heuristic, not a confirmatory power calculation; the operator
-must explicitly review n.
+Purpose:
+- measure actual embedded processor work
+- test whether Eager->B4 compute trends transfer to RP2040 hardware
+- obtain selected RP2040-timed causal task-latency and mission-time results
 
-## 9. Design freeze and final matrix
+B. Bounded-policy hardware validation
 
-Do not run the final campaign directly after calibration. The operator first
-reviews every native report and invokes the explicit freeze. The freeze must
-bind exactly six passing evidence kinds: environment, preflight, smoke, rate
-calibration, timeout calibration, and variance pilot.
+Run:
+4 algorithms
+x 2 loads (low, medium)
+x 1 policy (bounded B4/W)
+x 3 paired traces
+= 24 RP2040-timed causal missions
 
-The target frozen matrix, if n=25 remains supported, is:
+Use trace IDs 1-3, which must also exist in the Eager/B4 hardware subset.
 
-`4 algorithms x 3 loads x 5 policies x 25 traces = 1,500 native-timed missions`
+Purpose:
+- validate the practical bounded policy where its timeout matters most
+- do not run bounded hardware trials at high load unless the final AGX data show an unexpected reason that makes them necessary
 
-Any reviewed n other than 25 changes the final count and must be reported as a
-protocol deviation supported by the variance report. The frozen config cannot
-silently regenerate rates, W, n, manifests, schedule identity, code identity,
-or device cohort.
+TOTAL PUBLICATION HARDWARE TRIALS:
+96 + 24 = 120
 
-## 10. Zero-compute counterfactual
+With four boards running concurrently, this is 30 hardware mission slots per board if balanced.
 
-After the causal matrix completes, run an equivalent zero-duration condition
-for every frozen algorithm/load/policy/trace identity. It reuses the same
-scenario, release manifest, policy, algorithm, and random inputs; it does not
-reuse a stored allocator-call sequence or force the native trajectory.
+============================================================
+10. HARDWARE PAIRING / BOARD ASSIGNMENT
+============================================================
 
-Changing compute duration can change event ordering, later calls, assignments,
-and paths. The pairing is therefore condition-level:
+For a paired block defined by:
+algorithm x load x trace ID
 
-```text
-D_alloc = T_RP2040_causal - T_zero_compute
-F_alloc = D_alloc / T_RP2040_causal
-```
+keep the relevant policies on the same physical board whenever possible.
 
-`F_alloc` is the allocation-attributable mission fraction under this causal
-model, not the sum of a frozen call trace. Negative D values are retained and
-flagged.
+Example:
+CBAA / medium / trace 2:
+- Eager
+- B4
+- bounded, if applicable
 
-## 11. Outcomes and equations
+should use the same board.
 
-### 11.1 Processor work
+Counterbalance policy execution order so Eager is not always first.
 
-For mission m:
+Balance paired blocks across all four boards.
 
-```text
-W_rp2040(m) = sum over calls c of d_device(c)
-W_agx(m)    = sum over calls c of d_agx(c)
-```
+Record board ID for every trial.
 
-Both are processor-seconds. They are reported separately and are not mission
-delay. The primary paired work effect for policy P is:
+Do not treat board identity as an experimental factor unless a real hardware problem appears.
 
-```text
-S_work(P) = 100 * [W(Eager) - W(P)] / W(Eager)
-```
+============================================================
+11. RP2040 PARITY RULE
+============================================================
 
-Positive S means work saved.
+AGX allocator decisions remain authoritative.
 
-### 11.2 Task responsiveness
+For each timed RP2040 call, verify enough parity to establish that the device timed the same logical computation.
 
-For each task j:
+At minimum compare:
+- selected goal
+- active/candidate task count
+- call classification
+- outbound message/state signature where available
 
-```text
-L_assign(j)   = first_assignment(j) - release(j)
-L_complete(j) = completion(j) - release(j)
-```
+If parity fails:
+- do not use that device duration
+- mark the attempt as technical failure
+- retain diagnostic information
+- allow a bounded technical retry
+- do not classify it as an algorithmic mission failure
 
-Within each trial report median and p95 latency (and descriptive mean/max).
-The trial summary, not each task, enters inferential analysis. Admission-to-
-eligible, admission-to-assignment, and assignment-to-completion components are
-retained to explain mechanisms.
+Do not run a separate parity experiment beyond preflight/smoke and the parity checks already embedded in the 120 publication trials.
 
-### 11.3 Mission and capacity
+============================================================
+12. PRIMARY PAPER METRICS
+============================================================
 
-```text
-T_mission = final required task completion - mission start
-C_alloc   = W_rp2040 / (4 * T_mission)
-```
+A. Total allocator processor work
 
-`C_alloc` is the aggregate fraction of the modeled four-processor capacity
-consumed by allocator computation. Also retain total and maximum per-robot
-movement steps, calls, reallocation events, trigger counts, queue summaries,
-and work per call/event/completed task.
+For one mission:
 
-### 11.4 Outcome status
+W_alloc = sum of allocator-call durations over all four logical robots
 
-Report planned, technically completed, algorithmically completed,
-algorithmically incomplete, excluded, retried, and permanently failed counts.
-Never treat a parity/transport fault as a mission outcome, never silently omit
-an unfavorable completed mission, and never substitute a duration after a
-failed call.
+For AGX:
+use AGX allocator durations.
 
-## 12. Statistical analysis
+For hardware:
+use RP2040 device allocator durations.
 
-All confirmatory comparisons use trial-level paired blocks. For each
-`algorithm x load`, run a Friedman test across Eager, B2, B4, B8, and bounded
-B4/W for:
+Units:
+processor-seconds
 
-- RP2040 processor work;
-- trial-median assignment latency;
-- trial-median completion latency;
-- trial-p95 completion latency;
-- causal mission elapsed time;
-- max robot steps; and
-- total team steps.
+Primary paired hardware effect:
 
-Only complete five-policy blocks enter a Friedman test. If the omnibus result
-is significant at the declared alpha, run paired Wilcoxon signed-rank contrasts
-against Eager and apply Holm correction within the declared family. Report raw
-and adjusted p-values, n, effect direction, and paired effect magnitude.
-Deterministic paired bootstrap 95% intervals are used where implemented for
-work saving, latency/makespan effects, D_alloc, capacity consequences, and
-steps. Do not reinterpret task rows as additional n.
+percent_processor_work_saved
+= 100 * (W_Eager - W_policy) / W_Eager
 
-Workload dependence is shown with paired B4 effects across the three loads,
-including `Delta W_B4 = W_B4 - W_Eager` and relative work saved. Completion and
-technical-outcome tables accompany inferential results so complete-case
-analysis cannot hide failure patterns. No significance is fabricated when
-pairing/coverage is incomplete.
+Pair only identical:
+- algorithm
+- load
+- trace ID
 
-## 13. Paper-facing outputs
+Interpretation:
+total allocator processing required to complete the same external online workload.
 
-- Figure 1: x = paired release-to-completion latency change; y = paired percent
-  RP2040 work saved; Eager -> B2 -> B4 -> B8 trajectory, bounded B4/W separate,
-  loads distinguished.
-- Figure 2: arrival-driven and mandatory events, piggybacks, total calls, and
-  RP2040 work per call/event by load/policy.
-- Figure 3: causal mission-time change, processor-capacity fraction,
-  allocation-attributable fraction, and max/total movement steps. Split panels
-  if one graphic would obscure the result.
-- Table: compact algorithm/load/policy summary with sample/completion status,
-  work, task latency, mission elapsed time, and key mechanism counts.
+Do NOT interpret this as mission delay or individual-call speed.
 
-Every figure/table must be traceable to immutable analysis input hashes and the
-frozen analysis version.
+B. Release-to-first-assignment latency
 
-## 14. Interpretation rules
+For each task:
 
-- Same exogenous input does not mean identical decision or trajectory.
-- Fewer events do not imply less processor work; inspect work per call/event.
-- Summed robot compute is processor work, not makespan.
-- USB or setup time is not allocator computation.
-- A positive responsiveness delta means slower task service relative to Eager;
-  a positive percent-work-saved value means less work.
-- A negative D_alloc is possible through trajectory/event-order changes and is
-  reported, not clipped.
-- Board identity is a block. If results drift by board/order/temperature, show a
-  sensitivity analysis and describe the deviation.
-- Results that contradict the prior sparse/medium/heavy narrative are retained
-  and become the paper result.
+L_assign = first_assignment_time - release_time
 
-## 15. Limitations and validity threats
+Trial summaries:
+- median
+- p95
+- mean/max as secondary diagnostics
 
-- Movement is modeled virtual motion, not measured Pololu travel.
-- One physical board sequentially samples four logical processors. Frozen
-  snapshots and independent virtual completions prevent semantic
-  serialization, but thermal/GC/order effects in the physical measurement
-  stream may remain; counterbalancing and per-call diagnostics mitigate them.
-- AGX and compact native allocator representations require algorithm-specific
-  behavioral projections when raw hashes cannot be identical. Preflight and
-  mutation tests make that projection fail closed, but this remains a
-  methodological assumption to disclose.
-- Communication is idealized as fixed 40 ms delivery without jitter.
-- Goal selection and the policy-induced allocator epoch-reset callback form the
-  timed deployment region. Generic state synchronization and output
-  construction are excluded by design and reported separately.
-- Pure host serialization cost cannot be isolated by timing schema 2; its field
-  is explicitly unmeasured.
-- AGX authoritative timing is recorded under four pinned workers, so power,
-  clocks, temperature, and throttling must be controlled/reported even though
-  RP2040 time drives the virtual mission.
-- Algorithmic horizon outcomes can make complete-block inference unavailable;
-  completion/outcome patterns must remain visible.
-- Twenty-five traces is a target until the native causal variance stage is
-  reviewed and frozen.
+Interpretation:
+how long after a task appears before the team first decides who handles it.
 
-## 16. Reproducibility record
+C. Release-to-completion latency
 
-The final review package consists of the frozen design/config, manifest index
-and release hashes, four-board binding, environment and preflight reports,
-calibration reports, causal/zero schedules and execution reports, every
-promoted raw job plus retained technical failures, analysis metadata and input
-hashes, and `FULL_CAMPAIGN_REPORT.md`. The exact execution order is documented
-in `AGX_NATIVE_RUNBOOK.md`.
+For each task:
+
+L_complete = completion_time - release_time
+
+Trial summaries:
+- median
+- p95
+- mean/max as secondary diagnostics
+
+Interpretation:
+how long after a task appears before it is actually serviced.
+
+D. Mission elapsed time
+
+T_mission
+= final task completion time - mission start
+
+Secondary paper metric.
+
+E. Mission completion rate
+
+All technical and algorithmic failures must remain visible and classified.
+
+============================================================
+13. MECHANISM / EXPLANATORY METRICS
+============================================================
+
+These explain WHY total processor work changed.
+
+Record:
+
+- total reallocation events
+- arrival-driven reallocation events
+- mandatory execution-driven reallocation events
+- piggybacked admissions
+- total allocator calls
+- processor work per allocator call
+- processor work per reallocation event
+- processor work per completed task
+- active task count per allocator call
+- pending-task count/age
+- max robot steps
+- total team steps
+
+Important interpretation:
+
+A policy can reduce reallocation events but still increase total compute if its remaining calls are more expensive.
+
+A policy can save compute but worsen mission time if it produces worse task waiting or routing decisions.
+
+These are valid outcomes, not errors.
+
+============================================================
+14. SECONDARY TIMING METRICS
+============================================================
+
+A. Processor-capacity fraction
+
+For four virtual processors:
+
+processor_capacity_fraction
+= W_alloc / (4 * T_mission)
+
+Interpretation:
+average fraction of total four-processor capacity consumed by allocation.
+
+Do NOT call this percent mission time spent allocating.
+
+B. Allocation-attributable mission fraction
+
+Using the paired zero-compute simulation:
+
+allocation_attributable_fraction
+= (T_causal - T_zero_compute) / T_causal
+
+Interpretation:
+estimated causal contribution of nonzero allocation computation to mission makespan.
+
+Keep secondary unless results are especially clear.
+
+============================================================
+15. STATISTICS
+============================================================
+
+Inferential statistics come from the 1,500-trial AGX dataset.
+
+The TRIAL is the replicate.
+
+Do NOT treat individual task rows as independent samples.
+
+Within each:
+algorithm x load
+
+run Friedman across:
+- Eager
+- B2
+- B4
+- B8
+- bounded
+
+Primary outcomes:
+- total AGX processor work
+- trial-median assignment latency
+- trial-median completion latency
+- p95 completion latency
+- mission elapsed time
+
+If significant:
+paired Wilcoxon signed-rank comparisons against Eager with Holm correction.
+
+Also test whether the paired B4 effect changes across low/medium/high load.
+
+RP2040 n=4 / n=3 hardware results are validation/descriptive results.
+
+Do NOT run significance tests on the 120-trial hardware subset unless a later analysis demonstrates a clearly justified reason.
+
+============================================================
+16. EXPECTED PAPER DATA PRESENTATION
+============================================================
+
+Figure 1 — Main AGX compute-responsiveness tradeoff
+For each allocator:
+x = paired change in task completion latency vs Eager
+y = percent total allocator processor work saved vs Eager
+show Eager -> B2 -> B4 -> B8
+show bounded separately
+distinguish low/medium/high load
+
+Figure 2 — Mechanism
+Show:
+- arrival-driven event count
+- mandatory event count
+- total calls
+- processor work per call/event
+
+This should explain cases such as:
+fewer reallocations but no compute saving.
+
+Figure 3 — Hardware validation
+Show RP2040 Eager->B4 results across:
+- four algorithms
+- low/medium/high load
+
+Primary hardware quantity:
+paired percent RP2040 processor work change.
+
+Optionally show bounded low/medium points.
+
+Table — Selected deployment outcomes
+Include representative:
+- algorithm
+- load
+- policy
+- RP2040 work change
+- assignment/completion latency change
+- mission-time change
+- completion status
+
+============================================================
+17. EXPECTED OUTCOME BASED ON PREVIOUS PILOT
+============================================================
+
+These are hypotheses only.
+
+Low load:
+- fewer reallocation events may not save compute
+- task waiting likely increases
+- B4 may be counterproductive
+
+Medium load:
+- B4 likely reduces processor work
+- moderate responsiveness penalty
+- likely useful tradeoff regime
+
+High load:
+- eager allocation may repeatedly process closely spaced arrivals
+- B4 likely provides larger processor-work savings
+- extra responsiveness penalty may be relatively small
+
+Bounded B4/W:
+- intended to reduce sparse/medium-load waiting
+- should approach ordinary B4 behavior when arrivals are dense
+
+Do not tune the experiment to force these results.
+
+============================================================
+18. WHAT NOT TO RUN
+============================================================
+
+DO NOT RUN:
+
+- 1,500 RP2040 trials
+- hardware B2 trials
+- hardware B8 trials
+- hardware rate calibration sweeps
+- hardware timeout calibration sweeps
+- hardware variance/sample-size pilots
+- 1-board-vs-4-board validation
+- DMCHBA/DGA publication hardware campaigns
+- large hardware parity studies separate from the actual calls
+- physical movement validation
+- communication-loss experiments
+- Top-K experiments
+- extra sensitivity studies unless a specific final result cannot be interpreted without one
+
+Everything outside the 120 publication hardware trials must be either:
+1. a basic safety/correctness preflight,
+2. a very small smoke test, or
+3. directly necessary to calculate the stated paper metrics.
+
+============================================================
+19. ORDER OF EXECUTION ON THE AGX
+============================================================
+
+1. Clone the final repository.
+2. Record AGX/code/config environment.
+3. Connect and identify all 4 RP2040 boards.
+4. Run basic hardware preflight.
+5. Run 8-16 total hardware smoke missions.
+6. Run 72-trial AGX-only arrival-regime verification.
+7. Run 72-trial AGX-only W=5 verification.
+8. Freeze low/medium/high rates, W, manifests, policies, algorithms, and n=25.
+9. Run the 1,500-trial AGX causal campaign.
+10. Run zero-compute counterfactuals if retained.
+11. Run the 120 RP2040 publication trials:
+    - 96 Eager/B4 trials
+    - 24 bounded trials
+12. Run analysis.
+13. Generate final campaign report and paper-facing CSVs.
+14. Do not add additional experiments unless the final analysis exposes a specific unresolved scientific problem.
+
+============================================================
+20. FINAL REPORT REQUIREMENTS
+============================================================
+
+After execution, produce one concise report containing:
+
+- final frozen rates
+- final W
+- AGX environment
+- four board identities/builds
+- smoke/preflight status
+- AGX trial count completed/failed
+- hardware trial count completed/failed
+- technical retry count
+- parity failures
+- algorithmic mission failures
+- primary metric summaries
+- paired Eager->policy changes
+- statistical test results from AGX
+- descriptive RP2040 validation results
+- deviations from this plan
+- any result requiring further review
+
+The intended evidence hierarchy is:
+
+PRIMARY SCIENTIFIC EVIDENCE:
+full 1,500-trial causal AGX factorial study
+
+EMBEDDED HARDWARE VALIDATION:
+120 selected RP2040-timed causal missions
+
+ENGINEERING CHECKS:
+minimal preflight + 8-16 smoke missions only
+
+This scope is final unless a concrete technical or scientific failure makes a specific additional test necessary.
