@@ -28,7 +28,11 @@ def utc_now() -> str:
 def _read_text(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8", errors="replace").strip().strip("\x00")
-    except OSError:
+    # Some Jetson virtual thermal zones intermittently return EAGAIN through
+    # the text decoder as a TypeError (the raw read yields ``None``).  A
+    # missing instantaneous sensor sample is provenance data, not a reason to
+    # crash the environment gate.
+    except (OSError, TypeError):
         return None
 
 
