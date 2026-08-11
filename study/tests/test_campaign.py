@@ -311,6 +311,47 @@ class CampaignTests(unittest.TestCase):
                 len({job.condition_id for job in first_jobs[:condition_count]}),
             )
 
+    def test_job_exclusions_are_exact_audited_and_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = test_config(
+                algorithms=["CBAA", "PI"],
+                trace_count=2,
+                loads={"low": 0.1, "high": 0.4},
+            )
+            config["campaign"]["job_exclusions"] = [{
+                "loads": ["low"],
+                "policies": ["eager_b1"],
+                "trace_ids": ["trace_0000"],
+            }]
+            config["campaign"]["expected_excluded_job_count"] = 2
+            config_path = write_config(root, config)
+            orchestrator = CampaignOrchestrator(config_path, root, logical_cores=22)
+            orchestrator.prepare_manifests()
+            jobs = orchestrator.plan_jobs()
+            self.assertEqual(14, len(jobs))
+            self.assertFalse(any(
+                job.load_id == "low"
+                and job.policy_id == "eager_b1"
+                and job.trace_id == "trace_0000"
+                for job in jobs
+            ))
+            self.assertEqual(
+                [job.job_id for job in jobs],
+                [
+                    job.job_id
+                    for job in CampaignOrchestrator(
+                        config_path, root, logical_cores=22
+                    ).plan_jobs()
+                ],
+            )
+
+            config["campaign"]["expected_excluded_job_count"] = 3
+            mismatch_path = write_config(root, config)
+            mismatch = CampaignOrchestrator(mismatch_path, root, logical_cores=22)
+            with self.assertRaisesRegex(ValueError, "exclusion count mismatch"):
+                mismatch.plan_jobs()
+
     def test_dirty_git_tree_requires_explicit_development_override(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

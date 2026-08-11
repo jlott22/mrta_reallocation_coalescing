@@ -1,0 +1,63 @@
+{
+  "manifest": {
+    "manifest_set_id": "collaborative_visit_g19_t50_n25_calibrated_v2",
+    "root": "study/generated/manifests",
+    "master_seed": 20260808,
+    "trace_count": 25,
+    "grid_size": 19,
+    "robot_count": 4,
+    "task_count": 50,
+    "initial_task_count": 8,
+    "arrival_loads": {
+      "low": 0.075,
+      "medium": 0.3,
+      "high": 1.2
+    },
+    "arrival_rate_units": "tasks_per_mission_second",
+    "design_status": "deadline_aug14_one_trace_verification"
+  },
+  "campaign": {
+    "max_workers": 6,
+    "required_outputs": [
+      "trial_summary.json",
+      "task_events.csv",
+      "allocation_epochs.csv"
+    ],
+    "allow_dirty": false,
+    "campaign_id": "agx_deadline_arrival_verify_24_v1",
+    "output_root": "study/output/agx_deadline_arrival_verify_24_v1",
+    "algorithms": [
+      "CBAA",
+      "ACBBA",
+      "PI",
+      "HIPC"
+    ],
+    "loads": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "policies": [
+      {
+        "policy_id": "eager_b1",
+        "mode": "eager",
+        "batch_size": 1
+      },
+      {
+        "policy_id": "count_b4",
+        "mode": "count",
+        "batch_size": 4
+      }
+    ],
+    "trace_limit": 1,
+    "schedule_seed": 2026081204,
+    "runner": {
+      "module": "known_visit_sim.run_online_trials",
+      "extra_args": [
+        "--timing-mode",
+        "agx_host_proxy"
+      ]
+    },
+    "notes": "One-trace arrival-regime verification retained separately from primary inference; six rolling AGX workers."
+  }
+}

@@ -929,6 +929,45 @@ class CampaignOrchestrator:
         _safe_id(runner.get("module", "known_visit_sim.run_online_trials").replace(".", "_"), "runner module")
         if "allow_dirty" in campaign and not isinstance(campaign["allow_dirty"], bool):
             raise ValueError("campaign.allow_dirty must be boolean")
+        exclusions = campaign.get("job_exclusions", [])
+        if not isinstance(exclusions, list):
+            raise ValueError("campaign.job_exclusions must be a list")
+        exclusion_fields = {"algorithms", "loads", "policies", "trace_ids"}
+        for rule_index, rule in enumerate(exclusions):
+            if not isinstance(rule, dict) or not rule:
+                raise ValueError(
+                    f"campaign.job_exclusions[{rule_index}] must be a nonempty object"
+                )
+            unknown = set(rule) - exclusion_fields
+            if unknown:
+                raise ValueError(
+                    "campaign.job_exclusions contains unknown fields: "
+                    + ", ".join(sorted(unknown))
+                )
+            for field, entries in rule.items():
+                if not isinstance(entries, list) or not entries:
+                    raise ValueError(
+                        f"campaign.job_exclusions[{rule_index}].{field} "
+                        "must be a nonempty list"
+                    )
+                values = [_safe_id(entry, f"job exclusion {field}") for entry in entries]
+                if len(values) != len(set(values)):
+                    raise ValueError(
+                        f"campaign.job_exclusions[{rule_index}].{field} contains duplicates"
+                    )
+        expected_excluded = campaign.get("expected_excluded_job_count")
+        if exclusions and expected_excluded is None:
+            raise ValueError(
+                "campaign.expected_excluded_job_count is required with job_exclusions"
+            )
+        if expected_excluded is not None and (
+            isinstance(expected_excluded, bool)
+            or not isinstance(expected_excluded, int)
+            or expected_excluded < 0
+        ):
+            raise ValueError(
+                "campaign.expected_excluded_job_count must be a nonnegative integer"
+            )
         return campaign
 
     def prepare_manifests(self) -> Path:
@@ -1007,6 +1046,36 @@ class CampaignOrchestrator:
                         python_hash_seed=int(release["runtime_seed"]) % (2 ** 32),
                         fingerprint=fingerprint,
                     ))
+        exclusions = self.campaign.get("job_exclusions", [])
+        excluded_job_ids: set[str] = set()
+        field_attributes = {
+            "algorithms": "algorithm",
+            "loads": "load_id",
+            "policies": "policy_id",
+            "trace_ids": "trace_id",
+        }
+        for rule_index, rule in enumerate(exclusions):
+            matched = {
+                job.job_id
+                for job in jobs
+                if all(
+                    getattr(job, field_attributes[field]) in entries
+                    for field, entries in rule.items()
+                )
+            }
+            if not matched:
+                raise ValueError(
+                    f"campaign.job_exclusions[{rule_index}] matched no planned jobs"
+                )
+            excluded_job_ids.update(matched)
+        expected_excluded = self.campaign.get("expected_excluded_job_count")
+        if expected_excluded is not None and len(excluded_job_ids) != expected_excluded:
+            raise ValueError(
+                "campaign job exclusion count mismatch: "
+                f"expected {expected_excluded}, found {len(excluded_job_ids)}"
+            )
+        if excluded_job_ids:
+            jobs = [job for job in jobs if job.job_id not in excluded_job_ids]
         if not jobs:
             raise ValueError("campaign expands to zero jobs")
         return self._balanced_schedule(jobs)

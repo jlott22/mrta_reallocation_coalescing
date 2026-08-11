@@ -50,7 +50,13 @@ def plan_paired_blocks(config: CausalConfig, *, zero_compute: bool = False) -> l
         for load_id in config.loads
         for trace_id in trace_ids
     ]
-    raw_blocks.sort(key=lambda item: _stable_order_key(config.schedule_seed, *item))
+    priority_trace_ids = frozenset(trace_ids[: config.priority_trace_count])
+    raw_blocks.sort(
+        key=lambda item: (
+            item[2] not in priority_trace_ids,
+            _stable_order_key(config.schedule_seed, *item),
+        )
+    )
     blocks: list[PairedBlock] = []
     policy_count = len(config.policies)
     algorithm_index = {value: index for index, value in enumerate(config.algorithms)}

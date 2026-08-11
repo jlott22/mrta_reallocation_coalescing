@@ -122,6 +122,24 @@ class CausalStudyTests(unittest.TestCase):
                 [job.job_id for job in zero.jobs],
             )
 
+    def test_priority_trace_blocks_run_first_without_changing_balance(self) -> None:
+        config_value = self._config()
+        config_value["campaign"]["priority_trace_count"] = 1
+        self.config_path.write_bytes(canonical_json_bytes(config_value))
+        config = load_causal_config(self.config_path, self.root)
+        blocks = plan_paired_blocks(config)
+        priority_count = 4 * 3
+        self.assertEqual(
+            {"trace_0000"},
+            {block.trace_id for block in blocks[:priority_count]},
+        )
+        self.assertNotIn(
+            "trace_0000",
+            {block.trace_id for block in blocks[priority_count:]},
+        )
+        summary = validate_schedule(config, blocks)
+        self.assertEqual(60, summary["block_count"])
+
     def test_native_config_fails_closed_on_board_and_path_errors(self) -> None:
         bad = self._config()
         bad["hardware"]["development_override"] = False

@@ -154,6 +154,7 @@ class CausalConfig:
     device_timeout_seconds: float
     runner_factory: str
     provider_factory: str
+    priority_trace_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -271,6 +272,22 @@ def load_causal_config(path: Path | str, repo_root: Path | str = ".") -> CausalC
     trace_limit = None if trace_limit_raw is None else _positive_int(trace_limit_raw, "trace_limit")
     if trace_limit is not None and trace_limit > int(index["generation"]["trace_count"]):
         raise ValueError("trace_limit exceeds manifest trace count")
+    priority_trace_count = campaign.get("priority_trace_count", 0)
+    selected_trace_count = (
+        int(index["generation"]["trace_count"])
+        if trace_limit is None
+        else trace_limit
+    )
+    if (
+        isinstance(priority_trace_count, bool)
+        or not isinstance(priority_trace_count, int)
+        or priority_trace_count < 0
+        or priority_trace_count > selected_trace_count
+    ):
+        raise ValueError(
+            "priority_trace_count must be a nonnegative integer no greater than "
+            "the selected trace count"
+        )
     schedule_seed = campaign.get("schedule_seed")
     if isinstance(schedule_seed, bool) or not isinstance(schedule_seed, int):
         raise ValueError("campaign.schedule_seed must be an integer")
@@ -379,6 +396,7 @@ def load_causal_config(path: Path | str, repo_root: Path | str = ".") -> CausalC
         loads=loads,
         policies=policies,
         trace_limit=trace_limit,
+        priority_trace_count=priority_trace_count,
         schedule_seed=schedule_seed,
         boards=boards,
         core_affinities=affinities,
