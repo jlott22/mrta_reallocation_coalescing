@@ -111,7 +111,7 @@ if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
   echo "Refusing deadline run from a dirty source tree" >&2
   exit 2
 fi
-if [[ "$(nproc)" -ne 12 ]]; then
+if [[ "$(getconf _NPROCESSORS_ONLN)" -ne 12 || "$(cat /sys/devices/system/cpu/online)" != "0-11" ]]; then
   echo "Deadline plan requires exactly 12 online logical cores" >&2
   exit 2
 fi
