@@ -76,7 +76,6 @@ REQUIRED_SUMMARY_FLOAT_METRICS = {
     "movement_time_s",
     "simulated_execution_time_s",
     "cumulative_allocator_time_s",
-    "mission_elapsed_time_s",
     "host_program_runtime_s",
     "mean_allocator_call_time_s",
     "median_allocator_call_time_s",
@@ -483,7 +482,11 @@ def _validate_summary_dimensions(summary: dict[str, Any], job: CampaignJob) -> N
 
 
 def _validate_task_output(
-    path: Path, job: CampaignJob, release: dict[str, Any]
+    path: Path,
+    job: CampaignJob,
+    release: dict[str, Any],
+    *,
+    observation_horizon_s: float | None = None,
 ) -> dict[str, Any]:
     required = {
         "trial_id", "task_id", "task_index", "task_x", "task_y", "state",
@@ -523,9 +526,31 @@ def _validate_task_output(
             raise OutputValidationError(f"task {task_id} x coordinate differs from manifest")
         if _integer(row["task_y"], f"{task_id}.task_y") != int(expected["y"]):
             raise OutputValidationError(f"task {task_id} y coordinate differs from manifest")
-        release_s = _csv_number(row["release_time_s"], f"{task_id}.release_time_s")
-        assert release_s is not None
-        _close(release_s, float(expected["release_time_s"]), f"{task_id}.release_time_s")
+        state = str(row["state"]).strip().lower()
+        if state not in allowed_states:
+            raise OutputValidationError(f"task {task_id} has invalid state {state!r}")
+        release_s = _csv_number(
+            row["release_time_s"], f"{task_id}.release_time_s", optional=True
+        )
+        scheduled_release_s = float(expected["release_time_s"])
+        if release_s is None:
+            if state != "unreleased":
+                raise OutputValidationError(
+                    f"task {task_id} lacks a release timestamp but is not unreleased"
+                )
+            if (
+                observation_horizon_s is None
+                or scheduled_release_s <= observation_horizon_s + 1e-9
+            ):
+                raise OutputValidationError(
+                    f"task {task_id} was due by the observation horizon but lacks a release timestamp"
+                )
+        else:
+            if state == "unreleased":
+                raise OutputValidationError(
+                    f"task {task_id} has a release timestamp while marked unreleased"
+                )
+            _close(release_s, scheduled_release_s, f"{task_id}.release_time_s")
         admission_s = _csv_number(
             row["admission_time_s"], f"{task_id}.admission_time_s", optional=True
         )
@@ -535,18 +560,18 @@ def _validate_task_output(
         completion_s = _csv_number(
             row["completion_time_s"], f"{task_id}.completion_time_s", optional=True
         )
-        state = str(row["state"]).strip().lower()
-        if state not in allowed_states:
-            raise OutputValidationError(f"task {task_id} has invalid state {state!r}")
         if admission_s is not None:
             admitted_ids.add(task_id)
+            assert release_s is not None
             if admission_s + 1e-9 < release_s:
                 raise OutputValidationError(f"task {task_id} admitted before release")
         if assignment_s is not None:
+            assert release_s is not None
             if admission_s is None or assignment_s + 1e-9 < admission_s:
                 raise OutputValidationError(f"task {task_id} assigned before admission")
             assignment_latencies.append(assignment_s - release_s)
         if completion_s is not None:
+            assert release_s is not None
             if assignment_s is None or completion_s + 1e-9 < assignment_s:
                 raise OutputValidationError(f"task {task_id} completed before assignment")
             completion_latencies.append(completion_s - release_s)
@@ -573,12 +598,18 @@ def _validate_task_output(
         if bool(completing_robot) != (completion_s is not None):
             raise OutputValidationError(f"task {task_id} completing_robot is inconsistent")
         derived = {
-            "release_to_admission_latency_s": None if admission_s is None else admission_s - release_s,
-            "release_to_first_assignment_latency_s": None if assignment_s is None else assignment_s - release_s,
+            "release_to_admission_latency_s": (
+                None if admission_s is None or release_s is None else admission_s - release_s
+            ),
+            "release_to_first_assignment_latency_s": (
+                None if assignment_s is None or release_s is None else assignment_s - release_s
+            ),
             "admission_to_first_assignment_latency_s": (
                 None if admission_s is None or assignment_s is None else assignment_s - admission_s
             ),
-            "release_to_completion_latency_s": None if completion_s is None else completion_s - release_s,
+            "release_to_completion_latency_s": (
+                None if completion_s is None or release_s is None else completion_s - release_s
+            ),
             "assignment_to_completion_latency_s": (
                 None if assignment_s is None or completion_s is None else completion_s - assignment_s
             ),
@@ -720,14 +751,51 @@ def validate_job_outputs(job: CampaignJob, directory: Path) -> dict[str, Any]:
         raise OutputValidationError(
             "allocator parallel critical path cannot exceed cumulative allocator time"
         )
-    mission = _finite_number(summary["mission_elapsed_time_s"], "mission_elapsed_time_s")
+    if "mission_elapsed_time_s" not in summary:
+        raise OutputValidationError(
+            "trial_summary.json missing metric mission_elapsed_time_s"
+        )
+    mission_value = summary["mission_elapsed_time_s"]
+    mission: float | None
+    if completed_value:
+        mission = _finite_number(mission_value, "mission_elapsed_time_s")
+    elif summary.get("causal_timing_enabled") is True:
+        if mission_value is not None:
+            raise OutputValidationError(
+                "causal algorithmic noncompletion requires null mission_elapsed_time_s"
+            )
+        expected_outcome = {
+            "technical_status": "completed",
+            "trial_status": "algorithmic_incomplete",
+            "algorithmic_status": "incomplete",
+        }
+        for field, expected in expected_outcome.items():
+            if summary.get(field) != expected:
+                raise OutputValidationError(
+                    f"causal algorithmic noncompletion requires {field}={expected!r}"
+                )
+        failure_type = summary.get("algorithmic_failure_type")
+        if failure_type not in {
+            "stagnation_horizon", "event_horizon", "event_queue_exhausted"
+        }:
+            raise OutputValidationError(
+                "causal algorithmic noncompletion has an invalid failure type"
+            )
+        if summary.get("failure_type") != failure_type:
+            raise OutputValidationError(
+                "causal algorithmic noncompletion failure aliases disagree"
+            )
+        mission = None
+    else:
+        mission = _finite_number(mission_value, "mission_elapsed_time_s")
     if summary.get("causal_timing_enabled") is True:
         # In the causal scheduler, movement and per-robot allocation intervals
         # overlap on the event clock.  ``movement_time_s`` is processor-style
         # summed movement work, while mission elapsed time is the timestamp of
         # final task completion.  The legacy additive identity is therefore
         # neither defined nor scientifically valid for schema-v2 causal rows.
-        _close(mission, simulated, "mission_elapsed_time_s")
+        if mission is not None:
+            _close(mission, simulated, "mission_elapsed_time_s")
     else:
         if "other_execution_time_s" not in summary:
             raise OutputValidationError(
@@ -735,6 +803,7 @@ def validate_job_outputs(job: CampaignJob, directory: Path) -> dict[str, Any]:
             )
         other = _finite_number(summary["other_execution_time_s"], "other_execution_time_s")
         _close(simulated, movement + other, "simulated_execution_time_s")
+        assert mission is not None
         _close(mission, simulated + allocator_parallel, "mission_elapsed_time_s")
     if summary.get("causal_timing_enabled") is not True and "mission_elapsed_time_serial_compute_s" in summary:
         _close(
@@ -746,7 +815,16 @@ def validate_job_outputs(job: CampaignJob, directory: Path) -> dict[str, Any]:
             "mission_elapsed_time_serial_compute_s",
         )
     release = _read_json_object(job.release_path)
-    task_metrics = _validate_task_output(directory / "task_events.csv", job, release)
+    task_metrics = _validate_task_output(
+        directory / "task_events.csv",
+        job,
+        release,
+        observation_horizon_s=(
+            simulated
+            if not completed_value and summary.get("causal_timing_enabled") is True
+            else None
+        ),
+    )
     if completed_value != task_metrics["all_tasks_completed"]:
         raise OutputValidationError("all_tasks_completed disagrees with task lifecycle rows")
     assignments = task_metrics["assignment_latencies"]
@@ -780,6 +858,10 @@ def validate_job_outputs(job: CampaignJob, directory: Path) -> dict[str, Any]:
         "completed_task_count": completed_count,
         "epoch_count": epoch_metrics["epoch_count"],
         "all_tasks_completed": completed_value,
+        "algorithmic_status": "completed" if completed_value else "incomplete",
+        "algorithmic_failure_type": (
+            None if completed_value else summary.get("algorithmic_failure_type")
+        ),
     }
 
 
@@ -968,6 +1050,33 @@ class CampaignOrchestrator:
             raise ValueError(
                 "campaign.expected_excluded_job_count must be a nonnegative integer"
             )
+        allowlist = campaign.get("job_allowlist")
+        if allowlist is not None:
+            if not isinstance(allowlist, list) or not allowlist:
+                raise ValueError("campaign.job_allowlist must be a nonempty list")
+            allowlist_values = [
+                _safe_id(job_id, "job allowlist entry") for job_id in allowlist
+            ]
+            if len(allowlist_values) != len(set(allowlist_values)):
+                raise ValueError("campaign.job_allowlist contains duplicates")
+            expected_selected = campaign.get("expected_selected_job_count")
+            if (
+                isinstance(expected_selected, bool)
+                or not isinstance(expected_selected, int)
+                or expected_selected <= 0
+            ):
+                raise ValueError(
+                    "campaign.expected_selected_job_count must be a positive integer "
+                    "with job_allowlist"
+                )
+            if expected_selected != len(allowlist_values):
+                raise ValueError(
+                    "campaign.expected_selected_job_count differs from job_allowlist length"
+                )
+        elif "expected_selected_job_count" in campaign:
+            raise ValueError(
+                "campaign.expected_selected_job_count requires job_allowlist"
+            )
         return campaign
 
     def prepare_manifests(self) -> Path:
@@ -1076,6 +1185,23 @@ class CampaignOrchestrator:
             )
         if excluded_job_ids:
             jobs = [job for job in jobs if job.job_id not in excluded_job_ids]
+        allowlist = self.campaign.get("job_allowlist")
+        if allowlist is not None:
+            requested = set(allowlist)
+            available = {job.job_id for job in jobs}
+            missing = sorted(requested - available)
+            if missing:
+                raise ValueError(
+                    "campaign.job_allowlist contains jobs absent after matrix exclusions: "
+                    + ", ".join(missing)
+                )
+            jobs = [job for job in jobs if job.job_id in requested]
+            expected_selected = self.campaign["expected_selected_job_count"]
+            if len(jobs) != expected_selected:
+                raise ValueError(
+                    "campaign selected job count mismatch: "
+                    f"expected {expected_selected}, found {len(jobs)}"
+                )
         if not jobs:
             raise ValueError("campaign expands to zero jobs")
         return self._balanced_schedule(jobs)
@@ -1249,6 +1375,8 @@ class CampaignOrchestrator:
         completion = {
             "schema_version": 2,
             "status": "completed",
+            "algorithmic_status": validation["algorithmic_status"],
+            "algorithmic_failure_type": validation["algorithmic_failure_type"],
             "job_id": job.job_id,
             "condition_id": job.condition_id,
             "trace_id": job.trace_id,
@@ -1273,11 +1401,16 @@ class CampaignOrchestrator:
             self._record_failure(job, attempt_dir, message, return_code)
             return JobResult(job.job_id, "failed", elapsed, message)
         attempt_dir.rename(final_dir)
+        result_status = (
+            "completed" if validation["all_tasks_completed"]
+            else "algorithmically_incomplete"
+        )
         self._append_jsonl(self.output_root / "campaign_events.jsonl", {
-            "timestamp": utc_now(), "event": "completed", "job_id": job.job_id,
+            "timestamp": utc_now(), "event": result_status, "job_id": job.job_id,
             "elapsed_s": elapsed,
+            "algorithmic_failure_type": validation["algorithmic_failure_type"],
         })
-        return JobResult(job.job_id, "completed", elapsed)
+        return JobResult(job.job_id, result_status, elapsed)
 
     def _record_failure(self, job: CampaignJob, attempt_dir: Path | None,
                         message: str, return_code: int | None) -> None:

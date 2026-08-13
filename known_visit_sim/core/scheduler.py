@@ -487,6 +487,8 @@ class AsyncTrialRunner:
         call_sequence = 0
         group_sequence = 0
         movement_action_counts = {rid: 0 for rid in state.robots}
+        zero_duration_completed_at: set[str] = set()
+        zero_duration_time_s: Optional[float] = None
 
         def schedule_robot(kind: str, time_s: float, rid: str, priority: int = 3) -> None:
             nonlocal order
@@ -524,7 +526,11 @@ class AsyncTrialRunner:
 
         def ready_queued_robots(ready: set[str]) -> None:
             for rid, robot in state.robots.items():
-                if not robot.causal_is_busy and scheduler.has_queued_context(rid):
+                if (
+                    not robot.causal_is_busy
+                    and scheduler.has_queued_context(rid)
+                    and rid not in zero_duration_completed_at
+                ):
                     robot_tokens[rid] += 1  # invalidate a later idle/control wake
                     ready.add(rid)
 
@@ -842,12 +848,32 @@ class AsyncTrialRunner:
             provider.begin_mission(binding)
             began = True
             schedule_timeout()
-            while queue and not state.done:
-                now_s = queue[0].time_s
+            while (queue or state.bus.next_delivery_time_s() is not None) and not state.done:
+                queue_time_s = queue[0].time_s if queue else float("inf")
+                delivery_time_s = state.bus.next_delivery_time_s()
+                now_s = min(
+                    queue_time_s,
+                    float(delivery_time_s)
+                    if delivery_time_s is not None else float("inf"),
+                )
+                if (
+                    zero_duration_time_s is None
+                    or abs(float(now_s) - zero_duration_time_s) > 1e-12
+                ):
+                    zero_duration_time_s = float(now_s)
+                    zero_duration_completed_at.clear()
                 state.clock_s = now_s
                 batch: List[OnlineEvent] = []
                 while queue and abs(queue[0].time_s - now_s) <= 1e-12:
                     batch.append(heapq.heappop(queue))
+                # A release, timeout, movement completion, or scheduled
+                # control wake is new timed information. It permits one fresh
+                # zero-duration allocation microstep at this timestamp.
+                if any(
+                    not event.kind.startswith("compute_complete:")
+                    for event in batch
+                ):
+                    zero_duration_completed_at.clear()
                 ready: set[str] = set()
                 for event in sorted(batch):
                     if event.rid is not None and event.token != robot_tokens[event.rid]:
@@ -880,10 +906,15 @@ class AsyncTrialRunner:
                         continue
                     if event.kind.startswith("compute_complete:"):
                         call_id = event.kind.split(":", 1)[1]
-                        staged_robot, staged, _ = staged_by_call.pop(call_id)
+                        staged_robot, staged, measured = staged_by_call.pop(call_id)
                         if staged_robot is not robot:
                             raise AssertionError("compute completion robot mismatch")
                         result = robot.complete_causal_allocation(now_s, staged)
+                        if abs(
+                            float(measured.virtual_completion_s)
+                            - float(measured.virtual_start_s)
+                        ) <= 1e-12:
+                            zero_duration_completed_at.add(event.rid)
                         state.events_processed += 1
                         reasons[result.reason] += 1
                         if on_step:
@@ -898,7 +929,12 @@ class AsyncTrialRunner:
                 # Deliver every message whose communication delay expires at
                 # this timestamp. Computing receivers buffer it; idle receivers
                 # may use it in a call that starts now.
-                state.bus.pump(now_s)
+                delivered_receivers = state.bus.pump(now_s)
+                # A delivered message is an external input and therefore a
+                # valid reason for its idle receiver to take another
+                # zero-duration microstep at the same timestamp.
+                for rid in delivered_receivers:
+                    zero_duration_completed_at.discard(rid)
                 ready_queued_robots(ready)
                 if state.world.all_targets_completed():
                     state.done = True
@@ -926,7 +962,9 @@ class AsyncTrialRunner:
                         elif result.time_cost_s <= 0.0:
                             retry.add(rid)
                     ready = retry
-                    state.bus.pump(now_s)
+                    delivered_receivers = state.bus.pump(now_s)
+                    for rid in delivered_receivers:
+                        zero_duration_completed_at.discard(rid)
                     ready_queued_robots(ready)
                     if state.world.all_targets_completed():
                         state.done = True

@@ -221,16 +221,96 @@ class CampaignTests(unittest.TestCase):
             config_path = write_config(root, config)
 
             def noncompletion_executor(job, command, attempt_dir):
-                write_valid_outputs(job, attempt_dir, all_completed=False)
+                write_valid_outputs(
+                    job,
+                    attempt_dir,
+                    all_completed=False,
+                    last_task_unreleased=True,
+                )
+                summary_path = attempt_dir / "trial_summary.json"
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                release = json.loads(job.release_path.read_text(encoding="utf-8"))
+                observation_horizon = float(release["tasks"][-1]["release_time_s"]) - 1e-6
+                summary.update({
+                    "schema_version": 2,
+                    "causal_timing_enabled": True,
+                    "simulated_execution_time_s": observation_horizon,
+                    "mission_elapsed_time_s": None,
+                    "technical_status": "completed",
+                    "trial_status": "algorithmic_incomplete",
+                    "algorithmic_status": "incomplete",
+                    "algorithmic_failure_type": "stagnation_horizon",
+                    "failure_type": "stagnation_horizon",
+                })
+                summary.pop("other_execution_time_s")
+                summary_path.write_text(json.dumps(summary), encoding="utf-8")
                 return 0
 
             result = CampaignOrchestrator(
                 config_path, root, logical_cores=22, executor=noncompletion_executor
             ).run()
-            self.assertEqual("completed", result[0].status)
+            self.assertEqual("algorithmically_incomplete", result[0].status)
             completed = root / config["campaign"]["output_root"] / "completed" / result[0].job_id
             summary = json.loads((completed / "trial_summary.json").read_text(encoding="utf-8"))
             self.assertFalse(summary["all_tasks_completed"])
+            completion = json.loads(
+                (completed / "completion.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual("incomplete", completion["algorithmic_status"])
+            self.assertEqual(
+                "stagnation_horizon", completion["algorithmic_failure_type"]
+            )
+            self.assertFalse((completed / "failure.json").exists())
+
+    def test_unreleased_task_due_by_horizon_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = write_config(
+                root,
+                test_config(
+                    policies=[
+                        {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1}
+                    ],
+                    trace_count=1,
+                    loads={"low": 0.1},
+                ),
+            )
+            orchestrator = CampaignOrchestrator(config_path, root, logical_cores=22)
+            orchestrator.prepare_manifests()
+            job = orchestrator.plan_jobs()[0]
+            attempt = root / "attempt"
+            attempt.mkdir()
+            write_valid_outputs(
+                job,
+                attempt,
+                all_completed=False,
+                last_task_unreleased=True,
+            )
+            summary_path = attempt / "trial_summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            scheduled_release = float(
+                json.loads(job.release_path.read_text(encoding="utf-8"))["tasks"][-1][
+                    "release_time_s"
+                ]
+            )
+            summary.update({
+                "schema_version": 2,
+                "causal_timing_enabled": True,
+                "simulated_execution_time_s": scheduled_release,
+                "mission_elapsed_time_s": None,
+                "technical_status": "completed",
+                "trial_status": "algorithmic_incomplete",
+                "algorithmic_status": "incomplete",
+                "algorithmic_failure_type": "stagnation_horizon",
+                "failure_type": "stagnation_horizon",
+            })
+            summary.pop("other_execution_time_s")
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                OutputValidationError, "due by the observation horizon"
+            ):
+                validate_job_outputs(job, attempt)
 
     def test_resume_rehashes_outputs_and_rejects_post_completion_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -350,6 +430,35 @@ class CampaignTests(unittest.TestCase):
             mismatch_path = write_config(root, config)
             mismatch = CampaignOrchestrator(mismatch_path, root, logical_cores=22)
             with self.assertRaisesRegex(ValueError, "exclusion count mismatch"):
+                mismatch.plan_jobs()
+
+    def test_exact_job_allowlist_selects_only_deferred_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = test_config(
+                algorithms=["CBAA", "PI"],
+                trace_count=2,
+                loads={"low": 0.1, "high": 0.4},
+            )
+            selected = [
+                "CBAA__low__eager_b1__trace_0000",
+                "PI__high__count_b2__trace_0001",
+            ]
+            config["campaign"]["job_allowlist"] = selected
+            config["campaign"]["expected_selected_job_count"] = 2
+            config_path = write_config(root, config)
+            orchestrator = CampaignOrchestrator(config_path, root, logical_cores=22)
+            orchestrator.prepare_manifests()
+            jobs = orchestrator.plan_jobs()
+            self.assertEqual(set(selected), {job.job_id for job in jobs})
+
+            config["campaign"]["job_allowlist"].append(
+                "CBAA__low__eager_b1__trace_9999"
+            )
+            config["campaign"]["expected_selected_job_count"] = 3
+            mismatch_path = write_config(root, config)
+            mismatch = CampaignOrchestrator(mismatch_path, root, logical_cores=22)
+            with self.assertRaisesRegex(ValueError, "absent after matrix exclusions"):
                 mismatch.plan_jobs()
 
     def test_dirty_git_tree_requires_explicit_development_override(self) -> None:

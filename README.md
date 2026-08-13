@@ -1,5 +1,13 @@
 # MRTA Reallocation Coalescing
 
+## Final experiment results
+
+The completed n=50 primary evaluation, hardware timing validation, verification
+matrix, figures, and compact checksummed exports are available in
+[`publication/aug14_final_v1/`](publication/aug14_final_v1/RESULTS.md). The
+current system structure and data path are documented in
+[`docs/SIMULATION_ARCHITECTURE.md`](docs/SIMULATION_ARCHITECTURE.md).
+
 > **Current study path: causal native campaign.** The calibrated noncausal
 > simulation/HIL workflow described later in this file is retained as historical
 > evidence and is superseded for the paper experiment by
@@ -48,8 +56,8 @@ unrestricted; this is neither a Top-K study nor task/route bundling.
 - Eight tasks are visible at time zero; 42 arrive online.
 - Low/medium/high arrival rates are 0.075, 0.30, and 1.20 tasks per simulated
   mission-second.
-- The full matrix is 4 allocators x 3 loads x 5 policies x 25 paired traces =
-  1,500 jobs.
+- The final primary matrix is 4 allocators x 3 loads x 5 policies x 50 paired
+  traces = 3,000 jobs per timing treatment.
 - Every condition for one trace/load reuses byte-hashed scenario and release
   manifests plus the same runtime and Python hash seed.
 - Process concurrency is always capped at `floor(0.75 * logical_cores)`; on the
@@ -136,5 +144,7 @@ configs/                                calibrated AGX/HIL and retained pilot co
 Simulation/Architecture/allocator_replay/  persistent RP2040/HIL runtime
 Tests/HIL/AllocatorReplay/              active HIL tests
 artifacts/pilots/                        compact calibration evidence
+publication/aug14_final_v1/              compact final data, analysis, and figures
+docs/SIMULATION_ARCHITECTURE.md           final simulation/hardware architecture
 scripts/                                AGX and Windows HIL launchers
 ```

@@ -139,6 +139,81 @@ def run_probe(
 
 
 class CausalComputeTests(unittest.TestCase):
+    def test_zero_compute_known_trace_yields_to_delayed_messages(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest_root = (
+            repo_root
+            / "study/generated/manifests/collaborative_visit_g19_t50_n25_calibrated_v2"
+        )
+        scenario_raw = json.loads(
+            (manifest_root / "scenarios/trace_0007.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        release_raw = json.loads(
+            (manifest_root / "releases/high/trace_0007.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        starts = scenario_raw["robot_starts"]
+        robot_ids = [str(row["robot_id"]) for row in starts]
+        start_positions = {
+            str(row["robot_id"]): (int(row["x"]), int(row["y"]))
+            for row in starts
+        }
+        start_headings = {
+            str(row["robot_id"]): (
+                int(row.get("heading_x", 1)), int(row.get("heading_y", 0))
+            )
+            for row in starts
+        }
+        tasks = release_raw["tasks"]
+        targets = [(int(row["x"]), int(row["y"])) for row in tasks]
+        releases = {
+            cell: float(row["release_time_s"])
+            for cell, row in zip(targets, tasks, strict=True)
+        }
+        state = AsyncTrialRunner(
+            SimConfig(
+                grid_size=int(scenario_raw["grid_size"]),
+                robot_ids=robot_ids,
+                start_positions=start_positions,
+                start_headings=start_headings,
+                robot_start_layout="manifest",
+                condition_id="ACBBA__high__count_b4",
+                comm_delay_s=0.04,
+                comm_delay_jitter_s=0.0,
+                commitment_horizon=None,
+                max_candidate_cells=None,
+            ),
+            load_allocator_class("ACBBA"),
+            IdealModel(),
+            seed=int(scenario_raw["runtime_seed"]),
+            timing_provider=ZeroComputeTimingProvider(),
+        ).run_online_trial(
+            TrialScenario(
+                907,
+                targets,
+                {
+                    "trace_id": "trace_0007",
+                    "causal_event_horizon_events": 251_000,
+                    "causal_stagnation_horizon_events": 5_500,
+                },
+            ),
+            releases,
+            ReallocationPolicy.count(4),
+        )
+        self.assertTrue(state.done)
+        self.assertTrue(state.world.all_targets_completed())
+        calls = state.reallocation_scheduler.allocator_calls
+        calls_per_timestamp: dict[float, int] = {}
+        for call in calls:
+            calls_per_timestamp[call.mission_time_s] = (
+                calls_per_timestamp.get(call.mission_time_s, 0) + 1
+            )
+        self.assertLess(max(calls_per_timestamp.values()), 100)
+        self.assertLess(len(calls), 1_000)
+
     def test_predeclared_horizons_promote_algorithmic_noncompletion(self) -> None:
         def run(metadata):
             return AsyncTrialRunner(

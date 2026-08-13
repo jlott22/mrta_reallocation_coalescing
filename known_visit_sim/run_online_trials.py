@@ -309,6 +309,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     ).run_online_trial(trial, release_times, policy)
     state.validate_online_invariants()
     metrics = state.online_metrics()
+    all_tasks_completed = bool(metrics["all_tasks_completed"])
+    algorithmic_failure_type = metrics.get("algorithmic_failure_type")
     dimensions = {
         "trial_id": args.trial_id,
         "condition_id": args.condition_id,
@@ -336,9 +338,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     summary = {
         "schema_version": 2,
-        "trial_status": "completed",
         **dimensions,
         **metrics,
+        "trial_status": (
+            "completed" if all_tasks_completed else "algorithmic_incomplete"
+        ),
+        "technical_status": "completed",
+        "algorithmic_status": (
+            "completed" if all_tasks_completed else "incomplete"
+        ),
+        "failure_type": None if all_tasks_completed else (
+            algorithmic_failure_type or "algorithmic_incomplete"
+        ),
+        "completion": all_tasks_completed,
         "trial_id_numeric": metrics["trial_id"],
         "trial_id": args.trial_id,
         "timing_definition": {

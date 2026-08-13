@@ -115,6 +115,21 @@ class CommunicationAndWorldTests(unittest.TestCase):
         self.assertFalse(state.world.target_records[(2, 2)].completed)
         self.assertNotIn((2, 2), state.world.visits)
 
+    def test_message_bus_exposes_and_consumes_delivery_boundary(self) -> None:
+        cfg = config(comm_delay_s=0.04)
+        state = AsyncTrialRunner(
+            cfg, load_allocator_class("CBAA"), IdealModel(), 2
+        ).new_trial(TrialScenario(0, [(2, 2)]))
+        sender = state.robots["00"]
+        sender.publish_algorithm_message(
+            "cbaa_entry", {"type": "cbaa_entry", "cell": [2, 2]}
+        )
+        self.assertAlmostEqual(state.bus.next_delivery_time_s(), 0.04)
+        self.assertEqual(state.bus.pump(0.039), ())
+        delivered = state.bus.pump(0.04)
+        self.assertIn("01", delivered)
+        self.assertIsNone(state.bus.next_delivery_time_s())
+
     def test_dropped_state_can_leave_stale_task_and_enable_duplicate_visit(self) -> None:
         cfg = config()
         scenario = TrialScenario(0, [(2, 2)])

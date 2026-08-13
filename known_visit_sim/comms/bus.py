@@ -3,7 +3,7 @@ from __future__ import annotations
 import heapq
 import random
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Protocol
+from typing import Dict, List, Optional, Protocol, Tuple
 
 from known_visit_sim.core.types import Cell
 from known_visit_sim.metrics.counters import MessageCounters
@@ -68,7 +68,21 @@ class MessageBus:
             self._order += 1
             heapq.heappush(self.pending, PendingDelivery(now_s + delay, self._order, rid, message))
 
-    def pump(self, now_s: float) -> None:
+    def next_delivery_time_s(self) -> Optional[float]:
+        """Return the next exogenous delivery time without consuming it.
+
+        Causal simulation must treat communication delivery as a timed event.
+        Keeping the pending heap private is useful, but the event scheduler
+        still needs this boundary so exact-zero allocator calls cannot starve
+        messages that are already in flight.
+        """
+
+        if not self.pending:
+            return None
+        return float(self.pending[0].deliver_at_s)
+
+    def pump(self, now_s: float) -> Tuple[str, ...]:
+        delivered_receivers: List[str] = []
         while self.pending and self.pending[0].deliver_at_s <= now_s + 1e-12:
             item = heapq.heappop(self.pending)
             receiver = self.receivers.get(item.receiver)
@@ -80,3 +94,5 @@ class MessageBus:
             )
             receiver.receive_message(delivered)
             self.counters.delivered(item.receiver, protected=delivered.protected)
+            delivered_receivers.append(item.receiver)
+        return tuple(delivered_receivers)

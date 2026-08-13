@@ -204,15 +204,16 @@ prepare_current_source_and_boards() {
 run_sim_stage() {
   local config="$1"
   local analysis_dir="$2"
+  local max_attempts="${3:-1}"
   local attempt
-  for attempt in 1 2 3; do
+  for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
     if taskset -c 3-8 python3 -m study.campaign \
       --config "${config}" --max-workers 6; then
       taskset -c 3-8 python3 -m study.analysis \
         --config "${config}" --analysis-dir "${analysis_dir}"
       return 0
     fi
-    echo "AGX stage ${config} attempt ${attempt}/3 incomplete; valid completions retained" >&2
+    echo "AGX stage ${config} attempt ${attempt}/${max_attempts} incomplete; valid completions retained" >&2
   done
   return 1
 }
@@ -239,32 +240,45 @@ run_native_stage() {
 }
 
 agx_pipeline() {
+  local -a deferred=()
+  local -a unresolved=()
+  local entry
+  local stage
+  local config
+  local analysis
   tracker_set --pipeline agx --stage agx_primary --status running \
     --message "Six rolling workers running the 1,396 non-hardware primary cells on CPUs 3-8"
-  if ! run_sim_stage "${PRIMARY_CONFIG}" study/output/agx_deadline_primary_1396_v1/analysis; then
-    tracker_set --pipeline agx --stage agx_primary --status failed \
-      --message "Primary AGX stage exhausted bounded retries"
-    return 1
+  if ! run_sim_stage "${PRIMARY_CONFIG}" study/output/agx_deadline_primary_1396_v1/analysis 1; then
+    deferred+=("agx_primary|${PRIMARY_CONFIG}|study/output/agx_deadline_primary_1396_v1/analysis")
   fi
   tracker_set --pipeline agx --stage arrival_verification --status running \
     --message "Running the balanced one-trace arrival-regime verification"
-  if ! run_sim_stage "${ARRIVAL_CONFIG}" study/output/agx_deadline_arrival_verify_24_v1/analysis; then
-    tracker_set --pipeline agx --stage arrival_verification --status failed \
-      --message "Arrival verification exhausted bounded retries"
-    return 1
+  if ! run_sim_stage "${ARRIVAL_CONFIG}" study/output/agx_deadline_arrival_verify_24_v1/analysis 1; then
+    deferred+=("arrival_verification|${ARRIVAL_CONFIG}|study/output/agx_deadline_arrival_verify_24_v1/analysis")
   fi
   tracker_set --pipeline agx --stage timeout_verification --status running \
     --message "Running the balanced one-trace W=5 timeout verification"
-  if ! run_sim_stage "${TIMEOUT_CONFIG}" study/output/agx_deadline_timeout_verify_24_v1/analysis; then
-    tracker_set --pipeline agx --stage timeout_verification --status failed \
-      --message "Timeout verification exhausted bounded retries"
-    return 1
+  if ! run_sim_stage "${TIMEOUT_CONFIG}" study/output/agx_deadline_timeout_verify_24_v1/analysis 1; then
+    deferred+=("timeout_verification|${TIMEOUT_CONFIG}|study/output/agx_deadline_timeout_verify_24_v1/analysis")
   fi
   tracker_set --pipeline agx --stage zero_compute --status running \
     --message "Running 480 zero-compute controls, eight matched traces per condition"
-  if ! run_sim_stage "${ZERO_CONFIG}" study/output/agx_deadline_zero_compute_480_v1/analysis; then
-    tracker_set --pipeline agx --stage zero_compute --status failed \
-      --message "Zero-compute stage exhausted bounded retries"
+  if ! run_sim_stage "${ZERO_CONFIG}" study/output/agx_deadline_zero_compute_480_v1/analysis 1; then
+    deferred+=("zero_compute|${ZERO_CONFIG}|study/output/agx_deadline_zero_compute_480_v1/analysis")
+  fi
+  if (( ${#deferred[@]} > 0 )); then
+    tracker_set --pipeline agx --stage deferred_retry --status running \
+      --message "Initial AGX matrix pass finished; retrying deferred jobs without rerunning valid completions"
+    for entry in "${deferred[@]}"; do
+      IFS='|' read -r stage config analysis <<< "${entry}"
+      if ! run_sim_stage "${config}" "${analysis}" 2; then
+        unresolved+=("${stage}|${config}|${analysis}")
+      fi
+    done
+  fi
+  if (( ${#unresolved[@]} > 0 )); then
+    tracker_set --pipeline agx --stage deferred_retry --status failed \
+      --message "All AGX stages ran; some deferred technical failures remain logged after final retries"
     return 1
   fi
   tracker_set --pipeline agx --stage complete --status complete \

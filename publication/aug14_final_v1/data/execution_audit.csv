@@ -1,0 +1,12 @@
+source_campaign,dataset,included_trial_n,retained_failure_record_n,technical_attempt_failure_n,technical_attempt_failure_job_n,reclassified_validation_record_n,reclassified_validation_job_n,other_retained_failure_record_n,unresolved_technical_failure_n
+agx_primary_traces_0_24,causal,1396,42,0,0,42,16,0,0
+hardware_core,causal,96,3,3,2,0,0,0,0
+hardware_bounded,causal,8,0,0,0,0,0,0,0
+agx_causal_traces_25_49,causal,1500,40,0,0,40,21,0,0
+zero_compute_traces_0_7,zero_compute,480,0,0,0,0,0,0,0
+zero_compute_traces_8_24,zero_compute,1020,0,0,0,0,0,0,0
+zero_compute_traces_25_49,zero_compute,1500,0,0,0,0,0,0,0
+arrival_trace_0,arrival_verification,24,0,0,0,0,0,0,0
+arrival_traces_1_2,arrival_verification,48,2,0,0,2,1,0,0
+timeout_trace_0,timeout_verification,24,0,0,0,0,0,0,0
+timeout_traces_1_2,timeout_verification,48,2,0,0,2,1,0,0

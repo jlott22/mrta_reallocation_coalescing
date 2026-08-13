@@ -78,8 +78,12 @@ def write_valid_outputs(
     allocator_time_s: float = 1.0,
     assignment_delay_s: float = 0.2,
     completion_delay_s: float = 1.0,
+    last_task_unreleased: bool = False,
 ) -> None:
     """Write a small but semantically complete synthetic online-trial result."""
+
+    if last_task_unreleased and all_completed:
+        raise ValueError("an unreleased task requires an incomplete outcome")
 
     release = json.loads(job.release_path.read_text(encoding="utf-8"))
     task_rows: list[dict[str, Any]] = []
@@ -87,11 +91,13 @@ def write_valid_outputs(
     completion_latencies: list[float] = []
     for index, task in enumerate(release["tasks"], start=1):
         release_s = float(task["release_time_s"])
-        admission_s = release_s if release_s == 0 else release_s + 0.1
-        assignment_s = admission_s + assignment_delay_s
+        unreleased = last_task_unreleased and index == len(release["tasks"])
+        admission_s = None if unreleased else (release_s if release_s == 0 else release_s + 0.1)
+        assignment_s = None if admission_s is None else admission_s + assignment_delay_s
         incomplete = not all_completed and index == len(release["tasks"])
         completion_s = None if incomplete else assignment_s + completion_delay_s
-        assignment_latencies.append(assignment_s - release_s)
+        if assignment_s is not None:
+            assignment_latencies.append(assignment_s - release_s)
         if completion_s is not None:
             completion_latencies.append(completion_s - release_s)
         task_rows.append({
@@ -100,17 +106,23 @@ def write_valid_outputs(
             "task_index": index,
             "task_x": task["x"],
             "task_y": task["y"],
-            "state": "assigned" if incomplete else "completed",
-            "release_time_s": release_s,
-            "admission_time_s": admission_s,
-            "first_assignment_time_s": assignment_s,
-            "first_assigned_robot": "00",
+            "state": "unreleased" if unreleased else ("assigned" if incomplete else "completed"),
+            "release_time_s": "" if unreleased else release_s,
+            "admission_time_s": "" if admission_s is None else admission_s,
+            "first_assignment_time_s": "" if assignment_s is None else assignment_s,
+            "first_assigned_robot": "" if assignment_s is None else "00",
             "completion_time_s": "" if completion_s is None else completion_s,
             "completing_robot": "" if completion_s is None else "00",
-            "assignment_events": 1,
-            "release_to_admission_latency_s": admission_s - release_s,
-            "release_to_first_assignment_latency_s": assignment_s - release_s,
-            "admission_to_first_assignment_latency_s": assignment_s - admission_s,
+            "assignment_events": 0 if assignment_s is None else 1,
+            "release_to_admission_latency_s": (
+                "" if admission_s is None else admission_s - release_s
+            ),
+            "release_to_first_assignment_latency_s": (
+                "" if assignment_s is None else assignment_s - release_s
+            ),
+            "admission_to_first_assignment_latency_s": (
+                "" if assignment_s is None or admission_s is None else assignment_s - admission_s
+            ),
             "release_to_completion_latency_s": (
                 "" if completion_s is None else completion_s - release_s
             ),
@@ -119,8 +131,14 @@ def write_valid_outputs(
             ),
         })
     initial_ids = [str(task["task_id"]) for task in release["tasks"] if task["initially_visible"]]
-    online_ids = [str(task["task_id"]) for task in release["tasks"] if not task["initially_visible"]]
-    last_release = max(float(task["release_time_s"]) for task in release["tasks"])
+    online_ids = [
+        str(task["task_id"])
+        for index, task in enumerate(release["tasks"], start=1)
+        if not task["initially_visible"]
+        and not (last_task_unreleased and index == len(release["tasks"]))
+    ]
+    observed_tasks = release["tasks"][:-1] if last_task_unreleased else release["tasks"]
+    last_release = max(float(task["release_time_s"]) for task in observed_tasks)
     epoch_rows = [
         {
             "epoch_id": 1,
