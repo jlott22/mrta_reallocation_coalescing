@@ -1,0 +1,368 @@
+{
+  "arrival_model": {
+    "name": "exponential_interarrival_absolute_time",
+    "rate_per_s": 0.3,
+    "shared_unit_rate_draws_across_loads": true,
+    "time_origin_s": 0.0
+  },
+  "arrival_seed": 4355441476618979905,
+  "initial_task_count": 8,
+  "load_id": "medium",
+  "manifest_kind": "release_trace",
+  "runtime_seed": 1429345255569189448,
+  "scenario_sha256": "fdd8e25876a035c49ad79f6ebac974220fc1155d0505c87b3196f170f222d3b3",
+  "schema_version": 1,
+  "tasks": [
+    {
+      "initially_visible": true,
+      "release_time_s": 0.0,
+      "task_id": "task_0001",
+      "x": 7,
+      "y": 10
+    },
+    {
+      "initially_visible": true,
+      "release_time_s": 0.0,
+      "task_id": "task_0002",
+      "x": 4,
+      "y": 15
+    },
+    {
+      "initially_visible": true,
+      "release_time_s": 0.0,
+      "task_id": "task_0003",
+      "x": 10,
+      "y": 14
+    },
+    {
+      "initially_visible": true,
+      "release_time_s": 0.0,
+      "task_id": "task_0004",
+      "x": 18,
+      "y": 0
+    },
+    {
+      "initially_visible": true,
+      "release_time_s": 0.0,
+      "task_id": "task_0005",
+      "x": 14,
+      "y": 3
+    },
+    {
+      "initially_visible": true,
+      "release_time_s": 0.0,
+      "task_id": "task_0006",
+      "x": 9,
+      "y": 0
+    },
+    {
+      "initially_visible": true,
+      "release_time_s": 0.0,
+      "task_id": "task_0007",
+      "x": 10,
+      "y": 0
+    },
+    {
+      "initially_visible": true,
+      "release_time_s": 0.0,
+      "task_id": "task_0008",
+      "x": 2,
+      "y": 7
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 3.881242908,
+      "task_id": "task_0009",
+      "x": 8,
+      "y": 9
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 4.492675413,
+      "task_id": "task_0010",
+      "x": 6,
+      "y": 11
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 5.399945136,
+      "task_id": "task_0011",
+      "x": 8,
+      "y": 4
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 5.543672658,
+      "task_id": "task_0012",
+      "x": 13,
+      "y": 13
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 6.24256616,
+      "task_id": "task_0013",
+      "x": 9,
+      "y": 12
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 7.052383298,
+      "task_id": "task_0014",
+      "x": 6,
+      "y": 18
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 7.262390605,
+      "task_id": "task_0015",
+      "x": 12,
+      "y": 15
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 7.452707374,
+      "task_id": "task_0016",
+      "x": 11,
+      "y": 5
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 9.123036751,
+      "task_id": "task_0017",
+      "x": 10,
+      "y": 10
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 13.882733259,
+      "task_id": "task_0018",
+      "x": 4,
+      "y": 9
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 17.064278026,
+      "task_id": "task_0019",
+      "x": 17,
+      "y": 17
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 18.49682822,
+      "task_id": "task_0020",
+      "x": 16,
+      "y": 3
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 21.203714285,
+      "task_id": "task_0021",
+      "x": 5,
+      "y": 4
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 23.838325342,
+      "task_id": "task_0022",
+      "x": 7,
+      "y": 17
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 25.156069537,
+      "task_id": "task_0023",
+      "x": 2,
+      "y": 17
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 29.440826695,
+      "task_id": "task_0024",
+      "x": 4,
+      "y": 13
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 29.695591868,
+      "task_id": "task_0025",
+      "x": 15,
+      "y": 8
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 30.897830205,
+      "task_id": "task_0026",
+      "x": 14,
+      "y": 16
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 32.627374634,
+      "task_id": "task_0027",
+      "x": 3,
+      "y": 8
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 39.436611241,
+      "task_id": "task_0028",
+      "x": 15,
+      "y": 5
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 40.308642342,
+      "task_id": "task_0029",
+      "x": 16,
+      "y": 18
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 41.661945236,
+      "task_id": "task_0030",
+      "x": 1,
+      "y": 10
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 48.152460777,
+      "task_id": "task_0031",
+      "x": 8,
+      "y": 2
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 48.440295001,
+      "task_id": "task_0032",
+      "x": 13,
+      "y": 9
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 51.017789339,
+      "task_id": "task_0033",
+      "x": 7,
+      "y": 9
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 51.916038215,
+      "task_id": "task_0034",
+      "x": 10,
+      "y": 7
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 52.280004572,
+      "task_id": "task_0035",
+      "x": 18,
+      "y": 10
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 55.272133834,
+      "task_id": "task_0036",
+      "x": 12,
+      "y": 13
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 58.869183544,
+      "task_id": "task_0037",
+      "x": 17,
+      "y": 1
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 60.866657766,
+      "task_id": "task_0038",
+      "x": 17,
+      "y": 13
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 62.620310802,
+      "task_id": "task_0039",
+      "x": 18,
+      "y": 8
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 62.818362045,
+      "task_id": "task_0040",
+      "x": 14,
+      "y": 1
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 65.20140259,
+      "task_id": "task_0041",
+      "x": 17,
+      "y": 7
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 66.026316046,
+      "task_id": "task_0042",
+      "x": 1,
+      "y": 17
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 68.964734914,
+      "task_id": "task_0043",
+      "x": 8,
+      "y": 11
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 69.358491813,
+      "task_id": "task_0044",
+      "x": 11,
+      "y": 15
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 69.964727927,
+      "task_id": "task_0045",
+      "x": 5,
+      "y": 18
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 70.456647854,
+      "task_id": "task_0046",
+      "x": 17,
+      "y": 10
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 70.89915127,
+      "task_id": "task_0047",
+      "x": 1,
+      "y": 9
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 71.713357299,
+      "task_id": "task_0048",
+      "x": 15,
+      "y": 13
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 72.076043344,
+      "task_id": "task_0049",
+      "x": 4,
+      "y": 16
+    },
+    {
+      "initially_visible": false,
+      "release_time_s": 73.365383944,
+      "task_id": "task_0050",
+      "x": 6,
+      "y": 17
+    }
+  ],
+  "trace_id": "trace_0026"
+}

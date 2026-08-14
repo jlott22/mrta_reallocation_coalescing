@@ -1,0 +1,300 @@
+{
+  "entries": [
+    {
+      "load_id": "rate_003",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_003/trace_0000.json",
+      "sha256": "f5db1bfe114605ab7abeb06e324eab6a6da4cbd87f392748100b6dc6cba9951b",
+      "trace_id": "trace_0000"
+    },
+    {
+      "load_id": "rate_003",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_003/trace_0001.json",
+      "sha256": "bf0d19b451c97dd9da4b5c929b5303e2f5637212b523c127bb869d8318d08729",
+      "trace_id": "trace_0001"
+    },
+    {
+      "load_id": "rate_003",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_003/trace_0002.json",
+      "sha256": "2d03b9683905191303b52f44954852e8e8d63903bec94a85606021c782b412ea",
+      "trace_id": "trace_0002"
+    },
+    {
+      "load_id": "rate_003",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_003/trace_0003.json",
+      "sha256": "8736dc61eaf83e227bba89c873e970350a834d94402b0e34c68fb082263d2fa0",
+      "trace_id": "trace_0003"
+    },
+    {
+      "load_id": "rate_003",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_003/trace_0004.json",
+      "sha256": "4070f9a5087506fac008572adafac53cd98efabc4d7ce1c1d483c60c6bb37653",
+      "trace_id": "trace_0004"
+    },
+    {
+      "load_id": "rate_0075",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_0075/trace_0000.json",
+      "sha256": "02e219f0b9c4f3b72fff4f2fb466c79ce3e4292894aafe863e2e0c7389b36bcf",
+      "trace_id": "trace_0000"
+    },
+    {
+      "load_id": "rate_0075",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_0075/trace_0001.json",
+      "sha256": "edb073bba1f6e7a2b5d8bddf24a0cbce934675c75860230d611db342764d6f4f",
+      "trace_id": "trace_0001"
+    },
+    {
+      "load_id": "rate_0075",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_0075/trace_0002.json",
+      "sha256": "6a5f5ea2ec1370d0ff3ad97bfbde5d053a8cbdfec2f2caa2c94c4cdaa44944a4",
+      "trace_id": "trace_0002"
+    },
+    {
+      "load_id": "rate_0075",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_0075/trace_0003.json",
+      "sha256": "981c413a5d7ee359d2f41dd3bea1661800e9fc86c095c964c5efd2828adbf416",
+      "trace_id": "trace_0003"
+    },
+    {
+      "load_id": "rate_0075",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_0075/trace_0004.json",
+      "sha256": "be0d3f86532c2f821234ea0af85b0b55a14d5fd22888c31f635d8acd40905457",
+      "trace_id": "trace_0004"
+    },
+    {
+      "load_id": "rate_015",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_015/trace_0000.json",
+      "sha256": "fff79f9cf84512d43de240444547f819b170b47dbe869d5e6cb878fcfbb35b04",
+      "trace_id": "trace_0000"
+    },
+    {
+      "load_id": "rate_015",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_015/trace_0001.json",
+      "sha256": "494cd8d291d1c259ff0c4dccb6ad6d8cc22ce61d8f86a1a6f965a6bcd54ab3bb",
+      "trace_id": "trace_0001"
+    },
+    {
+      "load_id": "rate_015",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_015/trace_0002.json",
+      "sha256": "3b3f3e50a5f50515375cdff9668f32fff503506c18c1ed606b8a0e3791b95233",
+      "trace_id": "trace_0002"
+    },
+    {
+      "load_id": "rate_015",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_015/trace_0003.json",
+      "sha256": "dc15028528467524fce3303b8ec7078df742c01a4f64db8d944788bd4f2b04b7",
+      "trace_id": "trace_0003"
+    },
+    {
+      "load_id": "rate_015",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_015/trace_0004.json",
+      "sha256": "dc0b709a3da3a6a379ab5a658bf77dae8b6e160ab7697723beb101dfc313435d",
+      "trace_id": "trace_0004"
+    },
+    {
+      "load_id": "rate_03",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_03/trace_0000.json",
+      "sha256": "1b796fc7728c7b7a3db28081eb22bebad91ffc29a73dca155e700b5efdef7367",
+      "trace_id": "trace_0000"
+    },
+    {
+      "load_id": "rate_03",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_03/trace_0001.json",
+      "sha256": "4750ac2739d369867269a25e3b34bc3003d8a5d04d285a5a9e8e09b1a614cc14",
+      "trace_id": "trace_0001"
+    },
+    {
+      "load_id": "rate_03",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_03/trace_0002.json",
+      "sha256": "9bcd6b16429338c9c9c1d0eb77951098a7b47f23aba9f9bd8275738cb4d458d3",
+      "trace_id": "trace_0002"
+    },
+    {
+      "load_id": "rate_03",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_03/trace_0003.json",
+      "sha256": "dc16da1c61eead53f9ddc70f7f23dd3e017a3a1d706bdee8effdf7b109eee952",
+      "trace_id": "trace_0003"
+    },
+    {
+      "load_id": "rate_03",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_03/trace_0004.json",
+      "sha256": "f043489198e705460ef6db88f77eb900f5a5950e87bb09e647beb4e2d7b528f3",
+      "trace_id": "trace_0004"
+    },
+    {
+      "load_id": "rate_06",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_06/trace_0000.json",
+      "sha256": "43324f70ba77015e023e5c06315208af0af2b8177463b75206e56ef0f774c001",
+      "trace_id": "trace_0000"
+    },
+    {
+      "load_id": "rate_06",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_06/trace_0001.json",
+      "sha256": "fd08b7a84be8c6a6c223a14f05838e69673c5aa2490dd27d1c998c4ebde34bec",
+      "trace_id": "trace_0001"
+    },
+    {
+      "load_id": "rate_06",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_06/trace_0002.json",
+      "sha256": "d95a205b797f911c24b54b4a86feb1cf380ea053f706cfb465798ca773975f35",
+      "trace_id": "trace_0002"
+    },
+    {
+      "load_id": "rate_06",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_06/trace_0003.json",
+      "sha256": "b0b7f3c6bde7de40b0d1adaa7dfe0f432f291aa64e045b85a2f603dcde85e0cc",
+      "trace_id": "trace_0003"
+    },
+    {
+      "load_id": "rate_06",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_06/trace_0004.json",
+      "sha256": "785c888aac403d533db90c0e3ebcedf9f561dbe89f68425ac8e1235db8dde3b9",
+      "trace_id": "trace_0004"
+    },
+    {
+      "load_id": "rate_12",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_12/trace_0000.json",
+      "sha256": "b97e53f78fc3c0fb0c00dffc07a3a26a6395d50acaff61fffdd6d16bb30e7815",
+      "trace_id": "trace_0000"
+    },
+    {
+      "load_id": "rate_12",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_12/trace_0001.json",
+      "sha256": "16c131f25ae30cda50ca6001ca6f41dc7c531992fbea483f17c47a2bb2265611",
+      "trace_id": "trace_0001"
+    },
+    {
+      "load_id": "rate_12",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_12/trace_0002.json",
+      "sha256": "adb8e2e75b693ee61dc2e758a7110204f6a7852a6eeb698fdcbe404d17f41e44",
+      "trace_id": "trace_0002"
+    },
+    {
+      "load_id": "rate_12",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_12/trace_0003.json",
+      "sha256": "bce222feae429fb4b3cc5247b22b47a9021c55f61a63b4ade8361ec44cc44643",
+      "trace_id": "trace_0003"
+    },
+    {
+      "load_id": "rate_12",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_12/trace_0004.json",
+      "sha256": "39d0e32c0e642b2d433010f8660b5d750f1775aa56054535c9eacb0db7213e58",
+      "trace_id": "trace_0004"
+    },
+    {
+      "load_id": "rate_24",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_24/trace_0000.json",
+      "sha256": "f3b02ca70ef76643fadbc938b6ce2a6cadcaf3ff7daebe709157ef79cd574e89",
+      "trace_id": "trace_0000"
+    },
+    {
+      "load_id": "rate_24",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_24/trace_0001.json",
+      "sha256": "ba585826ed3a85596681655cce6a8f73a938a89dc365179e3f41790d5bc59921",
+      "trace_id": "trace_0001"
+    },
+    {
+      "load_id": "rate_24",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_24/trace_0002.json",
+      "sha256": "8e69159a6f11d9137437a5dba13ca632937c29086febf133f8cd1cb29b18c3e3",
+      "trace_id": "trace_0002"
+    },
+    {
+      "load_id": "rate_24",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_24/trace_0003.json",
+      "sha256": "b8f59570650939881f65bdf6af694a3aabd254da12a3b47f9a7e0b82ceab2f8b",
+      "trace_id": "trace_0003"
+    },
+    {
+      "load_id": "rate_24",
+      "manifest_kind": "release_trace",
+      "path": "releases/rate_24/trace_0004.json",
+      "sha256": "c78465020a15f9f2d77eaeec85e4ff830a1ba85c0d36fc7254137ccdfab1f469",
+      "trace_id": "trace_0004"
+    },
+    {
+      "manifest_kind": "scenario",
+      "path": "scenarios/trace_0000.json",
+      "sha256": "78a761a17ef8d6f35718a28851f64aa171ea1e243cb584c0b478d924ba3d1128",
+      "trace_id": "trace_0000"
+    },
+    {
+      "manifest_kind": "scenario",
+      "path": "scenarios/trace_0001.json",
+      "sha256": "92e4b7ce793f23289981da85b605457b707f6c3af31f7216792136ef65e798eb",
+      "trace_id": "trace_0001"
+    },
+    {
+      "manifest_kind": "scenario",
+      "path": "scenarios/trace_0002.json",
+      "sha256": "d02cc431fb7cbf7df5ca04c58edf94cc0e2e4072cc3eb9ab8baf9fe2203ee448",
+      "trace_id": "trace_0002"
+    },
+    {
+      "manifest_kind": "scenario",
+      "path": "scenarios/trace_0003.json",
+      "sha256": "ac7e468ff614c60300d7cc800cebe7ba6c8e265271aca5e8259c495b54ec8db9",
+      "trace_id": "trace_0003"
+    },
+    {
+      "manifest_kind": "scenario",
+      "path": "scenarios/trace_0004.json",
+      "sha256": "c0aa995c8f579e4eb88b64cbf557cdb7c672c217da6a00b8b3255301baca1e07",
+      "trace_id": "trace_0004"
+    }
+  ],
+  "generation": {
+    "arrival_loads": {
+      "rate_003": 0.03,
+      "rate_0075": 0.075,
+      "rate_015": 0.15,
+      "rate_03": 0.3,
+      "rate_06": 0.6,
+      "rate_12": 1.2,
+      "rate_24": 2.4
+    },
+    "grid_size": 19,
+    "initial_task_count": 8,
+    "master_seed": 2026081401,
+    "robot_count": 4,
+    "spatial_arrival_runtime_rng_streams_are_separate": true,
+    "task_count": 50,
+    "trace_count": 5
+  },
+  "manifest_kind": "manifest_index",
+  "manifest_set_id": "collaborative_visit_g19_t50_n5_corrected_pilot_v1",
+  "schema_version": 1
+}

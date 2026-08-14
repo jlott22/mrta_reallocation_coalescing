@@ -19,13 +19,12 @@ runtime = create_persistent_runtime({
 })
 runtime.reset_trial({}, {
     "pos": [0, 0],
-    "all_tasks": [[2, 2], [8, 4], [7, 3]],
     "active_tasks": [[2, 2], [8, 4]],
     "peer_positions": {"01": [0, 6], "02": [0, 12], "03": [0, 18]},
 })
 runtime.apply_delta({"sequence": 1, "pos": [1, 0]})
 runtime.apply_delta({
-    "active_tasks": [[2, 2], [8, 4], [7, 3]],
+    "sequence": 2,
     "events": [{
         "kind": "allocation_epoch",
         "payload": {
@@ -44,24 +43,37 @@ instance. `apply_delta(delta)` changes only movement, target completion,
 probability, collision, peer-position, and peer-message state. Duplicate
 sequence numbers are ignored. It also accepts the worker's standard
 `{"set": sectioned_state, "delete": ..., "events": ...}` delta.
+Future task coordinates must not be included in `all_tasks`, `task_universe`,
+or an authoritative full active-set replacement. A delivered
+`allocation_epoch` event appends any newly known coordinates to the resident
+registry before they become allocator candidates.
+
 `choose_goal()` returns a small object with `.goal` and `.debug`; the shared
-worker puts the outer timer immediately around this method. The runtime's
+worker puts the outer timer immediately around this complete allocator
+transaction. It first applies queued admission hooks, peer messages, completion
+hooks, and allocator-local recovery, then runs ordinary goal selection. The
+runtime's
 `timing_counters()` exposes nested candidate-filter samples and
 `candidate_counts()` exposes the before/after counts, allowing the worker to
 report total, filter, and allocator-exclusive microseconds. USB decoding,
-delta application, message draining, and snapshots stay outside that timer.
+delta staging, outbound-message draining, and snapshots stay outside that timer.
 
 The coalescing host sends one `allocation_epoch` event to each robot context
-on its first call in every admission epoch. The persisted event record includes
-the epoch index, trigger reason, and admitted cells. Duplicate delivery is
-idempotent. When the admitted list is nonempty, all six allocators invalidate
-their local cached consensus/path before the timed call; CBAA therefore cannot
-take its maintenance-only cached-goal path after visible-set growth. Later
-rounds in the same epoch keep the new solution. The candidate set remains the
-complete active set (`max_candidate_cells=None`).
+after that robot receives an admission announcement. The persisted event record
+includes the epoch index, trigger reason, and admitted cells. Duplicate delivery
+is idempotent. Admission is non-destructive: the allocator may invalidate an
+active-set-dependent probability cache, but does not clear a valid goal, claim,
+bundle, or path. The candidate set remains the complete locally known active set
+(`max_candidate_cells=None`). CBAA remains single-assignment; ACBBA, PI, and
+HIPC have no bundle-size cap.
+
+For CBAA, a retained claim keeps its original auction-time bid across movement.
+Position deltas may validate the claim but must not refresh its value or emit a
+new bid. This matches the desktop allocator and prevents delayed old/new bid
+oscillation for the same owner.
 
 `snapshot_minimal()` returns the five standard worker sections. Its one compact
-resume record contains target flags, claims, short paths, RNG state, and the
+resume record contains target flags, claims, allocator paths, RNG state, and the
 DGA population where applicable. This lets a controller switch simulated
 robot contexts outside the timed region without changing the allocation state
 that a continuously running physical robot would retain.
@@ -88,7 +100,9 @@ work between robots and change only part of a route. The larger search can
 therefore return a different plan and intentionally does substantially more
 allocator work.
 
-The six algorithm names are `CBAA`, `ACBBA`, `PI`, `HIPC`, `DMCHBA`, and
-`DGA`. Collaborative targets normally all have probability 1, so the shared
-normalized probability cost reduces to route distance while retaining the same
-scoring definition when a nonuniform fixture is supplied.
+The current experimental algorithm names are `CBAA`, `ACBBA`, `PI`, and
+`HIPC`. `DMCHBA` and `DGA` remain in the runtime only for legacy fixtures and
+must not enter corrected campaign manifests. Collaborative targets normally all
+have probability 1, so the shared normalized probability cost reduces to route
+distance while retaining the same scoring definition when a nonuniform fixture
+is supplied.

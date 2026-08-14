@@ -5,7 +5,13 @@ import unittest
 from allocator_replay.device.native.bayesian import (
     create_persistent_runtime as create_bayesian_runtime,
 )
-from allocator_replay.device.physical import PhysicalAllocatorAdapter
+from allocator_replay.device.physical import (
+    DEVICE_ALLOCATOR_TIMER_SCOPE,
+    PhysicalAllocatorAdapter,
+)
+from known_visit_sim.core.timing import (
+    DEVICE_ALLOCATOR_TIMER_SCOPE as SIMULATOR_ALLOCATOR_TIMER_SCOPE,
+)
 
 
 class _Counters:
@@ -111,6 +117,7 @@ class PhysicalAllocatorAdapterTests(unittest.TestCase):
         )
         metrics = result["metrics"]
         self.assertEqual(metrics["allocator_time_us"], 60)
+        self.assertEqual(metrics["device_allocator_time_us"], 60)
         self.assertEqual(metrics["candidate_filter_time_us"], 18)
         self.assertEqual(metrics["allocator_exclusive_time_us"], 42)
         self.assertEqual(metrics["candidate_filter_calls"], 2)
@@ -118,6 +125,16 @@ class PhysicalAllocatorAdapterTests(unittest.TestCase):
         self.assertEqual(metrics["candidate_count_after"], 5)
         self.assertEqual(metrics["call_path"], "full_allocation_solve")
         self.assertEqual(metrics["timing_source"], "physical_adapter")
+        self.assertEqual(metrics["device_choose_goal_us"], 60)
+        self.assertEqual(metrics["algorithm_epoch_reset_us"], 0)
+        self.assertEqual(
+            metrics["device_allocator_timer_scope"],
+            DEVICE_ALLOCATOR_TIMER_SCOPE,
+        )
+        self.assertEqual(
+            DEVICE_ALLOCATOR_TIMER_SCOPE,
+            SIMULATOR_ALLOCATOR_TIMER_SCOPE,
+        )
 
     def test_physical_messages_become_replay_allocator_events(self) -> None:
         created = []
@@ -146,6 +163,30 @@ class PhysicalAllocatorAdapterTests(unittest.TestCase):
         self.assertEqual(
             update["events"][2]["receiver"], "handle_cbaa_message"
         )
+
+    def test_physical_lifecycle_inputs_are_queued_not_centrally_executed(self) -> None:
+        created = []
+        adapter = self._adapter(created)
+        adapter.reset_trial(
+            {"algorithm": "ACBBA"}, {"rid": "0", "pos": (0, 0)}
+        )
+
+        adapter.admit_tasks([(2, 2)], 4, "batch_threshold")
+        adapter.notify_task_completed((1, 1), "peer_task_completion")
+        adapter.request_recovery()
+
+        events = [item["events"][0] for item in created[0].deltas]
+        self.assertEqual(
+            [item["kind"] for item in events],
+            [
+                "allocation_epoch",
+                "allocator_task_completed",
+                "allocator_recovery",
+            ],
+        )
+        self.assertEqual(events[0]["payload"]["admitted_cells"], [(2, 2)])
+        self.assertFalse(events[1]["payload"]["local"])
+        self.assertEqual(events[2]["payload"]["reason"], "stalled_recovery")
 
     def test_prefers_timing_from_runtime_that_times_internally(self) -> None:
         class InternallyTimed(_CompleteRuntime):

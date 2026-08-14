@@ -800,7 +800,7 @@ def _send_persistent_result(
 
 
 def _run_persistent(slot, attempt_id):
-    """Run only choose_goal in the timed region and stream output afterward."""
+    """Time the allocator transaction and stream all output afterward."""
     runtime = slot.runtime
     if runtime is None:
         _send_persistent_failure(
@@ -867,8 +867,13 @@ def _run_persistent(slot, attempt_id):
         if callable(epoch_reset_method)
         else 0
     )
-    # W_alloc includes all policy-induced allocator work.  Generic PSETUP
-    # state patching, protocol transfer, and explicit setup GC remain excluded.
+    # W_alloc includes allocator input integration (including the lightweight
+    # admission hook), queued decoded consensus/completion/recovery callbacks,
+    # and choose_goal.  Message decoding, generic PSETUP synchronization,
+    # protocol transfer, outbound extraction/serialization, and explicit
+    # pre-call GC remain excluded.  GC naturally triggered inside the
+    # allocator transaction is included.  The legacy epoch-reset component
+    # stays zero for output-schema compatibility.
     elapsed = max(0, choose_goal_us) + algorithm_epoch_reset_us
     filter_us = int(
         reported.get(

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from allocator_replay.capture.codec import decode_value
+from allocator_replay.causal.session import DEVICE_ALLOCATOR_TIMER_SCOPE
 
 from .config import HilCondition
 from .manifests import PairedTrace
@@ -21,6 +22,23 @@ def empty_state() -> dict[str, dict[str, Any]]:
 
 def _identity(device: Any) -> Any:
     return device.identity or device.hello()
+
+
+def _resident_active_task_count(post_state: Any) -> int | None:
+    """Return the native shell's admitted-task count when available."""
+
+    try:
+        active = post_state["allocator_attrs"][
+            "native_collaborative_resume"
+        ]["state"]["active"]
+    except (KeyError, TypeError):
+        try:
+            active = post_state["views"]["active_tasks"]
+        except (KeyError, TypeError):
+            return None
+    if isinstance(active, (list, tuple, set)):
+        return len(active)
+    return None
 
 
 @dataclass
@@ -360,7 +378,17 @@ class PersistentEpochSession:
             "host_nonallocator_overhead_us": max(0, total_host_us - allocator_us),
             "candidate_count_before": before,
             "candidate_count_after": after,
+            "candidate_filter_calls": int(
+                result.get("candidate_filter_calls", 0)
+            ),
+            "host_active_task_count": len(self.active_task_ids),
+            "resident_active_task_count": (
+                _resident_active_task_count(post)
+            ),
             "candidate_mode": "unrestricted",
+            "device_allocator_timer_scope": (
+                DEVICE_ALLOCATOR_TIMER_SCOPE
+            ),
             "call_class": str(result.get("call_class", "unknown")),
             "heap_free_before": result.get("heap_free_before"),
             "heap_free_after": result.get("heap_free_after"),

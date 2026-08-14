@@ -9,6 +9,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from allocator_replay.causal.session import DEVICE_ALLOCATOR_TIMER_SCOPE
+
 from .io import atomic_json, load_json
 from .manifests import canonical_sha256
 from .schedule import verify_campaign
@@ -100,6 +102,12 @@ def rebuild_report(root: Path) -> dict[str, Any]:
     if sorted(completion_keys) != sorted(expected_completion_keys):
         raise ValueError("completed trial state lacks one exact sealed journal completion")
     for row in calls:
+        if row.get("device_allocator_timer_scope") != (
+            DEVICE_ALLOCATOR_TIMER_SCOPE
+        ):
+            raise ValueError(
+                "HIL allocator call has a noncanonical timer scope"
+            )
         row["accepted_for_analysis"] = True
     trial_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in calls:
@@ -138,6 +146,13 @@ def rebuild_report(root: Path) -> dict[str, Any]:
                     int(item["candidate_count_before"] != item["candidate_count_after"])
                     for item in group
                 ),
+                "resident_registry_mismatches": sum(
+                    int(
+                        item.get("resident_active_task_count")
+                        != item.get("host_active_task_count")
+                    )
+                    for item in group
+                ),
             }
         )
     condition_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -163,6 +178,9 @@ def rebuild_report(root: Path) -> dict[str, Any]:
                 "candidate_restriction_violations": sum(
                     item["candidate_restriction_violations"] for item in group
                 ),
+                "resident_registry_mismatches": sum(
+                    item["resident_registry_mismatches"] for item in group
+                ),
             }
         )
     reports = Path(root) / "reports"
@@ -184,7 +202,7 @@ def rebuild_report(root: Path) -> dict[str, Any]:
         ),
         "hardware_validated": any(row.get("execution_mode") == "serial_hardware" for row in calls),
         "timing_definition": {
-            "device_allocator_time_us": "device timer around choose_goal only",
+            "device_allocator_time_us": DEVICE_ALLOCATOR_TIMER_SCOPE,
             "host_nonallocator_overhead_us": "setup, USB transport, and output outside device timer",
         },
     }

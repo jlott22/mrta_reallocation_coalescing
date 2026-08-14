@@ -17,6 +17,7 @@ import hashlib
 import json
 import math
 import random
+import sys
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
@@ -28,11 +29,49 @@ class CausalTimingError(RuntimeError):
 
 
 DEVICE_ALLOCATOR_TIMER_SCOPE = (
-    "choose_goal plus policy-induced on_allocation_epoch allocator callback; "
-    "excludes generic PSETUP state synchronization, USB, explicit pre-call GC, "
-    "and post-call result serialization; GC triggered naturally inside either "
-    "measured allocator operation remains included"
+    "allocator input integration, consensus message handling, allocator-local "
+    "recovery, and choose_goal; excludes transport, message decoding, generic "
+    "PSETUP synchronization, outbound extraction, serialization, and explicit "
+    "pre-call GC; GC triggered naturally inside the allocator transaction "
+    "remains included"
 )
+
+
+# Optional allocator-replay imports are deliberately lazy because ordinary
+# simulator installs do not put ``Simulation/Architecture`` on ``sys.path``.
+# Cache both hits and misses for the current path: retrying a failed import at
+# every recursive value in a large bundle snapshot dominated experiment wall
+# time even though that work is outside the allocator timer.
+_OPTIONAL_CODEC_PATH: tuple[str, ...] | None = None
+_OPTIONAL_CODEC_ENCODER: Any = None
+_OPTIONAL_FINGERPRINT_PATH: tuple[str, ...] | None = None
+_OPTIONAL_LOGICAL_SHA256: Any = None
+
+
+def _optional_codec_encoder() -> Any:
+    global _OPTIONAL_CODEC_PATH, _OPTIONAL_CODEC_ENCODER
+    path = tuple(sys.path)
+    if path != _OPTIONAL_CODEC_PATH:
+        try:
+            from allocator_replay.capture.codec import encode_value
+        except ImportError:
+            encode_value = None
+        _OPTIONAL_CODEC_PATH = path
+        _OPTIONAL_CODEC_ENCODER = encode_value
+    return _OPTIONAL_CODEC_ENCODER
+
+
+def _optional_logical_sha256() -> Any:
+    global _OPTIONAL_FINGERPRINT_PATH, _OPTIONAL_LOGICAL_SHA256
+    path = tuple(sys.path)
+    if path != _OPTIONAL_FINGERPRINT_PATH:
+        try:
+            from allocator_replay.device.common.replay_fingerprint import logical_sha256
+        except ImportError:
+            logical_sha256 = None
+        _OPTIONAL_FINGERPRINT_PATH = path
+        _OPTIONAL_LOGICAL_SHA256 = logical_sha256
+    return _OPTIONAL_LOGICAL_SHA256
 
 
 def _canonical(value: Any) -> Any:
@@ -85,12 +124,15 @@ def replay_encode_value(value: Any) -> Any:
     types so ordinary simulator tests remain independent of PYTHONPATH.
     """
 
-    try:
-        from allocator_replay.capture.codec import encode_value
-    except ImportError:
-        encode_value = None
+    encode_value = _optional_codec_encoder()
     if encode_value is not None:
         return encode_value(value)
+    return _local_replay_encode_value(value)
+
+
+def _local_replay_encode_value(value: Any) -> Any:
+    """Recursive fallback without repeating optional-import discovery."""
+
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
@@ -106,21 +148,24 @@ def replay_encode_value(value: Any) -> Any:
     if isinstance(value, array.array):
         return {
             "@": "array", "typecode": value.typecode,
-            "v": [replay_encode_value(item) for item in value],
+            "v": [_local_replay_encode_value(item) for item in value],
         }
     if isinstance(value, random.Random):
-        return {"@": "rng", "v": replay_encode_value(value.getstate())}
+        return {"@": "rng", "v": _local_replay_encode_value(value.getstate())}
     if isinstance(value, tuple):
-        return {"@": "tuple", "v": [replay_encode_value(item) for item in value]}
+        return {
+            "@": "tuple",
+            "v": [_local_replay_encode_value(item) for item in value],
+        }
     if isinstance(value, (set, frozenset)):
-        encoded = [replay_encode_value(item) for item in value]
+        encoded = [_local_replay_encode_value(item) for item in value]
         encoded.sort(key=lambda item: json.dumps(item, sort_keys=True, default=repr))
         return {"@": "set", "v": encoded}
     if isinstance(value, list):
-        return [replay_encode_value(item) for item in value]
+        return [_local_replay_encode_value(item) for item in value]
     if isinstance(value, Mapping):
         pairs = [
-            [replay_encode_value(key), replay_encode_value(item)]
+            [_local_replay_encode_value(key), _local_replay_encode_value(item)]
             for key, item in value.items()
         ]
         pairs.sort(key=lambda pair: json.dumps(pair[0], sort_keys=True, default=repr))
@@ -130,7 +175,7 @@ def replay_encode_value(value: Any) -> Any:
             "@": "object",
             "module": value.__class__.__module__,
             "class": value.__class__.__name__,
-            "attrs": replay_encode_value(vars(value)),
+            "attrs": _local_replay_encode_value(vars(value)),
         }
     raise TypeError(f"unsupported replay value: {type(value).__name__}")
 
@@ -138,9 +183,8 @@ def replay_encode_value(value: Any) -> Any:
 def parity_sha256(value: Any) -> str:
     """Use the exact cross-CPython/MicroPython hash when available."""
 
-    try:
-        from allocator_replay.device.common.replay_fingerprint import logical_sha256
-    except ImportError:
+    logical_sha256 = _optional_logical_sha256()
+    if logical_sha256 is None:
         return canonical_sha256(value)
     return str(logical_sha256(replay_encode_value(value)))
 
@@ -148,9 +192,8 @@ def parity_sha256(value: Any) -> str:
 def parity_encoded_sha256(encoded_value: Any) -> str:
     """Hash a value that is already in replay transport representation."""
 
-    try:
-        from allocator_replay.device.common.replay_fingerprint import logical_sha256
-    except ImportError:
+    logical_sha256 = _optional_logical_sha256()
+    if logical_sha256 is None:
         return canonical_sha256(encoded_value)
     return str(logical_sha256(encoded_value))
 

@@ -29,6 +29,7 @@ from .parity import project_messages, project_state, projected_parity
 from .providers import SimulatedDurationProvider, ZeroDurationProvider
 from .session import (
     CausalBoardSession,
+    DEVICE_ALLOCATOR_TIMER_SCOPE,
     coerce_frozen_call,
     coerce_mission_binding,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "CausalBoardSession",
     "CausalPreflightRecorder",
     "CausalTimingError",
+    "DEVICE_ALLOCATOR_TIMER_SCOPE",
     "DecisionSignature",
     "DeterministicVirtualDevice",
     "DeviceCallError",

@@ -1,6 +1,18 @@
 FINAL MINIMAL EXPERIMENTAL EXECUTION PLAN
 MRTA Reallocation Coalescing — IPCCC Short Paper
 
+STATUS: ARCHIVED PRE-CORRECTION EXECUTION PLAN
+
+Do not launch or resume this plan's manifests/output roots for the corrected
+rerun. Its sample counts and hardware subset are retained as historical planning
+evidence, but the architecture is now fixed by `docs/SIMULATION_ARCHITECTURE.md`:
+strict ordinary B/W admission with no completion/idle piggyback, one post-work
+`terminal_residual` drain, message-only task knowledge, non-destructive
+admission, uncapped ACBBA/PI/HIPC bundles, full-pool single-task CBAA,
+event-driven sleeping, robot-local targeted recovery, and inclusive allocator
+transaction timing. A new execution plan must use fresh manifests, output
+roots, validation, and design freeze.
+
 GOAL
 Complete the paper within the available time by using the AGX Orin causal simulator for the full statistical study and limiting RP2040 hardware execution to exactly 120 publication trials. Do not run large hardware calibration, hardware variance, or full-factorial hardware campaigns.
 
@@ -454,7 +466,7 @@ Record:
 - total reallocation events
 - arrival-driven reallocation events
 - mandatory execution-driven reallocation events
-- piggybacked admissions
+- zero-piggyback admission assertion and terminal-residual count
 - total allocator calls
 - processor work per allocator call
 - processor work per reallocation event

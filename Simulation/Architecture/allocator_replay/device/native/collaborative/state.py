@@ -30,7 +30,6 @@ class CollaborativeState:
     """
 
     DEFAULT_MAX_TARGETS = 50
-
     def __init__(self, config, initial_state):
         self.configure(config, initial_state)
 
@@ -68,20 +67,18 @@ class CollaborativeState:
         self.peer_positions[self.robot_index] = self.position
         self.peer_position_valid[self.robot_index] = 1
 
-        # Online-arrival studies need an immutable target universe plus a
-        # smaller admitted/active subset.  Older static fixtures provide only
-        # ``active_tasks`` and therefore retain their previous behavior.
+        # Only admitted tasks may enter a resident robot's registry.  In
+        # particular, ``all_tasks``/``task_universe`` is deliberately ignored:
+        # those host-side fields can contain future arrivals that this robot
+        # has not learned through an allocator announcement yet.  New cells
+        # are appended by ``activate_cells`` and keep stable slot indices for
+        # the rest of the trial.
         raw_active_targets = value_from(
             initial_state,
             ("active_tasks", "targets", "known_targets", "target_cells"),
             value_from(config, ("active_tasks", "targets", "known_targets", "target_cells"), []),
         )
-        raw_targets = value_from(
-            initial_state,
-            ("all_tasks", "task_universe"),
-            value_from(config, ("all_tasks", "task_universe"), raw_active_targets),
-        )
-        encoded_targets = self._normalize_cell_collection(raw_targets)
+        encoded_targets = self._normalize_cell_collection(raw_active_targets)
         encoded_targets.sort()
         unique_targets = []
         previous = -1
@@ -90,10 +87,12 @@ class CollaborativeState:
                 unique_targets.append(encoded)
                 previous = encoded
 
-        max_targets = int(
+        self.max_targets = int(
             value_from(config, ("max_targets",), self.DEFAULT_MAX_TARGETS)
         )
-        if len(unique_targets) > max_targets:
+        if self.max_targets <= 0:
+            raise ValueError("max_targets must be positive")
+        if len(unique_targets) > self.max_targets:
             raise ValueError("collaborative native runtime target capacity exceeded")
 
         self.targets = array("H", unique_targets)
@@ -145,6 +144,7 @@ class CollaborativeState:
         self.candidate_count_after = 0
         self.last_event = "trial_reset"
         self.current_goal = None
+        self.active_allocation_reason = ""
         self.last_allocation_epoch_index = -1
         self.last_allocation_epoch_reason = ""
         self.last_allocation_epoch_admitted = array("H")
@@ -219,12 +219,41 @@ class CollaborativeState:
                 continue
         return result
 
-    def _replace_active(self, cells, mark_revision=True):
+    def _register_cells(self, cells):
+        """Append previously unseen admitted cells without disturbing slots."""
+
+        added = []
+        seen = set()
+        for encoded in self._normalize_cell_collection(cells):
+            if encoded in seen or encoded in self.slot_by_cell:
+                continue
+            seen.add(encoded)
+            if len(self.targets) >= self.max_targets:
+                raise ValueError(
+                    "collaborative native runtime target capacity exceeded"
+                )
+            slot = len(self.targets)
+            self.targets.append(encoded)
+            self.slot_by_cell[encoded] = slot
+            self.active.append(0)
+            self.unavailable.append(0)
+            self.probability.append(1.0)
+            self.claim_owner.append(-1)
+            self.claim_value.append(-1.0e18)
+            self.claim_epoch.append(0)
+            added.append(encoded)
+        return added
+
+    def _replace_active(
+        self, cells, mark_revision=True, register_unknown=True
+    ):
         encoded = self._normalize_cell_collection(cells)
+        if register_unknown:
+            self._register_cells(encoded)
         wanted = set(encoded)
         unknown = [cell for cell in wanted if cell not in self.slot_by_cell]
         if unknown:
-            raise ValueError("active task not present in immutable trial target list")
+            raise ValueError("active task has not been admitted to this robot")
         changed = False
         for slot, cell in enumerate(self.targets):
             next_value = 1 if int(cell) in wanted else 0
@@ -259,17 +288,18 @@ class CollaborativeState:
             self.unavailable[slot] = 1 if int(encoded) in wanted else 0
 
     def activate_cells(self, cells):
+        encoded_cells = self._normalize_cell_collection(cells)
+        added = self._register_cells(encoded_cells)
         changed = False
-        for encoded in self._normalize_cell_collection(cells):
+        for encoded in encoded_cells:
             slot = self.slot_by_cell.get(encoded)
-            if slot is None:
-                raise ValueError("activated task not present in immutable trial target list")
             if not self.active[slot]:
                 self.active[slot] = 1
                 changed = True
-        if changed:
+        if changed or added:
             self.task_revision += 1
             self.last_event = "target_activated"
+        return added
 
     def _load_probabilities(self, values):
         if values is None:
@@ -319,6 +349,13 @@ class CollaborativeState:
         self.collision_active = bool(active)
         self.last_event = "collision_updated"
 
+    def is_admission_allocation(self):
+        # This transient is set only while an ordered allocation-epoch input
+        # is being integrated and cleared before the transaction returns.
+        # Treat every nonempty reason as admission so a newly introduced
+        # trigger spelling cannot accidentally permit head recall.
+        return bool(self.active_allocation_reason)
+
     def apply_allocation_epoch(
         self, epoch_index, trigger_reason, admitted_cells
     ):
@@ -331,6 +368,7 @@ class CollaborativeState:
         if not trigger_reason:
             raise ValueError("allocation epoch trigger reason is required")
         admitted = self._normalize_cell_collection(admitted_cells)
+        self._register_cells(admitted)
         unique = []
         seen = set()
         for encoded in admitted:
@@ -338,9 +376,7 @@ class CollaborativeState:
                 continue
             slot = self.slot_by_cell.get(encoded)
             if slot is None:
-                raise ValueError(
-                    "allocation epoch task is outside the immutable target universe"
-                )
+                raise ValueError("allocation epoch task was not admitted")
             if not self.active[slot]:
                 raise ValueError("allocation epoch task is not active")
             seen.add(encoded)
@@ -510,8 +546,10 @@ class CollaborativeState:
             raise ValueError("unsupported collaborative resume version")
         if int(resume.get("grid_size", self.grid_size)) != self.grid_size:
             raise ValueError("collaborative resume grid size mismatch")
-        expected_targets = [int(cell) for cell in self.targets]
         actual_targets = [int(cell) for cell in resume.get("targets", ())]
+        if not self.targets:
+            self._register_cells(actual_targets)
+        expected_targets = [int(cell) for cell in self.targets]
         if actual_targets != expected_targets:
             raise ValueError("collaborative resume target set mismatch")
 

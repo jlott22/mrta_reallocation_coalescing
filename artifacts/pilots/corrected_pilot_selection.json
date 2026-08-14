@@ -1,0 +1,35 @@
+{
+  "agx_total_trials_per_condition": 50,
+  "agx_trials_per_condition_per_round": 25,
+  "architecture": "corrected_message_only_strict_bound_non_destructive_event_driven",
+  "bounded_b4_w10_timeout_fraction_by_load": {
+    "rate_0075": 0.9093749999999999,
+    "rate_03": 0.5111111111111112,
+    "rate_06": 0.1891891891891892
+  },
+  "excluded_from_evidence": [
+    "all pre-correction pilot artifacts",
+    "pre-fix/incomplete diagnostic campaigns"
+  ],
+  "fresh_manifest_set_id": "collaborative_visit_g19_t50_n5_corrected_pilot_v1",
+  "round_2_restriction": "none; pre-round-2 verification is informational",
+  "rp2040_traces_per_selected_condition": 4,
+  "schema_version": 1,
+  "selected_arrival_rates_tasks_per_s": {
+    "high": 0.6,
+    "low": 0.075,
+    "medium": 0.3
+  },
+  "selected_high_load_zero_diagnostic": {
+    "algorithm": "ACBBA",
+    "completed_trials": 24,
+    "trials": 24
+  },
+  "selected_policies": [
+    "eager_b1",
+    "count_b2",
+    "count_b4",
+    "count_b8",
+    "bounded_b4_w10"
+  ]
+}

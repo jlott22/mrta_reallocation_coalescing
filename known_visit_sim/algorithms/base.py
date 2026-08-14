@@ -60,6 +60,14 @@ class AllocatorBase:
 
     name: str = "base"
     PROBABILITY_ALPHA: float = 8.0
+    _ADMISSION_ALLOCATION_REASONS = frozenset({
+        "initial_allocation",
+        "task_admission",
+        "task_arrival_eager",
+        "batch_threshold",
+        "age_timeout",
+        "terminal_residual",
+    })
 
     def initialize(self, robot: RobotAPI) -> None:
         pass
@@ -83,31 +91,67 @@ class AllocatorBase:
     def on_allocation_epoch(
         self, robot: RobotAPI, reason: str, admitted_tasks: Sequence[Cell]
     ) -> None:
-        """Make newly admitted tasks operational at a scheduler epoch.
+        """Observe task admission without invalidating valid local state.
 
-        The retained allocators already expose a compatibility reset hook.  A
-        reset is used only when the visible task set grows; completion-only
-        behavior remains on the existing ``on_task_set_changed`` path.
+        Newly admitted tasks are already present in ``robot.active_tasks`` by
+        the time this hook runs.  All retained allocators treat a missing
+        consensus-table entry as unclaimed, so admission requires no bundle,
+        path, claim, or current-goal reset.  Only the cached probability
+        normalizer is invalidated because the active set that defines it grew.
         """
 
-        self.on_task_set_changed(robot)
-        if admitted_tasks:
-            reset = getattr(self, "_reset_cbaa_state", None)
-            if callable(reset):
-                reset(robot)
+        del reason, admitted_tasks
+        if hasattr(robot, "_allocation_probability_source_id"):
+            setattr(robot, "_allocation_probability_source_id", None)
+        if hasattr(robot, "_allocation_probability_normalizer"):
+            setattr(robot, "_allocation_probability_normalizer", None)
+        if hasattr(robot, "_allocation_probability_values"):
+            setattr(robot, "_allocation_probability_values", None)
 
     def recover_stalled_allocation(self, robot: RobotAPI) -> bool:
-        """Clear local allocation consensus after a prolonged no-goal stall.
+        """Return whether allocator-specific local recovery made progress.
 
-        This is deliberately local: it emits no recovery, release, refresh, or
-        heartbeat message. The next normal allocation decision may emit the
-        same claim message it would use during ordinary allocation.
+        A generic full reset destroys valid ownership and path information and
+        is therefore not a safe recovery action.  Consensus allocators that
+        can identify one locally stale blocking claim override this hook and
+        expire only that claim before their next ordinary allocation call.
         """
-        reset = getattr(self, "_reset_cbaa_state", None)
-        if not callable(reset):
-            return False
-        reset(robot)
-        return True
+
+        del robot
+        return False
+
+    def on_task_completed(
+        self,
+        robot: RobotAPI,
+        cell: Cell,
+        reason: str = "",
+        local: bool = False,
+    ) -> bool:
+        """Repair allocator state after a locally learned task completion.
+
+        Subclasses may preserve a valid suffix after their own head task is
+        completed or apply their native peer-completion rule.  The return value
+        tells the robot shell whether its currently executing goal was
+        invalidated.  The default has no allocator-owned state to repair.
+        """
+
+        del robot, cell, reason, local
+        return False
+
+    def _is_admission_allocation(self, robot: RobotAPI) -> bool:
+        """Return whether the current allocator transaction admits new work.
+
+        ``RobotShell`` exposes the frozen trigger while the timed allocator
+        transaction runs.  Direct allocator tests and lightweight API stubs do
+        not necessarily provide that attribute, so only those callers fall
+        back to the older event marker.
+        """
+
+        sentinel = object()
+        reason = getattr(robot, "_active_allocation_reason", sentinel)
+        if reason is sentinel:
+            return str(getattr(robot, "last_event", "")) == "task_admission"
+        return str(reason) in self._ADMISSION_ALLOCATION_REASONS
 
     def choose_goal(self, robot: RobotAPI) -> AllocationDecision:
         """Return the next active target cell."""
@@ -187,8 +231,31 @@ class AllocatorBase:
         setattr(robot, "candidate_count_after_filter", len(filtered))
         return filtered
 
+    def _unrestricted_candidate_cells(
+        self, robot: RobotAPI, candidates: Sequence[Cell]
+    ) -> List[Cell]:
+        """Return the complete locally known eligible pool for core allocators.
+
+        CBAA, ACBBA, PI, and HIPC use this helper so an experimental candidate
+        cap cannot silently hide an admitted task.  Other allocators retain the
+        optional candidate-filter sensitivity through ``_filter_candidate_cells``.
+        """
+
+        ordered = list(candidates)
+        setattr(robot, "candidate_count_before_filter", len(ordered))
+        setattr(robot, "candidate_count_after_filter", len(ordered))
+        setattr(robot, "max_candidate_cells", None)
+        return ordered
+
     def _filter_probability(self, robot: RobotAPI, cell: Cell) -> float:
-        target_p = getattr(robot, "target_p", {}) or {}
+        active_count = len(getattr(robot, "active_tasks", set()) or set())
+        target_p = getattr(robot, "_allocation_probability_values", None)
+        if (
+            not isinstance(target_p, dict)
+            or getattr(robot, "_allocation_probability_task_count", None)
+            != active_count
+        ):
+            target_p = getattr(robot, "target_p", {}) or {}
         try:
             value = target_p.get(cell, 0.0)
         except AttributeError:
@@ -233,13 +300,23 @@ class AllocatorBase:
             max_p = 1.0
         setattr(robot, "_allocation_probability_normalizer", float(max_p))
         setattr(robot, "_allocation_probability_source_id", id(target_p))
+        if isinstance(target_p, dict):
+            setattr(robot, "_allocation_probability_values", dict(target_p))
+        setattr(
+            robot,
+            "_allocation_probability_task_count",
+            len(getattr(robot, "active_tasks", set()) or set()),
+        )
         return float(max_p)
 
     def _normalized_allocation_probability(self, robot: RobotAPI, cell: Cell) -> float:
-        target_p = getattr(robot, "target_p", {}) or {}
-        source_id = getattr(robot, "_allocation_probability_source_id", None)
         normalizer = getattr(robot, "_allocation_probability_normalizer", None)
-        if source_id != id(target_p) or normalizer is None:
+        active_count = len(getattr(robot, "active_tasks", set()) or set())
+        cached_count = getattr(robot, "_allocation_probability_task_count", None)
+        # RobotShell.target_p is a local-view property and may return a fresh
+        # mapping object on every access. Object identity therefore cannot be
+        # used as a cache key without turning every score into an O(T) refresh.
+        if normalizer is None or cached_count != active_count:
             normalizer = self._refresh_allocation_probability_normalizer(robot)
 
         try:

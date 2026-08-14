@@ -1,0 +1,51 @@
+{
+  "manifest": {
+    "manifest_set_id": "collaborative_visit_g19_t50_n5_corrected_pilot_v1",
+    "root": "study/generated/manifests",
+    "master_seed": 2026081401,
+    "trace_count": 5,
+    "grid_size": 19,
+    "robot_count": 4,
+    "task_count": 50,
+    "initial_task_count": 8,
+    "arrival_loads": {
+      "rate_003": 0.03,
+      "rate_0075": 0.075,
+      "rate_015": 0.15,
+      "rate_03": 0.3,
+      "rate_06": 0.6,
+      "rate_12": 1.2,
+      "rate_24": 2.4
+    },
+    "arrival_rate_units": "tasks_per_mission_second",
+    "design_status": "corrected_message_driven_strict_bound_pilot"
+  },
+  "campaign": {
+    "campaign_id": "corrected_architecture_rate_confirmation_v1",
+    "output_root": "study/output/corrected_architecture_rate_confirmation_v1",
+    "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
+    "loads": ["rate_06", "rate_12"],
+    "policies": [
+      {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1},
+      {"policy_id": "count_b4", "mode": "count", "batch_size": 4}
+    ],
+    "trace_limit": 5,
+    "job_exclusions": [
+      {"trace_ids": ["trace_0000", "trace_0001", "trace_0002"]}
+    ],
+    "expected_excluded_job_count": 48,
+    "max_workers": 6,
+    "schedule_seed": 2026081403,
+    "allow_dirty": true,
+    "required_outputs": [
+      "trial_summary.json",
+      "task_events.csv",
+      "allocation_epochs.csv"
+    ],
+    "runner": {
+      "module": "known_visit_sim.run_online_trials",
+      "extra_args": ["--timing-mode", "agx_host_proxy"]
+    },
+    "notes": "Independent two-trace confirmation of the 0.6 versus 1.2 tasks/s high-load choice after the corrected rate screen."
+  }
+}

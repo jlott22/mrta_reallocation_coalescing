@@ -11,7 +11,9 @@ class ACBBAAllocator(AllocatorBase):
 
     name = "ACBBA"
 
-    BUNDLE_SIZE = 3
+    # ``None`` is retained as compatibility metadata; bundle construction is
+    # intentionally unbounded over the complete locally admitted task pool.
+    BUNDLE_SIZE = None
     REWARD_FACTOR = 5.0
     NO_WINNER = None
     NO_BID = -1.0e18
@@ -37,7 +39,7 @@ class ACBBAAllocator(AllocatorBase):
                 "acbba_trigger": getattr(robot, "acbba_last_reallocation_trigger", None),
                 "acbba_claims_known": self._count_known_claims(robot),
                 "acbba_pending_snapshot": bool(getattr(robot, "acbba_pending_snapshot", False)),
-                "acbba_bundle_size": self._planning_horizon(robot, self.BUNDLE_SIZE),
+                "acbba_bundle_size": None,
                 "acbba_candidate_count_before_filter": int(getattr(robot, "candidate_count_before_filter", 0)),
                 "acbba_candidate_count_after_filter": int(getattr(robot, "candidate_count_after_filter", 0)),
                 "acbba_max_candidate_cells": getattr(robot, "max_candidate_cells", None),
@@ -68,8 +70,111 @@ class ACBBAAllocator(AllocatorBase):
 
         return path[0]
 
+    def on_task_completed(
+        self,
+        robot: Any,
+        cell: Cell,
+        reason: str = "",
+        local: bool = False,
+    ) -> bool:
+        """Apply head-pop or ACBBA suffix release without a global reset."""
+
+        self._ensure_acbba_state(robot)
+        try:
+            completed = (int(cell[0]), int(cell[1]))
+        except Exception:
+            return False
+
+        invalidated_goal = self._current_goal(robot) == completed
+        path = self._get_path(robot)
+        bundle = self._get_bundle(robot)
+        winner_by_cell, _ = self._consensus_maps(robot)
+
+        if completed in path:
+            index = path.index(completed)
+            completed_locally = bool(local) or str(reason).startswith("local")
+            if completed_locally and index == 0:
+                # Executing the head makes the old prefix disappear at exactly
+                # the position from which all dependent suffix bids began.
+                # The suffix therefore remains valid and must not be recalled.
+                if self._same_robot_id(winner_by_cell.get(completed), robot.rid):
+                    self._set_table_entry(
+                        robot,
+                        completed,
+                        self.NO_WINNER,
+                        self.NO_BID,
+                        self.NO_TIME,
+                        queue=True,
+                    )
+                setattr(robot, "acbba_path", path[1:])
+                if completed in bundle:
+                    bundle.remove(completed)
+                setattr(robot, "acbba_bundle", bundle)
+                setattr(robot, "acbba_pending_snapshot", True)
+            else:
+                # A task completed by somebody else is an external loss; keep
+                # the native ACBBA first-bad-item suffix rule.
+                self._truncate_bundle_from(robot, index)
+
+        winner_by_cell, _ = self._consensus_maps(robot)
+        if completed in winner_by_cell and winner_by_cell.get(completed) is not self.NO_WINNER:
+            self._set_table_entry(
+                robot,
+                completed,
+                self.NO_WINNER,
+                self.NO_BID,
+                self.NO_TIME,
+                queue=True,
+            )
+        return invalidated_goal
+
+    def recover_stalled_allocation(self, robot: Any) -> bool:
+        """Forget at most one blocking remote claim and retain the bundle."""
+
+        self._ensure_acbba_state(robot)
+        self._clear_invalid_or_completed_cells(robot)
+        self._repair_bundle_after_consensus(robot)
+        path = self._get_path(robot)
+        if path:
+            return True
+
+        winner_by_cell, winning_bid_by_cell = self._consensus_maps(robot)
+        bid_time_by_cell = self._bid_time_map(robot)
+        blocked_cell: Optional[Cell] = None
+        blocked_index = 0
+        blocked_bid = self.NO_BID
+        for candidate in self._candidate_cells(robot):
+            insertion_index, my_bid = self._best_insertion_bid(
+                robot, path, candidate
+            )
+            if self._can_claim(robot, candidate, my_bid):
+                return True
+            winner = winner_by_cell.get(candidate, self.NO_WINNER)
+            if winner is self.NO_WINNER or self._same_robot_id(winner, robot.rid):
+                continue
+            if self._better_insertion_choice(
+                candidate,
+                insertion_index,
+                my_bid,
+                blocked_cell,
+                blocked_index,
+                blocked_bid,
+            ):
+                blocked_cell = candidate
+                blocked_index = insertion_index
+                blocked_bid = my_bid
+
+        if blocked_cell is None:
+            return False
+        # Local expiry only: the next ordinary bid announces new ownership.
+        # Do not manufacture a release on behalf of the remote winner.
+        winner_by_cell[blocked_cell] = self.NO_WINNER
+        winning_bid_by_cell[blocked_cell] = self.NO_BID
+        bid_time_by_cell[blocked_cell] = self.NO_TIME
+        return True
+
     def _build_bundle(self, robot: Any) -> None:
-        """Greedily insert tasks until the path/bundle reaches BUNDLE_SIZE."""
+        """Greedily insert every locally claimable admitted task."""
 
         self._ensure_acbba_state(robot)
         path = self._get_path(robot)
@@ -77,10 +182,9 @@ class ACBBAAllocator(AllocatorBase):
 
         changed = False
 
-        bundle_size = self._planning_horizon(robot, self.BUNDLE_SIZE)
         candidates = self._candidate_cells(robot)
 
-        while len(path) < bundle_size:
+        while True:
             best_cell: Optional[Cell] = None
             best_index = 0
             best_bid = self.NO_BID
@@ -129,7 +233,7 @@ class ACBBAAllocator(AllocatorBase):
                 cell = (x, y)
                 if self._valid_task_cell(robot, cell):
                     cells.append(cell)
-        return self._filter_candidate_cells(robot, cells)
+        return self._unrestricted_candidate_cells(robot, cells)
 
     def _route_distance(self, robot: Any, path: List[Cell]) -> float:
         """Return route distance robot.pos -> path[0] -> path[1] -> ..."""
@@ -148,14 +252,23 @@ class ACBBAAllocator(AllocatorBase):
     def _best_insertion_bid(self, robot: Any, path: List[Cell], cell: Cell) -> Tuple[int, float]:
         """Return the best insertion index and bid for adding cell to path."""
 
-        current_distance = self._route_distance(robot, path)
         best_index = 0
         best_bid = self.NO_BID
 
-        for insertion_index in range(len(path) + 1):
-            candidate_path = path[:insertion_index] + [cell] + path[insertion_index:]
-            marginal_distance = self._route_distance(robot, candidate_path) - current_distance
-            marginal_distance = max(0.0, marginal_distance)
+        first_index = 0
+        current = self._current_goal(robot)
+        if (
+            self._is_admission_allocation(robot)
+            and path
+            and current == path[0]
+            and self._valid_task_cell(robot, current)
+        ):
+            first_index = 1
+
+        for insertion_index in range(first_index, len(path) + 1):
+            marginal_distance = self._marginal_route_distance(
+                robot, path, cell, insertion_index
+            )
             bid = self._probability_adjusted_score(robot, marginal_distance, cell)
 
             if bid > best_bid + self.EPS:
@@ -166,6 +279,23 @@ class ACBBAAllocator(AllocatorBase):
                 best_bid = bid
 
         return best_index, best_bid
+
+    def _marginal_route_distance(
+        self, robot: Any, path: List[Cell], cell: Cell, insertion_index: int
+    ) -> float:
+        """Exact O(1) open-route distance delta for one insertion position."""
+
+        index = max(0, min(int(insertion_index), len(path)))
+        previous = self._robot_pos(robot) if index == 0 else path[index - 1]
+        added = float(self.manhattan(previous[0], previous[1], cell[0], cell[1]))
+        if index >= len(path):
+            return max(0.0, added)
+        following = path[index]
+        added += float(self.manhattan(cell[0], cell[1], following[0], following[1]))
+        removed = float(
+            self.manhattan(previous[0], previous[1], following[0], following[1])
+        )
+        return max(0.0, added - removed)
 
     def _better_insertion_choice(
         self,

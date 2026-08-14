@@ -1,208 +1,238 @@
 # Simulation and hardware architecture
 
-This document describes the architecture used for the final
-reallocation-coalescing experiment and the compact evaluation under
-`publication/aug14_final_v1/`.
+This is the authoritative architecture for new reallocation-coalescing runs.
+The August 14 publication bundle and reports describe the pre-correction
+architecture and must not be combined with or used as evidence for a rerun.
 
-## System view
+## Experimental contract
+
+The experiment isolates the effect of when newly released tasks become
+available to otherwise autonomous robot allocators. The simulator owns the
+physical world, event clock, release trace, and admission boundary. It does not
+choose robot goals, clear allocator state, recall work, or initiate consensus
+or recovery decisions.
 
 ```mermaid
 flowchart LR
-    M[Hashed scenario and release manifests] --> O[Campaign orchestrator]
-    O --> J[One isolated mission process]
-    J --> S[Four-robot asynchronous mission model]
-    S --> P[Reallocation policy]
-    P --> A[Allocator: CBAA / ACBBA / PI / HIPC]
-    A --> T{Timing provider}
-    T -->|AGX| H[Host-measured allocator]
-    T -->|Zero compute| Z[Zero-duration counterfactual]
-    T -->|Hardware| B[Persistent RP2040 bridge]
-    H --> S
-    Z --> S
-    B --> S
-    S --> R[Trial, task, epoch, movement, and call records]
-    R --> V[Semantic validation and immutable promotion]
-    V --> E[Trial-paired evaluation and compact export]
+    R[Exogenous task release] --> Q[Simulator pending queue]
+    Q --> P{Eager / Count / Bounded rule}
+    P --> N[Reliable admission announcement]
+    N --> K[Robot-local known task pool]
+    K --> A[Autonomous allocator transaction]
+    A --> M[Droppable peer messages]
+    A --> G[Current goal and retained route]
+    G --> X[Physical execution]
+    X --> C[Droppable completion announcement]
+    C --> A
 ```
 
-The allocator code is independent of the batching policy. The policy controls
-when pending online tasks become visible to the allocator; the selected
-allocator then assigns or reassigns work using the same mission state contract.
+The primary comparison contains CBAA, ACBBA, PI, and HIPC. Every one of these
+allocators sees the complete set of tasks that the individual robot has learned
+through admission messages. No Top-K or candidate cap applies.
 
-## Experimental dimensions
+## Strict admission rules
 
-Each primary timing dataset covers the exact Cartesian product:
+Released tasks first enter a simulator-held pending queue. Ordinary admission
+obeys the selected policy exactly:
 
-- allocators: CBAA, ACBBA, PI, and HIPC;
-- arrival loads: low, medium, and high;
-- policies: Eager/B=1, Count B=2/4/8, and Bounded B=4/W=5 s;
-- traces: 50 paired scenario/release traces;
-- four logical robots, a 19x19 grid, and 50 tasks per mission.
+- Eager admits one task per epoch. A simultaneous release burst produces
+  multiple one-task epochs.
+- Count admits exactly `B` tasks whenever the queue reaches `B`. A burst can
+  produce multiple exact-`B` epochs; a sub-`B` tail remains pending.
+- Bounded admits exact-`B` batches at the threshold. If the oldest pending task
+  reaches `W`, the timeout admits the then-pending sub-`B` set.
 
-This gives 3,000 causal and 3,000 zero-compute trials. For a fixed
-`(allocator, load, policy, trace)`, both timing treatments reuse the same
-scenario hash, release hash, runtime seed, and movement-timing trace. A selected
-104 causal trials obtain allocator durations from three physical RP2040 boards.
+Task completion, invalid goals, allocator messages, and robot idleness never
+piggyback pending work and never bypass `B` or `W`. There is no final-release
+flush.
 
-## Mission execution
+One narrowly defined terminal rule guarantees mission completion for Count
+when the last release leaves fewer than `B` tasks. A `terminal_residual` epoch
+is allowed only when all of the following are true:
 
-`known_visit_sim` models four logical robots on a shared causal event clock.
-Events include task releases, message delivery, allocator availability,
-movement completion, and mandatory reallocation points. Inputs that become
-available while a robot is computing are retained for a later allocator call;
-they do not alter an already frozen input view.
+1. no unreleased task remains;
+2. the pending queue is nonempty and below the ordinary threshold; and
+3. every previously admitted task has been physically completed by the team.
 
-The mission loop is organized around these components:
+This creates one final residual batch only after the normal experiment has no
+other admitted work. It cannot make the bound effectively eager during the
+mission.
 
-```text
-known_visit_sim/core/scheduler.py       asynchronous mission execution
-known_visit_sim/core/reallocation.py    task lifecycle and policy state
-known_visit_sim/comms/bus.py            timestamped communication delivery
-known_visit_sim/algorithms/              allocator implementations
-known_visit_sim/run_causal_trials.py     canonical causal-output adapter
-known_visit_sim/run_online_trials.py     AGX campaign entry point
-```
+## Message-only robot knowledge
 
-Eight tasks are initially visible and 42 arrive online. The movement model uses
-deterministic SHA-256-keyed jitter, so timing-provider and policy interleavings
-do not consume or reassign random movement draws.
+The world may know every task and its release time, but a robot does not. Even
+the time-zero set enters an online robot through the environment's admission
+message. A later task coordinate is absent from the robot's snapshot and from
+the resident RP2040 target registry until that announcement is delivered.
 
-## Reallocation policies
+Admission announcements use the same timestamped bus boundary as other
+information but are reliable, because loss would make a policy condition
+ill-defined rather than test allocator robustness. Peer allocator, state, and
+task-completion messages retain the configured communication delay and loss
+behavior. A peer's completion is never inferred by reading shared world state.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Pending: task release
-    Pending --> Allocate: Eager immediately
-    Pending --> Allocate: Count reaches B
-    Pending --> Allocate: Bounded reaches B or W expires
-    Allocate --> Pending: more online tasks
-    Allocate --> [*]: mission complete
-```
+Arrival knowledge does not recall a robot. On receipt, the robot records the
+new tasks and requests an allocator transaction at its next safe boundary while
+preserving its current motion, current goal, claims, and remaining route. If an
+announcement arrives while it computes, it is buffered and becomes input to a
+later call.
 
-- `eager_b1` exposes every arrival immediately.
-- `count_b2`, `count_b4`, and `count_b8` reduce allocation frequency by waiting
-  for the indicated pending count.
-- `bounded_b4_w5` retains B=4 batching but limits pending age to five simulated
-  seconds.
-- Mandatory completion/idle epochs can admit pending work, and terminal logic
-  prevents a residual partial batch from being stranded.
+## Allocator behavior
 
-## Timing providers
+| Allocator | Locally available work | Retained execution state |
+|---|---|---|
+| CBAA | Bids over the full locally known active pool, but owns/executes one current task at a time | Keeps the won task and its auction-time winning bid until completion, invalidation, recovery release, or an allocator-native outbid |
+| ACBBA | Builds an uncapped bundle/path over all locally eligible admitted tasks | Keeps a valid suffix; applies ACBBA's own suffix-release rule when required |
+| PI | Builds an uncapped path over all locally eligible admitted tasks | Removes a completed item and preserves the remaining valid path |
+| HIPC | Builds an uncapped bundle/path over all locally eligible admitted tasks | Keeps a locally executed suffix; applies HIPC's own peer-completion suffix rule |
 
-All providers implement the same allocator-call interface and return the same
-authoritative allocator result shape.
+Admission is non-destructive for all four allocators. The admission hook may
+invalidate an active-set-dependent cache, but it does not clear ownership,
+bundles, paths, or the current goal. Completion repair is allocator-specific;
+the simulator supplies the locally learned event and does not impose one common
+suffix policy.
 
-### AGX host proxy
+CBAA does not recompute a retained winning bid as the robot moves. A bid is an
+auction-time comparison value, not a continuously changing distance estimate.
+Movement only validates that the task and ownership remain active. A genuine
+outbid, completion, invalidation, targeted recovery release, or later selection
+of a different task can create a new bid. This invariant prevents delayed
+messages containing older and newer values for the same retained owner from
+forming a feedback loop. Desktop and native implementations must enforce the
+same lifecycle.
 
-The allocator executes on AGX. `choose_goal` and policy-induced epoch-reset work
-are timed separately and combined as allocator processor work. Calls for
-different logical robots may overlap on the four-processor mission timeline.
+Because CBAA is inherently a single-assignment auction, a CBAA bundle-length
+metric is not comparable to ACBBA/PI/HIPC path length. Cross-allocator response
+analysis should use the time from local admission-message receipt to first
+selection as the robot's current execution goal. Bundle/claim time remains an
+allocator-mechanism diagnostic.
 
-### Zero-compute counterfactual
+## Final analysis hierarchy
 
-The same allocator and mission logic execute, but allocator duration added to
-the causal clock is exactly zero. Separately recorded AGX diagnostic work is
-retained for auditing and is not added to mission time.
+The main scientific tradeoff is **allocator processor work versus task
+responsiveness**, subject to mission completion. Analyze it at the trial level
+and separately by allocator and arrival load; pooled algorithm means can hide
+different consensus and completion-repair costs.
 
-### RP2040 hardware
+Primary outcomes are:
 
-Three physical boards run persistent native allocator contexts through
-`Simulation/Architecture/allocator_replay/`. Each mission keeps four logical
-robot contexts resident. The host performs authoritative-state setup outside
-the measured region, sends bounded event stages, and times native
-`choose_goal`/epoch-reset execution separately from USB transport and host
-serialization.
+1. mission completion/failure type;
+2. total allocator processor work per mission, using AGX and hardware timing as
+   separate treatments;
+3. mean release-to-completion latency per trial; and
+4. p95 release-to-completion latency per trial for tail responsiveness.
 
-```mermaid
-sequenceDiagram
-    participant Mission as AGX mission worker
-    participant Bridge as Persistent serial bridge
-    participant RP as RP2040 native runtime
-    Mission->>Bridge: frozen robot state + ordered events
-    Bridge->>RP: bootstrap or authoritative checkpoint
-    loop bounded event stages
-        Bridge->>RP: one replay event stage
-    end
-    Bridge->>RP: execute allocator call
-    RP-->>Bridge: result + device timing + protocol counter
-    Bridge-->>Mission: parity-checked authoritative result
-```
+Mission elapsed time is a system-level co-primary or key secondary outcome,
+but it is not a substitute for task latency because the final exogenous release
+can dominate a sparse mission. Explain the mechanism with admission-epoch
+count, timeout/threshold mix, allocator-call count, per-call duration, logical
+allocation payload, total team steps, and release-to-first-current-goal
+latency. Raw first-claim/reassignment counts are allocator-specific diagnostics
+and must not be compared directly between single-task CBAA and bundle/path
+allocators.
 
-Every physical result is compared with the AGX implementation before it is
-accepted. Device identity, firmware, module-set hash, source, board assignment,
-and CPU affinity are recorded with the output.
+## Autonomous calls, waiting, and recovery
 
-## Concurrency on AGX Orin
+Robots react to delivered information and local deadlines; they do not poll at
+a fixed no-goal interval.
 
-During the deadline campaign, hardware workers were pinned to CPUs 0-2 and the
-rolling AGX-only pool used CPUs 3-8. CPUs 9-11 were reserved for the operating
-system, tracking, and supervision. Numerical-library thread counts were forced
-to one so a mission process could not silently multiply its CPU use.
+- A robot with no locally known active task sleeps until an admission or other
+  relevant message is delivered.
+- A robot that locally knows unfinished work but has no goal sleeps until an
+  allocator message, completion message, quarantine expiry, or its own stalled
+  allocation deadline.
+- Consensus, outbid, completion, and invalid-goal calls remain autonomous and
+  are not central admission events.
 
-Hardware jobs were block-scheduled so both policy members for a paired block
-stayed on one board. AGX jobs were condition-balanced and rolled onto the next
-free worker rather than assigning a permanently unequal shard to each core.
+Recovery is a robot-local liveness action. It becomes eligible only after the
+robot has continuously known unfinished active work while holding no executable
+goal for `stalled_allocation_recovery_s`, measured from its latest locally
+observed progress or recovery attempt. The simulator schedules the deadline but
+does not choose the repair. The allocator keeps valid state and expires at most
+one locally blocking stale peer claim before an ordinary selection/bid. No
+global truth is consulted and no full allocator reset occurs.
 
-## Validation, retention, and recovery
+Recovery can legitimately make no progress when a robot's local information is
+consistent but incomplete, for example after a dropped peer-completion message.
+Repeated recovery attempts are observable and must not be silently reported as
+ordinary allocation calls.
 
-An exit code alone never promotes a trial. Before immutable promotion, the
-campaign verifies:
+## Causal execution and allocator timing
 
-- exact job dimensions and scenario/release hashes;
-- complete typed output tables and lifecycle timestamp ordering;
-- task, epoch, allocator-call, and trigger-count consistency;
-- mission and processor-work arithmetic;
-- hardware identity and AGX/RP2040 parity where applicable;
-- explicit completed or predeclared algorithmic-horizon status.
+Each logical robot has an independent virtual processor. The selected timing
+provider returns a duration for one frozen allocator transaction, and only that
+robot's control path is blocked until `call_start + duration`. Releases,
+message deliveries, peer movement, and peer allocator completions continue on
+the shared event clock. Inputs that arrive during the interval are buffered for
+the robot's next call.
 
-A technically successful mission that reaches the declared event or stagnation
-horizon is retained as an algorithmic noncompletion. It remains in the
-completion-rate denominator and has no fabricated final mission time. Technical
-attempt failures remain append-only and a successful retry does not erase them.
+The allocator processor-work boundary is the same on AGX and RP2040. It
+includes, in FIFO order:
 
-Successful outputs receive SHA-256 hashes and a `completion.json` marker before
-an atomic move into the completed tree. Resume revalidates content rather than
-trusting directory presence.
+1. applying queued allocator admission hooks, decoded peer-consensus inputs,
+   and completion hooks;
+2. allocator-local recovery when requested; and
+3. goal selection/bundle repair and bidding.
 
-## Output and evaluation layers
+It excludes radio/USB transport, wire decoding, host/device setup and context
+restore, hashing and snapshots, outbound-message construction, serialization,
+journaling, and explicit pre-call garbage collection. Admission has no
+destructive epoch-reset component; legacy epoch-reset timing fields remain
+zero-valued compatibility fields in new output.
 
-```mermaid
-flowchart TD
-    A[Raw attempt] --> B{Semantic validation}
-    B -->|valid| C[Immutable completed trial]
-    B -->|technical failure| D[Retained failure record]
-    B -->|valid algorithmic horizon| E[Retained incomplete outcome]
-    C --> F[Trial-level primary table]
-    E --> F
-    F --> G[Exact causal/zero pairs]
-    F --> H[Condition and factor summaries]
-    F --> I[Hardware timing validation]
-    F --> J[Task-level descriptive summary]
-    G --> K[Confidence intervals and paired effects]
-    H --> L[Compact publication bundle]
-    I --> L
-    J --> L
-    K --> L
-```
+`allocator_processor_work_s` is the provider-neutral sum used for comparison.
+RP2040-named timing fields are meaningful only for attested hardware calls;
+software and zero-duration providers must not populate them as if hardware had
+been measured.
 
-Raw per-call and per-epoch tables are intentionally kept outside Git because
-they are large working evidence. The final bundle contains one row per trial,
-paired differences, condition/factor summaries, descriptive task aggregation,
-hardware measurements, verification results, explicit noncompletions, figures,
-and a SHA-256 manifest. The paired trial—not an individual task or allocator
-call—is the inferential replicate.
+## RP2040 replay architecture
 
-## Reproducing the compact export
+The hardware path remains motor-free and keeps persistent native contexts for
+the four logical robots. Target slots are appended only when an admission event
+reaches that context; a complete future task universe is not sent during trial
+setup. Ordered allocator messages, completion hooks, admission hooks, and
+recovery requests are staged outside the device timer and executed inside the
+next timed allocator transaction. Transport and result extraction remain
+outside the timer.
 
-With the completed campaign roots available locally:
+Every accepted physical result must still pass goal, candidate-count, outbound
+message, mechanism, and post-state parity against the authoritative AGX call.
+Without connected boards, native/loopback tests validate protocol and semantic
+architecture only; they are not RP2040 timing evidence.
 
-```bash
-python -m scripts.agx_build_final_publication \
-  --repo-root . \
-  --legacy-repo-root . \
-  --output publication/aug14_final_v1
-```
+## Required output checks for a rerun
 
-The exporter refuses missing, duplicate, or incomplete 4x3x5x50 primary
-coverage and refuses verification coverage other than the expected 144 trials.
-Its generated `publication_manifest.json` hashes every exported file.
+A valid new trial must show all of the following:
+
+- every ordinary Eager/Count threshold epoch has exactly its configured batch
+  size, except a bounded timeout and the single documented terminal residual;
+- zero piggybacked admissions and zero `final_release_flush` events;
+- per-robot task-knowledge receipt timestamps precede that robot's assignment,
+  current-goal selection, and any completion it performs;
+- no autonomous call is falsely attributed to a prior admission epoch;
+- allocator input-event and recovery counts reconcile with per-call records;
+- every required task completes, or the trial retains an explicit algorithmic
+  noncompletion without fabricating mission elapsed time; and
+- hardware timing is claimed only when device identity and host/device parity
+  evidence are present.
+
+Old campaign rows fail this design contract by construction and must remain a
+separate historical dataset.
+
+## Legacy configuration guardrails
+
+No existing generated manifest should be mutated or resumed for the rerun.
+Several retained standalone-replay selectors intentionally remain broader than
+the current study:
+
+- `Simulation/Architecture/allocator_replay/config/study.py` lists DMCHBA/DGA
+  and defines a three-task commitment horizon for those legacy paths;
+- `Simulation/Architecture/allocator_replay/config/fixture.schema.json` accepts
+  DMCHBA/DGA fixtures and the historical `partial_bundle_refill` trigger; and
+- `configs/pilot_extended_algorithms.json` is a DMCHBA/DGA-only pilot.
+
+Those values do not cap the four primary allocators in the corrected causal
+runtime, but a fresh campaign allow-list must reject them so they cannot enter
+the analysis accidentally. No retained JSON campaign configuration contains a
+primary-allocator bundle or event-horizon cap; the risk is the broad legacy
+selector, not a hidden cap in the current four-algorithm matrices.

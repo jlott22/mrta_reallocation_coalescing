@@ -28,6 +28,7 @@ from allocator_replay.causal import (  # noqa: E402
     BoardLease,
     CausalBoardSession,
     CausalPreflightRecorder,
+    DEVICE_ALLOCATOR_TIMER_SCOPE,
     DecisionSignature,
     DeterministicVirtualDevice,
     FrozenCall,
@@ -52,7 +53,6 @@ from allocator_replay.device.common.replay_persistent import (  # noqa: E402
 from allocator_replay.device.native.collaborative import (  # noqa: E402
     create_persistent_runtime,
 )
-from allocator_replay.device.native.collaborative import runtime as native_runtime_module  # noqa: E402
 from allocator_replay.coalescing.build import (  # noqa: E402
     build_device_bundle,
 )
@@ -497,7 +497,7 @@ class NativeFourContextSlotTests(unittest.TestCase):
         slot.end_trial()
         self.assertEqual(slot.contexts, {})
 
-    def test_cbaa_epoch_reset_is_separately_timed_known_answer(self) -> None:
+    def test_cbaa_admission_is_deferred_and_non_destructive(self) -> None:
         config, pre_state, event = CausalLoopbackProtocolTests._inputs(
             "CBAA", ROBOT_IDS[0]
         )
@@ -507,19 +507,32 @@ class NativeFourContextSlotTests(unittest.TestCase):
         runtime.allocator.path = [slot]
         runtime.state.set_claim(slot, runtime.state.robot_index, -2.0)
 
-        original_ticks_us = native_runtime_module.ticks_us
-        samples = iter((10_000, 10_037))
-        native_runtime_module.ticks_us = lambda: next(samples)
-        try:
-            runtime.apply_delta({"events": [copy.deepcopy(event)]})
-        finally:
-            native_runtime_module.ticks_us = original_ticks_us
+        observed = []
+        original_hook = runtime.allocator.on_allocation_epoch
 
-        self.assertEqual(runtime.algorithm_epoch_reset_time_us(), 37)
-        self.assertEqual(runtime.allocator.path, [])
-        self.assertEqual(runtime.state.claim_owner[slot], -1)
+        def observe_hook(reason, admitted, epoch_index=None):
+            observed.append((reason, tuple(admitted), epoch_index))
+            return original_hook(reason, admitted, epoch_index)
 
-    def test_cbaa_refresh_matching_last_sent_is_not_rebroadcast(self) -> None:
+        runtime.allocator.on_allocation_epoch = observe_hook
+        runtime.apply_delta({"events": [copy.deepcopy(event)]})
+
+        # Receipt/decoding and registry ingestion are PSETUP work.  The
+        # allocator-specific hook is queued for the timed transaction.
+        self.assertEqual(observed, [])
+        self.assertEqual(runtime.allocator.path, [slot])
+        self.assertEqual(runtime.state.claim_owner[slot], runtime.state.robot_index)
+
+        decision = runtime.choose_goal()
+
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(decision.goal, (1, 1))
+        self.assertEqual(runtime.algorithm_epoch_reset_time_us(), 0)
+        self.assertEqual(runtime.allocator.path, [slot])
+        self.assertEqual(runtime.state.claim_owner[slot], runtime.state.robot_index)
+        self.assertEqual(runtime.call_class(), "full_allocation_solve")
+
+    def test_cbaa_retained_bid_is_not_recomputed_after_movement(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
             "CBAA", ROBOT_IDS[0]
         )
@@ -538,7 +551,9 @@ class NativeFourContextSlotTests(unittest.TestCase):
         messages = runtime.drain_messages()
 
         self.assertEqual(decision.goal, (5, 5))
-        self.assertEqual(runtime.state.claim_value[slot], -1.0)
+        # A retained CBAA claim keeps its auction-time value. Movement must
+        # not create a new bid or a stale/new-bid feedback loop.
+        self.assertEqual(runtime.state.claim_value[slot], -2.0)
         self.assertEqual(messages, [])
 
     def test_acbba_refresh_matching_last_sent_is_not_rebroadcast(self) -> None:
@@ -629,7 +644,7 @@ class NativeFourContextSlotTests(unittest.TestCase):
         ]
         self.assertEqual(path, [(1, 4), (6, 7), (9, 4)])
 
-    def test_hipc_invalid_first_item_releases_suffix_before_team_replan(self) -> None:
+    def test_hipc_invalid_first_item_replans_unbounded_valid_suffix(self) -> None:
         tasks = [
             (7, 4),
             (3, 5),
@@ -719,12 +734,17 @@ class NativeFourContextSlotTests(unittest.TestCase):
             runtime.state.decode_cell(runtime.state.targets[slot])
             for slot in runtime.allocator.path
         ]
-        self.assertEqual(path, [])
+        self.assertEqual(path, [(3, 5), (1, 4)])
         self.assertEqual(messages, [])
-        self.assertEqual(runtime.allocator.bid_counter, 3)
-        for cell in old_path:
+        self.assertGreaterEqual(runtime.allocator.bid_counter, 3)
+        # The invalid, already searched cell was never admitted into the
+        # resident registry merely because it appeared in historical state.
+        self.assertIsNone(runtime.state.slot_for_cell(invalid))
+        for cell in path:
             slot = runtime.state.slot_for_cell(cell)
-            self.assertEqual(runtime.state.claim_owner[slot], -1)
+            self.assertEqual(
+                runtime.state.claim_owner[slot], runtime.state.robot_index
+            )
 
     def test_hipc_lost_middle_item_releases_owned_suffix_before_replan(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
@@ -766,7 +786,7 @@ class NativeFourContextSlotTests(unittest.TestCase):
         self.assertEqual(runtime.state.claim_owner[middle], 1)
         self.assertEqual(runtime.state.claim_owner[suffix], -1)
 
-    def test_hipc_prefix_only_repair_preserves_bid_timestamp(self) -> None:
+    def test_hipc_restored_valid_prefix_preserves_bid_timestamp(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
             "HIPC", ROBOT_IDS[0]
         )
@@ -803,8 +823,9 @@ class NativeFourContextSlotTests(unittest.TestCase):
         self.assertEqual(runtime.allocator.path, [kept_slot])
         self.assertEqual(runtime.state.claim_epoch[kept_slot], 1)
         self.assertEqual(runtime.allocator.bid_counter, 2)
-        self.assertEqual(len(messages), 1)
-        self.assertEqual(messages[0]["timestamp"], 1)
+        # Reset-time registry projection already removed the invalid,
+        # unadmitted suffix.  An unchanged retained prefix is not rebroadcast.
+        self.assertEqual(messages, [])
 
     def test_pi_equal_cost_inclusion_uses_desktop_xy_tie_break(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
@@ -849,7 +870,7 @@ class NativeFourContextSlotTests(unittest.TestCase):
 
         self.assertEqual(runtime.state.claim_owner[slot], -1)
 
-    def test_pi_invalid_claim_emits_initial_empty_path_snapshot(self) -> None:
+    def test_pi_ignores_unadmitted_invalid_claim_history(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
             "PI", ROBOT_IDS[0]
         )
@@ -882,12 +903,9 @@ class NativeFourContextSlotTests(unittest.TestCase):
         runtime.choose_goal()
         messages = runtime.drain_messages()
 
-        self.assertEqual(len(messages), 1)
-        self.assertEqual(messages[0]["type"], "pi_clear_path")
-        self.assertEqual(messages[0]["sender"], ROBOT_IDS[0])
-        self.assertEqual(messages[0]["path_cells"], [])
-        self.assertEqual(messages[0]["timestamp"], 1)
-        self.assertEqual(runtime.allocator.time_counter, 1)
+        self.assertIsNone(runtime.state.slot_for_cell(invalid))
+        self.assertEqual(messages, [])
+        self.assertEqual(runtime.allocator.time_counter, 0)
 
     def test_pi_invalid_claim_suppresses_initialized_empty_snapshot(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
@@ -925,7 +943,7 @@ class NativeFourContextSlotTests(unittest.TestCase):
         self.assertEqual(messages, [])
         self.assertEqual(runtime.allocator.time_counter, 0)
 
-    def test_pi_clears_stale_local_claim_outside_full_path(self) -> None:
+    def test_pi_unbounded_path_incorporates_valid_local_claims(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
             "PI", ROBOT_IDS[0]
         )
@@ -957,9 +975,13 @@ class NativeFourContextSlotTests(unittest.TestCase):
         messages = runtime.drain_messages()
 
         stale_slot = runtime.state.slot_for_cell(stale_cell)
-        self.assertEqual(runtime.state.claim_owner[stale_slot], -1)
-        self.assertEqual(len(messages), 1)
-        self.assertEqual((messages[0]["x"], messages[0]["y"]), path_cell)
+        self.assertEqual(
+            runtime.state.claim_owner[stale_slot], runtime.state.robot_index
+        )
+        self.assertEqual(len(runtime.allocator.path), 3)
+        self.assertIn(stale_slot, runtime.allocator.path)
+        self.assertEqual(len(messages), 3)
+        self.assertTrue(all(item["path_size"] == 3 for item in messages))
 
     def test_cbaa_equal_bid_uses_desktop_xy_tie_break(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
@@ -995,7 +1017,7 @@ class NativeFourContextSlotTests(unittest.TestCase):
             runtime.state.decode_cell(runtime.state.targets[slot])
             for slot in runtime.allocator.path
         ]
-        self.assertEqual(path, [(0, 1), (1, 4), (6, 7)])
+        self.assertEqual(path, [(0, 1), (1, 4), (9, 4), (6, 7)])
 
     def test_acbba_no_time_sentinel_survives_rp2040_float_rounding(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
@@ -1064,48 +1086,7 @@ class NativeFourContextSlotTests(unittest.TestCase):
             verbose_runtime.snapshot_minimal(),
         )
 
-    def test_epoch_reset_times_populated_resident_state_before_checkpoint(self) -> None:
-        reset_state = {
-            "CBAA": {
-                "cbaa_current_task": None,
-                "cbaa_winner_by_cell": {},
-                "cbaa_winning_bid_by_cell": {},
-                "cbaa_pending_deltas": {},
-                "cbaa_last_sent_signatures": {},
-            },
-            "ACBBA": {
-                "acbba_path": [],
-                "acbba_winner_by_cell": {},
-                "acbba_winning_bid_by_cell": {},
-                "acbba_bid_time_by_cell": {},
-                "acbba_pending_deltas": {},
-                "acbba_pending_snapshot": False,
-                "acbba_last_sent_signatures": {},
-                "acbba_bid_counter": 0,
-            },
-            "PI": {
-                "pi_path": [],
-                "pi_owner_by_cell": {},
-                "pi_significance_by_cell": {},
-                "pi_time_by_cell": {},
-                "pi_pending_snapshot": False,
-                "pi_last_sent_signature": [],
-                "pi_time_counter": 0,
-            },
-            "HIPC": {
-                "hipc_path": [],
-                "hipc_winner_by_cell": {},
-                "hipc_winning_bid_by_cell": {},
-                "hipc_bid_time_by_cell": {},
-                "hipc_pending_snapshot": False,
-                "hipc_last_sent_signature": [],
-                "hipc_bid_counter": 0,
-                "hipc_bad_prediction_count": {ROBOT_IDS[1]: 2},
-                "hipc_dropped_peers": [],
-                "hipc_last_predicted_peer_first_task": {},
-                "hipc_seen_peer_bundle_signature": {},
-            },
-        }
+    def test_admission_hook_runs_after_psetup_without_resetting_state(self) -> None:
         for algorithm in ("CBAA", "ACBBA", "PI", "HIPC"):
             with self.subTest(algorithm=algorithm):
                 config, pre_state, event = CausalLoopbackProtocolTests._inputs(
@@ -1137,52 +1118,53 @@ class NativeFourContextSlotTests(unittest.TestCase):
                 ]
 
                 observed: dict[str, object] = {}
-                original_reset = runtime.allocator.on_allocation_epoch
+                original_hook = runtime.allocator.on_allocation_epoch
 
-                def inspect_then_reset(reason, admitted, epoch_index=None):
+                def inspect_then_integrate(reason, admitted, epoch_index=None):
                     observed["path"] = list(runtime.allocator.path)
                     observed["owner"] = int(runtime.state.claim_owner[slot])
                     observed["pending"] = list(runtime.authoritative_message_seed)
-                    return original_reset(reason, admitted, epoch_index)
-
-                runtime.allocator.on_allocation_epoch = inspect_then_reset
-                checkpoint = copy.deepcopy(pre_state)
-                checkpoint["robot_attrs"].update(reset_state[algorithm])
-                original_ticks_us = native_runtime_module.ticks_us
-                samples = iter((20_000, 20_037))
-                native_runtime_module.ticks_us = lambda: next(samples)
-                try:
-                    runtime.apply_delta(
-                        {
-                            "set": checkpoint,
-                            "events": [copy.deepcopy(event)],
-                        }
+                    observed["position"] = runtime.state.decode_cell(
+                        runtime.state.position
                     )
-                finally:
-                    native_runtime_module.ticks_us = original_ticks_us
+                    return original_hook(reason, admitted, epoch_index)
+
+                runtime.allocator.on_allocation_epoch = inspect_then_integrate
+                runtime.apply_delta(
+                    {
+                        "set": {"robot_attrs": {"pos": [2, 0]}},
+                        "events": [copy.deepcopy(event)],
+                    }
+                )
+
+                # Generic checkpoint synchronization happens in PSETUP, but
+                # allocator-specific input integration is deferred until the
+                # timed choose transaction.
+                self.assertEqual(observed, {})
+                self.assertEqual(runtime.state.decode_cell(runtime.state.position), (2, 0))
+                self.assertEqual(runtime.allocator.path, [slot])
+                self.assertEqual(runtime.state.claim_owner[slot], runtime.state.robot_index)
+
+                decision = runtime.choose_goal()
 
                 self.assertEqual(observed["path"], [slot])
                 self.assertEqual(observed["owner"], runtime.state.robot_index)
                 self.assertEqual(observed["pending"], [{"type": "stale"}])
-                self.assertEqual(runtime.algorithm_epoch_reset_time_us(), 37)
-                self.assertEqual(runtime.allocator.path, [])
-                self.assertEqual(runtime.state.claim_owner[slot], -1)
-                self.assertEqual(runtime.behavior_last_sent, [])
+                self.assertEqual(observed["position"], (2, 0))
+                self.assertEqual(decision.goal, (1, 1))
+                self.assertEqual(runtime.algorithm_epoch_reset_time_us(), 0)
+                self.assertEqual(runtime.allocator.path[0], slot)
+                self.assertEqual(
+                    runtime.state.claim_owner[slot], runtime.state.robot_index
+                )
                 if hasattr(runtime.allocator, "bid_counter"):
-                    self.assertEqual(runtime.allocator.bid_counter, 0)
+                    self.assertGreaterEqual(runtime.allocator.bid_counter, 19)
                 if hasattr(runtime.allocator, "time_counter"):
-                    self.assertEqual(runtime.allocator.time_counter, 0)
+                    self.assertGreaterEqual(runtime.allocator.time_counter, 23)
                 if algorithm == "HIPC":
                     self.assertEqual(
                         runtime.allocator.bad_prediction_count,
                         {ROBOT_IDS[1]: 2},
-                    )
-                    self.assertEqual(runtime.allocator.dropped_peers, [])
-                    self.assertEqual(
-                        runtime.allocator.last_predicted_peer_first_task, {}
-                    )
-                    self.assertEqual(
-                        runtime.allocator.seen_peer_bundle_signature, {}
                     )
 
     def test_completed_admission_is_active_during_epoch_then_finally_inactive(self) -> None:
@@ -1195,20 +1177,30 @@ class NativeFourContextSlotTests(unittest.TestCase):
         event["payload"]["admitted_cells"] = [admitted]
         runtime = create_persistent_runtime(config)
         runtime.reset_trial(config, copy.deepcopy(pre_state))
-        slot = runtime.state.slot_for_cell(admitted)
+        self.assertIsNone(runtime.state.slot_for_cell(admitted))
         observed: dict[str, bool] = {}
-        original_reset = runtime.allocator.on_allocation_epoch
+        original_hook = runtime.allocator.on_allocation_epoch
 
-        def inspect_then_reset(reason, cells, epoch_index=None):
+        def inspect_then_integrate(reason, cells, epoch_index=None):
+            slot = runtime.state.slot_for_cell(admitted)
+            self.assertIsNotNone(slot)
             observed["active"] = runtime.state.is_active(slot)
             observed["candidate"] = runtime.state.is_candidate(slot)
-            return original_reset(reason, cells, epoch_index)
+            return original_hook(reason, cells, epoch_index)
 
-        runtime.allocator.on_allocation_epoch = inspect_then_reset
+        runtime.allocator.on_allocation_epoch = inspect_then_integrate
 
         runtime.apply_delta(
             {"set": copy.deepcopy(pre_state), "events": [copy.deepcopy(event)]}
         )
+
+        # The shell registry learns the announced cell in PSETUP but the
+        # algorithm hook is part of the subsequent timed transaction.
+        slot = runtime.state.slot_for_cell(admitted)
+        self.assertIsNotNone(slot)
+        self.assertEqual(observed, {})
+        self.assertFalse(runtime.state.is_active(slot))
+        runtime.choose_goal()
 
         self.assertTrue(observed["active"])
         self.assertTrue(observed["candidate"])
@@ -1370,6 +1362,15 @@ class CausalLoopbackProtocolTests(unittest.TestCase):
                             item.device_allocator_time_us
                             == item.device_choose_goal_us
                             + item.algorithm_epoch_reset_us
+                            for item in measured
+                        )
+                    )
+                    self.assertTrue(
+                        all(
+                            item.algorithm_epoch_reset_us == 0
+                            and item.metadata[
+                                "device_allocator_timer_scope"
+                            ] == DEVICE_ALLOCATOR_TIMER_SCOPE
                             for item in measured
                         )
                     )

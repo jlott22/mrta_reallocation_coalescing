@@ -36,9 +36,13 @@ metrics_log(result["metrics"])
 ```
 
 One adapter belongs to one robot for one trial. `reset_trial` constructs the
-runtime once; subsequent updates never recreate it. `choose_goal` times only
-the resident runtime call. Applying deltas, decoding radio messages, draining
+runtime once; subsequent updates never recreate it. The resident runtime call
+is one allocator transaction: it applies already staged allocator messages,
+admission/completion hooks, and targeted recovery before goal selection under
+the same timer. Applying environment deltas, decoding radio messages, draining
 outbound messages, logging, and motion remain outside the measured interval.
+Future task coordinates must not enter the runtime until the physical robot
+receives their admission announcement.
 
 The complete HIL runtime's input schema is also the physical adapter's input
 schema. A physical wrapper should therefore convert sensor/control events into
@@ -46,10 +50,11 @@ the same compact deltas used by HIL rather than taking or restoring full robot
 snapshots. `receive_message` is a convenience for the persistent replay
 runtime's `allocator_message` event.
 
-For Bayesian CBAA, ACBBA, PI, HIPC, DMCHBA, and DGA, the factory selects the
-complete generated MicroPython study port. For collaborative visit it selects
-the compact native 50-target runtime. The HIL worker calls this same factory;
-the physical wrapper does not maintain a separate allocator implementation.
+For collaborative visit, the current experiment selects CBAA, ACBBA, PI, or
+HIPC and uses the compact native 50-target-capacity runtime. Legacy Bayesian
+DMCHBA/DGA support is not part of the corrected comparison. The HIL worker calls
+this same factory; the physical wrapper does not maintain a separate allocator
+implementation.
 
 The returned metrics include allocator, nested filter, allocator-exclusive
 time, filter call/candidate counts, call classification, and free heap. If the

@@ -423,10 +423,16 @@ def _native_state(
     behavior = resume.get("behavior", {})
     grid_size = int(state.get("grid_size", 19))
     algorithm = str(algorithm).upper()
-    targets = _cell_records(
+    registered_targets = _cell_records(
         state.get("targets", state.get("active", ())), grid_size
     )
     active = _cell_records(state.get("active", ()), grid_size)
+    # Native slots are append-only so completed learned tasks can be resumed
+    # without reindexing claims.  The desktop causal projection defines its
+    # task universe as the currently active allocator-visible pool, so compare
+    # that behavioral universe rather than the native storage registry.
+    targets = active
+    active_set = {tuple(cell) for cell in active}
     owners: dict[Any, Any] = {}
     values: dict[Any, Any] = {}
     times: dict[Any, Any] = {}
@@ -453,9 +459,16 @@ def _native_state(
         "task_universe": targets,
         "active_tasks": active,
         "ineligible_tasks": _cell_records(
-            state.get("unavailable", ()), grid_size
+            [
+                cell
+                for cell in state.get("unavailable", ())
+                if tuple(_cell(cell, grid_size)) in active_set
+            ],
+            grid_size,
         ),
-        "active_probabilities": _probabilities(state.get("probability"), targets, active, grid_size),
+        "active_probabilities": _probabilities(
+            state.get("probability"), registered_targets, active, grid_size
+        ),
         "path": _cells(allocator.get("path", ()), grid_size),
         "claims": _claims(
             owners=owners, values=values, times=times, grid_size=grid_size,

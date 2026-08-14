@@ -26,9 +26,10 @@ from allocator_replay.causal.session import (  # noqa: E402
 from allocator_replay.device.native.collaborative import (  # noqa: E402
     create_persistent_runtime,
 )
-from allocator_replay.device.native.collaborative import (  # noqa: E402
-    runtime as native_runtime_module,
+from allocator_replay.host.transport import (  # noqa: E402
+    compact_causal_events,
 )
+from allocator_replay.hil.persistent import event_batches as hil_event_batches  # noqa: E402
 
 
 ROBOT_IDS = ("robot_0", "robot_1", "robot_2", "robot_3")
@@ -128,8 +129,95 @@ class PersistentEventBatchTests(unittest.TestCase):
         self.assertEqual(batches, [[event] for event in events])
         self.assertTrue(all(len(batch) == 1 for batch in batches))
         self.assertTrue(
-            all(len(canonical_json_bytes(batch)) <= 768 for batch in batches)
+            all(
+                len(canonical_json_bytes(compact_causal_events(batch)))
+                <= 768
+                for batch in batches
+            )
         )
+
+    def test_full_fifty_cell_bundle_uses_compact_chunkable_wire_form(self) -> None:
+        cells = [
+            {"x": index % 19, "y": index // 19}
+            for index in range(50)
+        ]
+        event = {
+            "kind": "allocator_message",
+            "payload": {
+                "type": "acbba_entry",
+                "sender": ROBOT_IDS[1],
+                "x": 1,
+                "y": 1,
+                "winner": ROBOT_IDS[1],
+                "bid": -1.0,
+                "timestamp": 4,
+                "order": 0,
+                "bundle_cells": cells,
+                "bundle_size": len(cells),
+            },
+        }
+
+        self.assertGreater(len(canonical_json_bytes([event])), 768)
+        batches = persistent_event_batches([event])
+        hil_batches = hil_event_batches([event])
+        compact = compact_causal_events(batches[0])
+        self.assertLessEqual(len(canonical_json_bytes(compact)), 768)
+        self.assertEqual(batches, [[event]])
+        self.assertEqual(hil_batches, [[event]])
+
+    def test_repeated_full_bundle_is_shared_in_resident_input_queue(self) -> None:
+        cells = [
+            {"x": index % 19, "y": index // 19}
+            for index in range(50)
+        ]
+        config = {
+            "mission": "collaborative",
+            "algorithm": "ACBBA",
+            "robot_id": ROBOT_IDS[0],
+            "robot_ids": list(ROBOT_IDS),
+            "grid_size": 19,
+            "max_targets": 50,
+        }
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(
+            config,
+            {
+                "robot_id": ROBOT_IDS[0],
+                "robot_ids": list(ROBOT_IDS),
+                "active_tasks": cells,
+            },
+        )
+        runtime.begin_call_setup()
+        for order in (0, 1):
+            runtime.apply_delta(
+                {
+                    "events": [
+                        {
+                            "kind": "allocator_message",
+                            "payload": {
+                                "type": "acbba_entry",
+                                "sender": ROBOT_IDS[1],
+                                "x": order,
+                                "y": 0,
+                                "winner": ROBOT_IDS[1],
+                                "bid": -1.0 - order,
+                                "timestamp": 4 + order,
+                                "order": order,
+                                "bundle_cells": cells,
+                                "bundle_size": len(cells),
+                            },
+                        }
+                    ]
+                }
+            )
+
+        first = runtime.pending_allocator_events[0][1]["bundle_cells"]
+        second = runtime.pending_allocator_events[1][1]["bundle_cells"]
+        self.assertIs(first, second)
+        self.assertEqual(len(first), 50)
+        self.assertIsInstance(first[0], tuple)
+        runtime.choose_goal()
+        self.assertEqual(runtime.pending_message_sequences, {})
 
     def test_oversized_atomic_event_is_rejected_before_device_io(self) -> None:
         oversized = {
@@ -216,7 +304,7 @@ class CausalPersistentStageTests(unittest.TestCase):
 
 
 class StagedEpochTimingTests(unittest.TestCase):
-    def test_epoch_reset_time_accumulates_across_staged_transactions(self) -> None:
+    def test_admission_is_non_destructive_and_compatibility_timing_is_zero(self) -> None:
         config = {
             "mission": "collaborative",
             "algorithm": "CBAA",
@@ -253,27 +341,25 @@ class StagedEpochTimingTests(unittest.TestCase):
             },
         ]
 
-        original_ticks_us = native_runtime_module.ticks_us
-        samples = iter((1_000, 1_011, 2_000, 2_023))
-        native_runtime_module.ticks_us = lambda: next(samples)
-        try:
-            # Prove that the logical-call boundary clears stale timing once,
-            # while each following transport stage preserves the accumulated
-            # policy-induced allocator work.
-            runtime.pending_algorithm_epoch_reset_us = 999
-            runtime.begin_call_setup()
-            runtime.apply_delta({"events": [events[0]]})
-            runtime.apply_delta({"events": [events[1]]})
-            runtime.apply_delta(
-                {
-                    "set": empty_state(),
-                    "events": [],
-                }
-            )
-        finally:
-            native_runtime_module.ticks_us = original_ticks_us
+        runtime.choose_goal()
+        retained_path = list(runtime.allocator.path)
+        runtime.pending_algorithm_epoch_reset_us = 999
+        runtime.begin_call_setup()
+        runtime.apply_delta({"events": [events[0]]})
+        runtime.apply_delta({"events": [events[1]]})
+        runtime.apply_delta(
+            {
+                "set": empty_state(),
+                "events": [],
+            }
+        )
 
-        self.assertEqual(runtime.algorithm_epoch_reset_time_us(), 34)
+        self.assertEqual(runtime.algorithm_epoch_reset_time_us(), 0)
+        self.assertEqual(runtime.allocator.path, retained_path)
+        self.assertEqual(len(runtime.pending_allocator_events), 2)
+        runtime.choose_goal()
+        self.assertEqual(runtime.pending_allocator_events, [])
+        self.assertEqual(runtime.allocator.path, retained_path)
 
 
 if __name__ == "__main__":

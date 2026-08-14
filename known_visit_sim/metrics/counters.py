@@ -46,34 +46,62 @@ class MessageCounters:
     unprotected_sent_total: int = 0
     core_sent_total: int = 0
     allocation_sent_total: int = 0
+    payload_bytes_sent_total: int = 0
+    protected_payload_bytes_sent_total: int = 0
+    unprotected_payload_bytes_sent_total: int = 0
+    core_payload_bytes_sent_total: int = 0
+    allocation_payload_bytes_sent_total: int = 0
+    payload_bytes_sent_by_topic: Dict[str, int] = field(default_factory=dict)
+    payload_bytes_delivered_total: int = 0
+    payload_bytes_dropped_total: int = 0
 
-    def sent(self, rid: str, topic: str, protected: bool, core: bool) -> None:
+    def sent(
+        self,
+        rid: str,
+        topic: str,
+        protected: bool,
+        core: bool,
+        payload_bytes: int = 0,
+    ) -> None:
+        payload_bytes = max(0, int(payload_bytes))
         self.sent_total += 1
+        self.payload_bytes_sent_total += payload_bytes
         self.sent_by_robot[rid] = self.sent_by_robot.get(rid, 0) + 1
         self.sent_by_topic[topic] = self.sent_by_topic.get(topic, 0) + 1
+        self.payload_bytes_sent_by_topic[topic] = (
+            self.payload_bytes_sent_by_topic.get(topic, 0) + payload_bytes
+        )
         topics = self.sent_by_robot_topic.setdefault(rid, {})
         topics[topic] = topics.get(topic, 0) + 1
         if protected:
             self.protected_sent_total += 1
+            self.protected_payload_bytes_sent_total += payload_bytes
             self.protected_sent_by_robot[rid] = self.protected_sent_by_robot.get(rid, 0) + 1
         else:
             self.unprotected_sent_total += 1
+            self.unprotected_payload_bytes_sent_total += payload_bytes
             self.unprotected_sent_by_robot[rid] = self.unprotected_sent_by_robot.get(rid, 0) + 1
         target = self.core_sent_by_robot if core else self.allocation_sent_by_robot
         target[rid] = target.get(rid, 0) + 1
         if core:
             self.core_sent_total += 1
+            self.core_payload_bytes_sent_total += payload_bytes
         else:
             self.allocation_sent_total += 1
+            self.allocation_payload_bytes_sent_total += payload_bytes
 
-    def delivered(self, rid: str, protected: bool = False) -> None:
+    def delivered(
+        self, rid: str, protected: bool = False, payload_bytes: int = 0
+    ) -> None:
         self.delivered_total += 1
+        self.payload_bytes_delivered_total += max(0, int(payload_bytes))
         self.delivered_to_robot[rid] = self.delivered_to_robot.get(rid, 0) + 1
         if protected:
             self.protected_delivered_total += 1
         else:
             self.unprotected_delivered_total += 1
 
-    def dropped(self, rid: str) -> None:
+    def dropped(self, rid: str, payload_bytes: int = 0) -> None:
         self.dropped_total += 1
+        self.payload_bytes_dropped_total += max(0, int(payload_bytes))
         self.dropped_to_robot[rid] = self.dropped_to_robot.get(rid, 0) + 1

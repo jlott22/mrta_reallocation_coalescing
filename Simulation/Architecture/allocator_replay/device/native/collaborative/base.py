@@ -47,22 +47,33 @@ class NativeAllocatorBase:
         return rising
 
     def on_allocation_epoch(self, reason, admitted_cells, epoch_index=None):
-        """Invalidate local consensus when the visible task set grows.
+        """Observe admission without recalling valid allocator state.
 
-        This mirrors the simulator compatibility hook: completion-only epochs
-        retain normal maintenance behavior, while any newly admitted task
-        clears the cached allocation so the next timed call performs a real
-        solve over the complete unrestricted active set.
+        Missing table entries already mean "unclaimed" to every native
+        allocator.  Appending admitted cells therefore requires no path,
+        ownership, protocol-counter, or last-sent reset.  The next ordinary
+        allocator transaction can adapt while retaining its current goal.
         """
 
-        del reason, epoch_index
-        if not admitted_cells:
-            return False
-        for slot in range(len(self.state.targets)):
-            self.state.clear_claim(slot)
-        self.path = []
-        self.last_call_path = "allocation_epoch_reset"
-        return True
+        del reason, admitted_cells, epoch_index
+        return False
+
+    def recover_stalled_allocation(self, payload=None):
+        """Conservative default for an allocator-local recovery request.
+
+        A generic full reset would destroy valid ownership.  Algorithms with a
+        safe local lease-expiry rule override this hook; all others simply let
+        their next normal allocation call run unchanged.
+        """
+
+        del payload
+        return False
+
+    def on_task_completed(self, cell, reason="", local=False):
+        """Allocator-specific completion repair hook; conservative default."""
+
+        del cell, reason, local
+        return False
 
     def score_from(self, encoded_position, slot):
         distance = self.state.distance(encoded_position, self.state.targets[slot])
@@ -88,14 +99,33 @@ class NativeAllocatorBase:
             previous = state.targets[slot]
         return float(distance)
 
-    def best_insertion(self, path, slot):
-        base_cost = self.route_cost(path)
-        best_index = 0
+    def best_insertion(self, path, slot, first_index=0):
+        state = self.state
+        first_index = max(0, min(int(first_index), len(path)))
+        best_index = first_index
         best_delta = float("inf")
-        for index in range(len(path) + 1):
-            candidate = list(path)
-            candidate.insert(index, slot)
-            delta = max(0.0, self.route_cost(candidate) - base_cost)
+        for index in range(first_index, len(path) + 1):
+            previous = (
+                state.position
+                if index == 0
+                else state.targets[path[index - 1]]
+            )
+            delta = state.adjusted_cost(
+                state.distance(previous, state.targets[slot]), slot
+            )
+            if index < len(path):
+                following = path[index]
+                delta += state.adjusted_cost(
+                    state.distance(
+                        state.targets[slot], state.targets[following]
+                    ),
+                    following,
+                )
+                delta -= state.adjusted_cost(
+                    state.distance(previous, state.targets[following]),
+                    following,
+                )
+            delta = max(0.0, delta)
             if delta < best_delta - self.EPS:
                 best_index = index
                 best_delta = delta
@@ -103,18 +133,29 @@ class NativeAllocatorBase:
                 best_index = index
         return best_index, best_delta
 
-    def best_distance_insertion(self, path, slot):
+    def best_distance_insertion(self, path, slot, first_index=0):
         """Return insertion index and pure marginal travel distance."""
 
-        base_distance = self.route_distance(path)
-        best_index = 0
+        state = self.state
+        first_index = max(0, min(int(first_index), len(path)))
+        best_index = first_index
         best_delta = float("inf")
-        for index in range(len(path) + 1):
-            candidate = list(path)
-            candidate.insert(index, slot)
-            delta = max(
-                0.0, self.route_distance(candidate) - base_distance
+        for index in range(first_index, len(path) + 1):
+            previous = (
+                state.position
+                if index == 0
+                else state.targets[path[index - 1]]
             )
+            delta = state.distance(previous, state.targets[slot])
+            if index < len(path):
+                following = path[index]
+                delta += state.distance(
+                    state.targets[slot], state.targets[following]
+                )
+                delta -= state.distance(
+                    previous, state.targets[following]
+                )
+            delta = max(0.0, float(delta))
             if delta < best_delta - self.EPS:
                 best_index = index
                 best_delta = delta

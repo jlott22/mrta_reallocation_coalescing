@@ -14,13 +14,66 @@ class ACBBAAllocator(NativeAllocatorBase):
         self.bid_counter += 1
         return self.bid_counter
 
-    def on_allocation_epoch(self, reason, admitted_cells, epoch_index=None):
-        reset = NativeAllocatorBase.on_allocation_epoch(
-            self, reason, admitted_cells, epoch_index
-        )
-        if admitted_cells:
-            self.bid_counter = 0
-        return reset
+    def recover_stalled_allocation(self, payload=None):
+        """Expire at most one locally blocking peer claim."""
+
+        del payload
+        state = self.state
+        if self.path:
+            return True
+        blocked = None
+        for slot in self.candidates():
+            insertion_index, marginal = self.best_distance_insertion([], slot)
+            bid = -state.adjusted_cost(marginal, slot)
+            if self.owner_wins(slot, bid, higher_is_better=True):
+                return True
+            if state.claim_owner[slot] < 0:
+                continue
+            candidate = (slot, insertion_index, bid)
+            if (
+                blocked is None
+                or bid > blocked[2] + self.EPS
+                or (
+                    abs(bid - blocked[2]) <= self.EPS
+                    and self._insertion_precedes(
+                        slot, insertion_index, blocked[0], blocked[1]
+                    )
+                )
+            ):
+                blocked = candidate
+        if blocked is None:
+            return False
+        state.clear_claim(blocked[0])
+        self.last_call_path = "stalled_peer_claim_expired"
+        return True
+
+    def on_task_completed(self, cell, reason="", local=False):
+        """Head-pop local service; retain the allocator's suffix rules."""
+
+        state = self.state
+        slot = state.slot_for_cell(cell)
+        if slot is None:
+            return False
+        invalidated_goal = state.current_goal == int(state.targets[slot])
+        if slot in self.path:
+            index = self.path.index(slot)
+            completed_locally = bool(local) or str(reason).startswith("local")
+            if completed_locally and index == 0:
+                if state.claim_owner[slot] == state.robot_index:
+                    state.clear_claim(slot)
+                    self._queue_claim(slot, -1, self.NO_VALUE, 0)
+                self.path = self.path[1:]
+            else:
+                for released in self.path[index:]:
+                    if state.claim_owner[released] == state.robot_index:
+                        state.clear_claim(released)
+                        self._queue_claim(released, -1, self.NO_VALUE, 0)
+                self.path = self.path[:index]
+        elif state.claim_owner[slot] >= 0:
+            state.clear_claim(slot)
+            self._queue_claim(slot, -1, self.NO_VALUE, 0)
+        self.last_call_path = "task_completion_repair"
+        return invalidated_goal
 
     def _queue_claim(self, slot, owner=None, value=None, epoch=None):
         state = self.state
@@ -88,16 +141,24 @@ class ACBBAAllocator(NativeAllocatorBase):
 
         candidates = self.candidates()
         changed = False
-        horizon = state.commitment_horizon
-        while len(self.path) < horizon:
+        while True:
             best_slot = None
             best_index = 0
             best_bid = self.NO_VALUE
             for slot in candidates:
                 if slot in self.path or not state.is_candidate(slot):
                     continue
+                first_index = 0
+                if (
+                    state.is_admission_allocation()
+                    and self.path
+                    and state.current_goal
+                    == int(state.targets[self.path[0]])
+                    and state.is_candidate(self.path[0])
+                ):
+                    first_index = 1
                 insertion_index, marginal = self.best_distance_insertion(
-                    self.path, slot
+                    self.path, slot, first_index
                 )
                 bid = -state.adjusted_cost(marginal, slot)
                 if not self.owner_wins(slot, bid, higher_is_better=True):

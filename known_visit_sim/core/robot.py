@@ -8,7 +8,7 @@ from typing import Any, Deque, Dict, List, Mapping, Optional, Set, Tuple
 
 from known_visit_sim.algorithms.base import AllocatorBase
 from known_visit_sim.comms.bus import MessageBus
-from known_visit_sim.comms.message import Message, topic_for
+from known_visit_sim.comms.message import ENVIRONMENT_SENDER, Message, topic_for
 from known_visit_sim.config import SimConfig
 from known_visit_sim.metrics.counters import RobotCounters
 from .reallocation import AllocatorCallRecord
@@ -53,6 +53,8 @@ class PreparedCausalAllocation:
     active_tasks_at_start: Tuple[Cell, ...]
     device_events: Tuple[Dict[str, Any], ...]
     agx_algorithm_epoch_reset_duration_ns: int
+    allocator_input_count: int = 0
+    recovery_requested: bool = False
 
 
 @dataclass
@@ -84,17 +86,29 @@ class RobotShell:
         world: World,
         bus: MessageBus,
         allocator: AllocatorBase,
+        initial_task_knowledge: bool = True,
     ) -> None:
         self.rid = rid
         self.pos = pos
         self.heading = heading
         self.cfg = cfg
         self.grid_size = cfg.grid_size
-        self.world = world
+        # Simulator physical truth is intentionally private and is absent
+        # from RobotAPI/allocator snapshots. Allocators learn task and peer
+        # state only through the shell's message-populated local views.
+        self._world = world
         self.bus = bus
         self.allocator = allocator
         self._searched: Set[Cell] = {pos}
-        self._active_tasks: Set[Cell] = set(world.admitted_targets)
+        # Static known-target missions begin with the complete task set.  An
+        # online mission passes ``initial_task_knowledge=False`` and learns
+        # even the release-zero set through the same environment message used
+        # for every later admission.
+        self._active_tasks: Set[Cell] = (
+            set(world.admitted_targets) if initial_task_knowledge else set()
+        )
+        self._locally_completed_tasks: Set[Cell] = set()
+        self._task_knowledge_receipt_s: Dict[Cell, float] = {}
         self.counters = RobotCounters(rid=rid)
         self.current_goal: Optional[Cell] = None
         self.last_goal: Optional[Cell] = None
@@ -108,13 +122,21 @@ class RobotShell:
         self._temporary_invalid_task_until: Dict[Cell, float] = {}
         self._blocked_goal_quarantine_level: Dict[Cell, int] = {}
         self._no_goal_since: Optional[float] = None
+        # Recovery is an agent-owned decision based only on locally observed
+        # progress.  Peer progress enters through ordinary droppable state or
+        # completion messages; the simulator never supplies team truth here.
+        self._last_team_progress_s: Optional[float] = None
+        self._last_recovery_attempt_s: Optional[float] = None
         self._stall_recovery_count = 0
         self._communicated_collision_intent: Optional[Cell] = None
         self._last_published_state_pos: Optional[Cell] = None
         self._now: float = 0.0
         self.pending_actions: Deque[PendingAction] = deque()
         self._reallocation_scheduler = None
-        self._next_allocation_reason: Optional[str] = "initial_allocation"
+        self._next_allocation_reason: Optional[str] = (
+            "initial_allocation" if initial_task_knowledge else None
+        )
+        self._active_allocation_reason: Optional[str] = None
         self._reported_assignments: Set[Cell] = set()
         self._causal_busy_kind: Optional[str] = None
         self._causal_compute_started_s: Optional[float] = None
@@ -123,6 +145,11 @@ class RobotShell:
         # separate admission/message queues would silently reorder them at
         # commit and could change both the next AGX call and board replay.
         self._causal_buffered_inputs: Deque[Tuple[str, Any]] = deque()
+        # Transport handlers only validate and enqueue decoded allocator
+        # payloads.  Their consensus effects are applied inside the next timed
+        # allocator transaction, so processor-work metrics cannot hide
+        # algorithm work in untimed message callbacks.
+        self._allocator_input_inbox: Deque[Dict[str, Any]] = deque()
         self._causal_staging_publications: Optional[List[Dict[str, Any]]] = None
         self._causal_result_ready = False
         # Mirrors the native resident runtime's idempotent admission-epoch
@@ -136,10 +163,9 @@ class RobotShell:
         # context cannot reconstruct these from the restored physical state;
         # they are drained atomically into the next frozen call instead.
         self._causal_device_events: List[Dict[str, Any]] = []
-        # Wall-clock AGX processor work performed by policy-induced epoch
-        # callbacks is accumulated until the matching frozen allocator call.
-        # Device PSETUP applies and times the same event stream before its
-        # choose_goal region, so the two authoritative scopes stay aligned.
+        # Kept as a zero-valued compatibility component for existing replay
+        # schemas.  Admission integration is deliberately non-destructive and
+        # outside allocator processor-work accounting.
         self._causal_pending_agx_epoch_reset_ns = 0
 
         # Droppable coordination knowledge.
@@ -156,7 +182,7 @@ class RobotShell:
         self._perception_initialized = False
 
         # Local truth/knowledge.
-        if not self.world.record_visit(rid, pos):
+        if not self._world.record_visit(rid, pos):
             self.counters.unique_cells_contributed += 1
 
         self.bus.register(self)
@@ -170,24 +196,40 @@ class RobotShell:
         self._reallocation_scheduler = scheduler
 
     def admit_tasks(
-        self, cells: List[Cell], epoch_id: int, trigger_reason: str
+        self,
+        cells: List[Cell],
+        epoch_id: int,
+        trigger_reason: str,
+        received_at_s: Optional[float] = None,
     ) -> None:
+        receipt_s = self._now if received_at_s is None else float(received_at_s)
         if self._causal_busy_kind == "compute":
             self._causal_buffered_inputs.append(
                 (
                     "admission",
-                    (list(cells), int(epoch_id), str(trigger_reason)),
+                    (
+                        list(cells), int(epoch_id), str(trigger_reason), receipt_s,
+                    ),
                 )
             )
             return
-        self._apply_admitted_tasks(cells, epoch_id, trigger_reason)
+        self._apply_admitted_tasks(cells, epoch_id, trigger_reason, receipt_s)
 
     def _apply_admitted_tasks(
-        self, cells: List[Cell], epoch_id: int, trigger_reason: str
+        self,
+        cells: List[Cell],
+        epoch_id: int,
+        trigger_reason: str,
+        received_at_s: Optional[float] = None,
     ) -> None:
+        receipt_s = self._now if received_at_s is None else float(received_at_s)
         admitted = [
-            cell for cell in cells
-            if cell in self.world.admitted_targets and cell not in self._active_tasks
+            (int(cell[0]), int(cell[1])) for cell in cells
+            if (
+                in_bounds((int(cell[0]), int(cell[1])), self.grid_size)
+                and (int(cell[0]), int(cell[1])) not in self._active_tasks
+                and (int(cell[0]), int(cell[1])) not in self._locally_completed_tasks
+            )
         ]
         if not admitted:
             return
@@ -206,6 +248,12 @@ class RobotShell:
                 # position; peers must not rely on the pre-admission message.
                 self._last_published_state_pos = None
         self._active_tasks.update(admitted)
+        self._last_team_progress_s = receipt_s
+        for cell in admitted:
+            self._task_knowledge_receipt_s[cell] = receipt_s
+        recorder = getattr(self._world, "record_task_knowledge", None)
+        if callable(recorder):
+            recorder(self.rid, admitted, receipt_s, int(epoch_id))
         self.last_event = "task_admission"
         self.last_allocation_epoch_index = int(epoch_id)
         self.last_allocation_epoch_reason = str(trigger_reason)
@@ -218,17 +266,20 @@ class RobotShell:
                 "admitted_cells": list(admitted),
             },
         })
-        handler = getattr(self.allocator, "on_allocation_epoch", None)
-        if callable(handler):
-            epoch_started_ns = perf_counter_ns()
-            try:
-                handler(self, trigger_reason, admitted)
-            finally:
-                self._causal_pending_agx_epoch_reset_ns += max(
-                    0, perf_counter_ns() - epoch_started_ns
-                )
-        self.current_goal = None
-        self._clear_pending_actions()
+        # Registering local task knowledge is message handling, but an
+        # allocator-specific admission hook is allocator input processing.
+        # Queue that hook so it is included in the single allocator timer.
+        self._allocator_input_inbox.append({
+            "type": "__allocator_admission__",
+            "reason": str(trigger_reason),
+            "admitted_cells": [list(cell) for cell in admitted],
+        })
+        scheduler = self._reallocation_scheduler
+        note_received = getattr(scheduler, "note_admission_received", None)
+        if callable(note_received):
+            note_received(self.rid, int(epoch_id), str(trigger_reason))
+        # The new batch requests a safe-boundary allocator transaction, but
+        # admission itself never recalls the executing goal or clears motion.
         self._next_allocation_reason = trigger_reason
 
     def service_queued_allocation_epochs(self, now_s: float) -> int:
@@ -256,7 +307,9 @@ class RobotShell:
                     raise RuntimeError(
                         f"{self.allocator.name} selected inactive/non-target goal {decision.goal}"
                     )
+                previous_goal = self.current_goal
                 self.current_goal = decision.goal
+                self._record_current_goal_selection(previous_goal)
                 self.last_decision_debug = decision.debug
                 self._record_owned_assignments()
                 if self.current_goal is not None:
@@ -345,30 +398,47 @@ class RobotShell:
         sender = message.sender
         if sender == self.rid:
             return
+        if category == "task_admission":
+            if sender != ENVIRONMENT_SENDER:
+                return
+            raw_cells = payload.get(
+                "admitted_cells", payload.get("tasks", payload.get("cells", ()))
+            )
+            cells: List[Cell] = []
+            for raw in raw_cells or ():
+                if isinstance(raw, dict):
+                    raw = raw.get("cell", (raw.get("x"), raw.get("y")))
+                cell = _payload_cell(raw)
+                if cell is not None and in_bounds(cell, self.grid_size):
+                    cells.append(cell)
+            self._now = max(self._now, float(message.delivered_at_s))
+            self.admit_tasks(
+                cells,
+                int(payload.get("epoch_index", payload.get("epoch_id", -1))),
+                str(payload.get("trigger_reason", "task_admission")),
+                received_at_s=message.delivered_at_s,
+            )
+            return
+        if category == "task_completion":
+            cell = _payload_cell(
+                payload.get("cell", (payload.get("x"), payload.get("y")))
+            )
+            if cell is not None and in_bounds(cell, self.grid_size):
+                self._now = max(self._now, float(message.delivered_at_s))
+                self._last_team_progress_s = self._now
+                self._locally_completed_tasks.add(cell)
+                self._complete_task_locally(cell, reason="peer_task_completion")
+            return
         if category == "state":
             loc = _payload_cell(payload.get("loc"))
             if loc is not None and in_bounds(loc, self.grid_size):
+                self._now = max(self._now, float(message.delivered_at_s))
+                changed = self._peer_positions.get(sender) != loc
                 self._peer_positions[sender] = loc
-                target = self.world.target_records.get(loc)
-                if target is not None and target.completed:
-                    # The shared world is authoritative even if this delayed
-                    # message merely prompted the local cache refresh.  Keep
-                    # the retained peer-completion event name so allocator
-                    # invalidation behavior is unchanged in static trials.
-                    self._complete_task_locally(
-                        loc, reason="peer_state_at_target"
-                    )
-                elif (
-                    target is not None
-                    and target.admission_time_s is not None
-                    and message.created_at_s + 1e-12 >= target.admission_time_s
-                ):
-                    # A state report created while the task was unreleased or
-                    # pending cannot prove post-admission service, even if it
-                    # arrives after admission because of link delay.
-                    self._complete_task_locally(
-                        loc, reason="peer_state_at_target"
-                    )
+                if changed:
+                    self._last_team_progress_s = self._now
+                if changed and self._active_tasks:
+                    self._next_allocation_reason = "peer_state_update"
             return
         if category == "collision_intent":
             loc = _payload_cell(payload.get("loc"))
@@ -390,9 +460,19 @@ class RobotShell:
             "dga_entry",
             "dmchba_entry",
         }:
-            self._deliver_allocator_payload(payload)
+            self._queue_allocator_payload(payload)
             return
-        self.allocator.handle_message(self, message)
+        # Any non-core category is allocator traffic, including custom
+        # research probes. Preserve enough envelope data for legacy
+        # ``handle_message(Message)`` hooks, but apply it only inside the next
+        # timed allocator transaction.
+        decoded = dict(payload)
+        decoded.setdefault("type", category)
+        decoded["__message_sender__"] = sender
+        decoded["__message_topic__"] = message.topic
+        decoded["__message_created_at_s__"] = float(message.created_at_s)
+        decoded["__message_delivered_at_s__"] = float(message.delivered_at_s)
+        self._queue_allocator_payload(decoded)
 
     def step(self, now_s: float, planner: AStarPlanner) -> StepResult:
         self._now = now_s
@@ -467,7 +547,6 @@ class RobotShell:
             for name, value in vars(self.cfg).items()
             if not callable(value)
         }
-        cfg["all_tasks"] = supported_copy(list(self.world.target_records))
         allocator_attrs = {
             name: supported_copy(value)
             for name, value in vars(self.allocator).items()
@@ -489,6 +568,9 @@ class RobotShell:
         scheduler = self._reallocation_scheduler
         if scheduler is not None and scheduler.has_queued_context(self.rid):
             return "consensus/internal"
+        reason = self._next_allocation_reason
+        if reason is not None:
+            return reason
         # A just-completed call gets one control action before the shell may
         # decide that another intrinsic/idle call is necessary.  Without this
         # latch a zero-goal result would immediately recurse at the same time.
@@ -500,18 +582,54 @@ class RobotShell:
         )
         if self.current_goal is not None and self.current_goal in self._active_tasks:
             return None
-        reason = self._next_allocation_reason
-        if reason is not None:
-            return reason
         if previous_task_completed:
             return "task_completion"
         if previous_task is not None:
             return "invalid_goal"
         if not self._active_tasks:
-            return "robot_idle"
-        if self.last_goal is None:
-            return "initial_allocation"
-        return "consensus/internal"
+            return None
+        if self.recovery_due(self._now):
+            return "stalled_recovery"
+        # With known unfinished work and no goal, remain event-driven.  A
+        # decoded message, quarantine expiry, admission, or the robot-owned
+        # recovery deadline will explicitly request the next call.
+        return None
+
+    def recovery_due(self, now_s: float) -> bool:
+        deadline = self._next_recovery_deadline_s()
+        return bool(
+            self._active_tasks
+            and self.current_goal is None
+            and deadline is not None
+            and float(now_s) + 1e-12 >= deadline
+        )
+
+    def _next_recovery_deadline_s(self) -> Optional[float]:
+        if not self._active_tasks or self.current_goal is not None:
+            return None
+        anchors = [
+            value for value in (
+                self._no_goal_since,
+                self._last_team_progress_s,
+                self._last_recovery_attempt_s,
+            )
+            if value is not None
+        ]
+        if not anchors:
+            return None
+        return max(anchors) + float(self.cfg.stalled_allocation_recovery_s)
+
+    def next_local_wake_s(self) -> Optional[float]:
+        """Return the next agent-owned liveness/quarantine timer deadline."""
+
+        candidates: List[float] = []
+        recovery_deadline = self._next_recovery_deadline_s()
+        if recovery_deadline is not None:
+            candidates.append(recovery_deadline)
+        for cell, deadline in self._temporary_invalid_task_until.items():
+            if cell in self._active_tasks:
+                candidates.append(float(deadline))
+        return min(candidates) if candidates else None
 
     def prepare_causal_allocation(
         self, now_s: float, reason: str
@@ -527,9 +645,6 @@ class RobotShell:
             epoch_id, epoch_reason = self._reallocation_scheduler.before_allocator_call(
                 self, self._now, reason
             )
-        # ``before_allocator_call`` may piggyback pending admissions.  Freeze
-        # after that atomic scheduler action so the admitted tasks are visible
-        # to the mandatory call itself.
         plan_peer_positions, _, _ = self._promote_perception()
         previous_task = self.current_goal
         previous_task_invalidated = (
@@ -542,14 +657,21 @@ class RobotShell:
         self._active_peer_positions = dict(plan_peer_positions)
         pre_state = self.causal_allocator_snapshot()
         self._active_peer_positions = None
-        device_events = tuple(
+        recovery_requested = str(reason) == "stalled_recovery"
+        device_events_list = [
             copy.deepcopy(event)
             for event in self._causal_device_events
-        )
+        ]
+        if recovery_requested:
+            device_events_list.append({
+                "kind": "allocator_recovery",
+                "payload": {"reason": "stalled_recovery"},
+            })
+        device_events = tuple(device_events_list)
         self._causal_device_events.clear()
         agx_epoch_reset_ns = self._causal_pending_agx_epoch_reset_ns
         self._causal_pending_agx_epoch_reset_ns = 0
-        self.world.record_allocator_start(self.rid, self._active_tasks, self._now)
+        self._world.record_allocator_start(self.rid, self._active_tasks, self._now)
         self._next_allocation_reason = None
         self._causal_busy_kind = "compute"
         self._causal_compute_started_s = self._now
@@ -564,6 +686,8 @@ class RobotShell:
             active_tasks_at_start=tuple(sorted(self._active_tasks)),
             device_events=device_events,
             agx_algorithm_epoch_reset_duration_ns=agx_epoch_reset_ns,
+            allocator_input_count=len(self._allocator_input_inbox),
+            recovery_requested=recovery_requested,
         )
 
     def stage_causal_allocation(
@@ -578,16 +702,30 @@ class RobotShell:
         self._causal_staging_publications = direct_publications
         filter_sample_index = len(self.counters.candidate_filter_time_ns_samples)
         started_ns = perf_counter_ns()
+        prior_allocation_reason = self._active_allocation_reason
+        self._active_allocation_reason = prepared.trigger_reason
         try:
             try:
+                self._process_allocator_inputs()
+                if prepared.recovery_requested:
+                    recover = getattr(
+                        self.allocator, "recover_stalled_allocation", None
+                    )
+                    changed = bool(callable(recover) and recover(self))
+                    self._last_recovery_attempt_s = self._now
+                    if changed:
+                        self._stall_recovery_count += 1
                 decision = self.allocator.choose_goal(self)
             finally:
-                # AGX allocator duration excludes message construction,
-                # hashing, snapshotting, serialization, and device setup.
+                # The timed transaction includes decoded-input consensus,
+                # allocator-local recovery, and goal selection.  It excludes
+                # transport, decoding, message construction, hashing,
+                # snapshotting, serialization, and device setup.
                 elapsed_ns = max(0, perf_counter_ns() - started_ns)
             generated = self._allocator_outbound_payloads()
             post_state = self.causal_allocator_snapshot()
         finally:
+            self._active_allocation_reason = prior_allocation_reason
             self._causal_staging_publications = None
             self._active_peer_positions = None
         nested_filter_ns = sum(
@@ -705,15 +843,16 @@ class RobotShell:
         self._now = float(now_s)
         decision = staged.decision
         if decision.goal is not None and decision.goal not in self._active_tasks:
-            # It is legal for a task to have completed elsewhere while this
-            # call was in flight.  The buffered peer event will invalidate the
-            # stale result immediately after it becomes visible.
-            record = self.world.target_records.get(decision.goal)
-            if record is None or not record.completed:
+            # It is legal for a locally known task to be invalidated by a
+            # message buffered while this call was in flight.  Validate only
+            # against the frozen local input—not shared world truth.
+            if decision.goal not in staged.prepared.active_tasks_at_start:
                 raise RuntimeError(
                     f"{self.allocator.name} selected inactive/non-target goal {decision.goal}"
                 )
+        previous_goal = self.current_goal
         self.current_goal = decision.goal
+        self._record_current_goal_selection(previous_goal)
         self.last_decision_debug = dict(getattr(decision, "debug", {}) or {})
         self._record_owned_assignments()
         if self.current_goal is not None:
@@ -736,7 +875,9 @@ class RobotShell:
         self._causal_busy_kind = None
         self._causal_compute_started_s = None
         self._drain_causal_compute_buffers()
-        self._causal_result_ready = True
+        # Inputs that arrived during compute are new causal information and
+        # may request another allocator transaction before physical motion.
+        self._causal_result_ready = self._next_allocation_reason is None
         self.last_event = "compute_completed"
         return StepResult(reason="compute_completed", time_cost_s=0.0)
 
@@ -744,8 +885,8 @@ class RobotShell:
         while self._causal_buffered_inputs:
             kind, value = self._causal_buffered_inputs.popleft()
             if kind == "admission":
-                cells, epoch_id, reason = value
-                self._apply_admitted_tasks(cells, epoch_id, reason)
+                cells, epoch_id, reason, receipt_s = value
+                self._apply_admitted_tasks(cells, epoch_id, reason, receipt_s)
             elif kind == "message":
                 self.receive_message(value)
             else:  # pragma: no cover - private queue construction invariant
@@ -889,9 +1030,19 @@ class RobotShell:
             )
         started_ns = perf_counter_ns()
         filter_sample_index = len(self.counters.candidate_filter_time_ns_samples)
+        prior_allocation_reason = self._active_allocation_reason
+        self._active_allocation_reason = epoch_reason
         try:
+            self._process_allocator_inputs()
+            if reason == "stalled_recovery":
+                recover = getattr(self.allocator, "recover_stalled_allocation", None)
+                changed = bool(callable(recover) and recover(self))
+                self._last_recovery_attempt_s = self._now
+                if changed:
+                    self._stall_recovery_count += 1
             return self.allocator.choose_goal(self)
         finally:
+            self._active_allocation_reason = prior_allocation_reason
             elapsed_ns = max(0, perf_counter_ns() - started_ns)
             nested_filter_ns = sum(
                 self.counters.candidate_filter_time_ns_samples[filter_sample_index:]
@@ -971,6 +1122,7 @@ class RobotShell:
                     f"{self.allocator.name} selected inactive/non-target goal {decision.goal}"
                 )
             self.current_goal = decision.goal
+            self._record_current_goal_selection(previous_task)
             if self.current_goal is None and self._active_tasks:
                 if self._no_goal_since is None:
                     self._no_goal_since = self._now
@@ -981,6 +1133,7 @@ class RobotShell:
                         self._no_goal_since = self._now
                         decision = self._choose_goal_with_metrics("stalled_recovery")
                         self.current_goal = decision.goal
+                        self._record_current_goal_selection(previous_task)
             if self.current_goal is not None or not self._active_tasks:
                 self._no_goal_since = None
             self.last_decision_debug = decision.debug
@@ -1133,6 +1286,7 @@ class RobotShell:
         old_pos = self.pos
         self.heading = action.heading or move_vec
         self.pos = next_cell
+        self._last_team_progress_s = self._now
         if goal_before_move is not None:
             old_distance = abs(old_pos[0] - goal_before_move[0]) + abs(old_pos[1] - goal_before_move[1])
             new_distance = abs(self.pos[0] - goal_before_move[0]) + abs(self.pos[1] - goal_before_move[1])
@@ -1143,28 +1297,23 @@ class RobotShell:
         self.counters.steps_total += 1
         self.publish_state()
 
-        revisit = self.world.record_visit(self.rid, self.pos)
+        revisit = self._world.record_visit(self.rid, self.pos)
         if revisit:
             self.counters.system_revisits_by_robot += 1
         else:
             self.counters.unique_cells_contributed += 1
         self._searched.add(self.pos)
 
-        target_visited, first_completion = self.world.record_target_visit(self.rid, self.pos, self._now)
+        target_visited, first_completion = (
+            self._world.record_target_visit(self.rid, self.pos, self._now)
+            if self.pos in self._active_tasks
+            else (False, False)
+        )
         if target_visited:
             self._complete_task_locally(self.pos, reason="local_target_visit")
         if first_completion:
             self.counters.targets_found += 1
-            if (
-                self._reallocation_scheduler is not None
-                and (
-                    not self.world.all_targets_completed()
-                    or self._reallocation_scheduler.pending_count > 0
-                )
-            ):
-                self._reallocation_scheduler.mandatory_event(
-                    self._now, "task_completion", source_robot_id=self.rid
-                )
+            self._publish_task_completion(self.pos)
         elif target_visited:
             self.counters.task_cell_revisits += 1
         obs = Observation(
@@ -1177,7 +1326,8 @@ class RobotShell:
         self.allocator.on_observation(self, obs)
         self.last_event = "target_visited" if target_visited else "moved"
         self._capture_perception()
-        self._publish_allocator_messages()
+        if not target_visited:
+            self._publish_allocator_messages()
         self.pending_actions.clear()
         self.last_next_cell = None
         return StepResult(
@@ -1242,53 +1392,74 @@ class RobotShell:
         return StepResult(reason="blocked_goal_backoff", time_cost_s=self.cfg.replan_delay_s)
 
     def _expire_temporary_invalid_tasks(self) -> None:
+        expired = False
         for cell, expires_at in list(self._temporary_invalid_task_until.items()):
             if self._now >= expires_at:
                 self._temporary_invalid_task_until.pop(cell, None)
+                if cell in self._active_tasks:
+                    expired = True
+        if expired:
+            self._next_allocation_reason = "quarantine_expired"
 
     def _allocation_active(self) -> bool:
         return True
 
     def _notify_invalid_goal_epoch(self) -> None:
         self._next_allocation_reason = "invalid_goal"
-        if self._reallocation_scheduler is not None:
-            self._reallocation_scheduler.mandatory_event(
-                self._now, "invalid_goal", source_robot_id=self.rid
-            )
 
     def _complete_task_locally(self, cell: Cell, reason: str) -> bool:
+        self._last_team_progress_s = self._now
+        self._locally_completed_tasks.add(cell)
         if cell not in self._active_tasks:
             return False
+        was_current = self.current_goal == cell
         self._active_tasks.remove(cell)
         self._reported_assignments.discard(cell)
         self._blocked_goal_quarantine_level.pop(cell, None)
         self._temporary_invalid_task_until.pop(cell, None)
         self.last_event = reason
-        self.current_goal = None
+        if was_current:
+            self.current_goal = None
+            self._clear_pending_actions()
         self._next_allocation_reason = (
-            "task_completion" if "target" in reason else "invalid_goal"
+            "task_completion"
+            if reason == "local_target_visit"
+            else "peer_task_completion"
         )
-        self._clear_pending_actions()
-        handler = getattr(self.allocator, "on_task_set_changed", None)
-        if callable(handler):
-            handler(self)
+        completion_event = {
+            "type": "__allocator_task_completed__",
+            "cell": [int(cell[0]), int(cell[1])],
+            "reason": str(reason),
+            "local": reason == "local_target_visit",
+        }
+        self._allocator_input_inbox.append(completion_event)
+        self._causal_device_events.append({
+            "kind": "allocator_task_completed",
+            "payload": copy.deepcopy(completion_event),
+        })
         return True
+
+    def _publish_task_completion(self, cell: Cell) -> None:
+        self._publish(
+            "task_completion",
+            {"cell": [int(cell[0]), int(cell[1])]},
+        )
 
     def _service_task_at_current_position(self) -> Optional[StepResult]:
         """Complete an admitted task underneath this robot without fake motion."""
 
         if self.pos not in self._active_tasks:
             return None
-        record = self.world.target_records.get(self.pos)
+        record = self._world.target_records.get(self.pos)
         if record is None or record.admission_time_s is None:
             return None
 
         # Direct physical service is a legitimate assignment.  Preserve an
         # allocator-owned first assignment when one was already recorded.
         if record.first_assignment_time_s is None:
-            self.world.record_assignment(self.rid, [self.pos], self._now)
+            self._world.record_assignment(self.rid, [self.pos], self._now)
 
-        target_visited, first_completion = self.world.record_target_visit(
+        target_visited, first_completion = self._world.record_target_visit(
             self.rid, self.pos, self._now, completion_mode="stationary_service"
         )
         if not target_visited:
@@ -1296,16 +1467,7 @@ class RobotShell:
         self._complete_task_locally(self.pos, reason="local_target_visit")
         if first_completion:
             self.counters.targets_found += 1
-            if (
-                self._reallocation_scheduler is not None
-                and (
-                    not self.world.all_targets_completed()
-                    or self._reallocation_scheduler.pending_count > 0
-                )
-            ):
-                self._reallocation_scheduler.mandatory_event(
-                    self._now, "task_completion", source_robot_id=self.rid
-                )
+            self._publish_task_completion(self.pos)
         else:
             self.counters.task_cell_revisits += 1
 
@@ -1319,7 +1481,6 @@ class RobotShell:
         self.allocator.on_observation(self, observation)
         self.publish_state()
         self._capture_perception()
-        self._publish_allocator_messages()
         self.last_event = "target_visited"
         return StepResult(
             reason="target_visited",
@@ -1365,8 +1526,16 @@ class RobotShell:
             owned.add(self.current_goal)
         newly_assigned = sorted(owned - self._reported_assignments)
         if newly_assigned:
-            self.world.record_assignment(self.rid, newly_assigned, self._now)
+            self._world.record_assignment(self.rid, newly_assigned, self._now)
         self._reported_assignments = owned
+
+    def _record_current_goal_selection(self, previous_goal: Optional[Cell]) -> None:
+        if (
+            self.current_goal is not None
+            and self.current_goal in self._active_tasks
+            and self.current_goal != previous_goal
+        ):
+            self._world.record_current_goal(self.rid, self.current_goal, self._now)
 
     def _clear_pending_actions(self) -> None:
         self.pending_actions.clear()
@@ -1410,18 +1579,60 @@ class RobotShell:
             return [payload for payload in payloads if isinstance(payload, dict)]
         return []
 
-    def _deliver_allocator_payload(self, payload: Dict[str, Any]) -> None:
+    def _queue_allocator_payload(self, payload: Dict[str, Any]) -> None:
         category = payload.get("type")
         cell = _payload_cell((payload.get("x"), payload.get("y")))
-        if cell is not None and cell not in self._active_tasks and not payload.get("removed", False):
+        released = bool(payload.get("removed", False) or payload.get("released", False))
+        if cell is not None and cell not in self._active_tasks and not released:
             return
+        decoded = copy.deepcopy(payload)
+        self._allocator_input_inbox.append(decoded)
+        self._causal_device_events.append({
+            "kind": "allocator_message",
+            "payload": copy.deepcopy(decoded),
+        })
+        self._next_allocation_reason = "allocator_message"
+
+    def _process_allocator_inputs(self) -> None:
+        while self._allocator_input_inbox:
+            payload = self._allocator_input_inbox.popleft()
+            if payload.get("type") == "__allocator_admission__":
+                handler = getattr(self.allocator, "on_allocation_epoch", None)
+                if callable(handler):
+                    admitted: List[Cell] = []
+                    for raw in payload.get("admitted_cells", ()):
+                        cell = _payload_cell(raw)
+                        if cell is not None:
+                            admitted.append(cell)
+                    handler(
+                        self,
+                        str(payload.get("reason", "task_admission")),
+                        admitted,
+                    )
+                continue
+            if payload.get("type") == "__allocator_task_completed__":
+                handler = getattr(self.allocator, "on_task_completed", None)
+                if callable(handler):
+                    cell = _payload_cell(payload.get("cell"))
+                    if cell is not None:
+                        handler(
+                            self,
+                            cell,
+                            str(payload.get("reason", "task_completion")),
+                            bool(payload.get("local", False)),
+                        )
+                else:
+                    fallback = getattr(self.allocator, "on_task_set_changed", None)
+                    if callable(fallback):
+                        fallback(self)
+                continue
+            self._apply_allocator_payload(payload)
+
+    def _apply_allocator_payload(self, payload: Dict[str, Any]) -> None:
+        category = payload.get("type")
         for receiver_name in ("receive_message", "on_message", "process_message"):
             receiver = getattr(self.allocator, receiver_name, None)
             if callable(receiver):
-                self._causal_device_events.append({
-                    "kind": "allocator_message",
-                    "payload": copy.deepcopy(payload),
-                })
                 receiver(self, payload)
                 return
         handler_names = (
@@ -1432,12 +1643,30 @@ class RobotShell:
         for handler_name in handler_names:
             handler = getattr(self.allocator, handler_name, None)
             if callable(handler):
-                self._causal_device_events.append({
-                    "kind": "allocator_message",
-                    "payload": copy.deepcopy(payload),
-                })
                 handler(self, payload)
                 return
+        handler = getattr(self.allocator, "handle_message", None)
+        if callable(handler):
+            cleaned = {
+                key: value
+                for key, value in payload.items()
+                if not key.startswith("__message_")
+            }
+            handler(
+                self,
+                Message(
+                    str(payload.get("__message_sender__", "")),
+                    str(
+                        payload.get(
+                            "__message_topic__",
+                            topic_for("unknown", str(category or "allocator")),
+                        )
+                    ),
+                    cleaned,
+                    float(payload.get("__message_created_at_s__", self._now)),
+                    float(payload.get("__message_delivered_at_s__", self._now)),
+                ),
+            )
 
     def _capture_perception(self) -> None:
         self._perception_pending_positions = dict(self._peer_positions)

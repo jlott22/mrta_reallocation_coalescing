@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "design_id": "corrected_strict_bound_n50_v1",
+  "manifest_set_id": "collaborative_visit_g19_t50_n50_corrected_v1",
+  "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
+  "loads_tasks_per_mission_second": {
+    "low": 0.075,
+    "medium": 0.3,
+    "high": 0.6
+  },
+  "policies": [
+    {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1},
+    {"policy_id": "count_b2", "mode": "count", "batch_size": 2},
+    {"policy_id": "count_b4", "mode": "count", "batch_size": 4},
+    {"policy_id": "count_b8", "mode": "count", "batch_size": 8},
+    {"policy_id": "bounded_b4_w10", "mode": "bounded", "batch_size": 4, "max_pending_age_s": 10.0}
+  ],
+  "mission": {
+    "grid_size": 19,
+    "robot_count": 4,
+    "task_count": 50,
+    "initial_task_count": 8
+  },
+  "agx": {
+    "conditions_per_treatment": 60,
+    "round_1_trace_ids": [0, 24],
+    "round_2_trace_ids": [25, 49],
+    "trials_per_condition_per_round": 25,
+    "jobs_per_round_per_treatment": 1500,
+    "total_jobs": 6000,
+    "simulation_cores": [3, 4, 5, 6, 7, 8],
+    "round_2_result_based_restrictions": false
+  },
+  "rp2040": {
+    "policies": ["eager_b1", "count_b4"],
+    "trace_ids": [0, 1, 2, 3],
+    "total_missions": 96,
+    "worker_cores": [0, 1, 2]
+  },
+  "support_cores": {
+    "supervisor": 9,
+    "checkpoint_analysis": 10,
+    "os_reserve": 11
+  }
+}

@@ -39,6 +39,9 @@ METRIC_ALIASES: dict[str, tuple[str, ...]] = {
     "piggyback_events": ("piggybacked_admission_event_count",),
     "timeout_events": ("timeout_trigger_count",),
     "batch_events": ("batch_threshold_trigger_count",),
+    "terminal_residual_events": (
+        "terminal_residual_event_count", "terminal_residual_trigger_count",
+    ),
     "final_flush_events": ("final_flush_event_count",),
     "calls": ("allocator_call_count",),
     "capacity_fraction": ("processor_capacity_fraction",),
@@ -710,7 +713,8 @@ def analyze(
             "rp2040_work_per_call_s", "rp2040_work_per_event_s", "capacity_fraction",
             "D_alloc_s", "allocation_attributable_mission_fraction", "max_steps", "team_steps",
             "assignment_median_s", "assignment_p95_s", "completion_median_s", "completion_p95_s",
-            "events", "piggyback_events", "timeout_events", "batch_events", "final_flush_events",
+            "events", "piggyback_events", "timeout_events", "batch_events",
+            "terminal_residual_events", "final_flush_events",
         )
         for key, group in sorted(grouped.items()):
             row: dict[str, Any] = {
@@ -750,6 +754,9 @@ def analyze(
             "piggybacked_admission_events_mean": row["piggyback_events_mean"],
             "timeout_events_mean": row["timeout_events_mean"],
             "batch_threshold_events_mean": row["batch_events_mean"],
+            "terminal_residual_events_mean": row[
+                "terminal_residual_events_mean"
+            ],
             "final_flush_events_mean": row["final_flush_events_mean"],
             "allocator_calls_mean": row["calls_mean"],
             "rp2040_work_per_call_s_mean": row["rp2040_work_per_call_s_mean"],

@@ -5,6 +5,14 @@ import copy
 import sys
 import unittest
 
+ARCHITECTURE = (
+    Path(__file__).resolve().parents[3]
+    / "Simulation"
+    / "Architecture"
+)
+if str(ARCHITECTURE) not in sys.path:
+    sys.path.insert(0, str(ARCHITECTURE))
+
 from allocator_replay.device.native.collaborative import (
     create_persistent_runtime,
 )
@@ -76,7 +84,12 @@ class NativeCollaborativeTests(unittest.TestCase):
                 self.assertIn(list(decision.goal), _state()["active_tasks"])
                 self.assertTrue(all(sample >= 0 for sample in samples))
                 self.assertEqual(before, 8)
-                self.assertEqual(after, 5)
+                expected_after = (
+                    8
+                    if algorithm in ("CBAA", "ACBBA", "PI", "HIPC")
+                    else 5
+                )
+                self.assertEqual(after, expected_after)
                 self.assertIsInstance(messages, list)
                 self.assertEqual(
                     snapshot["allocator_attrs"][
@@ -127,6 +140,21 @@ class NativeCollaborativeTests(unittest.TestCase):
         third = runtime.choose_goal()
         self.assertNotEqual(third.goal, first.goal)
 
+    def test_cbaa_movement_does_not_rebid_retained_task(self) -> None:
+        runtime = create_persistent_runtime(_config("CBAA"))
+        runtime.reset_trial({}, _state(3))
+        first = runtime.choose_goal()
+        runtime.drain_messages()
+        slot = runtime.allocator.path[0]
+        bid = float(runtime.state.claim_value[slot])
+
+        runtime.apply_delta({"sequence": 1, "pos": [0, 1]})
+        second = runtime.choose_goal()
+
+        self.assertEqual(second.goal, first.goal)
+        self.assertAlmostEqual(runtime.state.claim_value[slot], bid, places=6)
+        self.assertEqual(runtime.drain_messages(), [])
+
     def test_candidate_filter_ranks_probability_then_distance(self) -> None:
         runtime = create_persistent_runtime(_config("CBAA", limit=1))
         initial = _state(3)
@@ -140,7 +168,228 @@ class NativeCollaborativeTests(unittest.TestCase):
         decision = runtime.choose_goal()
 
         self.assertEqual(decision.goal, (3, 1))
-        self.assertEqual(runtime.candidate_counts(), (3, 1))
+        # Primary experimental allocators always see the full admitted pool;
+        # a legacy top-k option cannot reintroduce residual tasks.
+        self.assertEqual(runtime.candidate_counts(), (3, 3))
+
+    def test_incremental_insertion_and_pi_significance_match_route_definition(self) -> None:
+        runtime = create_persistent_runtime(_config("PI"))
+        initial = _state(8)
+        initial["target_p"] = {
+            tuple(cell): 0.25 + index * 0.1
+            for index, cell in enumerate(initial["active_tasks"])
+        }
+        runtime.reset_trial({}, initial)
+        allocator = runtime.allocator
+        path = [0, 3, 5, 2]
+        slot = 7
+
+        base_cost = allocator.route_cost(path)
+        brute_costs = []
+        for index in range(len(path) + 1):
+            candidate = list(path)
+            candidate.insert(index, slot)
+            brute_costs.append(
+                max(0.0, allocator.route_cost(candidate) - base_cost)
+            )
+        expected_index = min(
+            range(len(brute_costs)), key=lambda index: brute_costs[index]
+        )
+        actual_index, actual_delta = allocator.best_insertion(path, slot)
+        self.assertEqual(actual_index, expected_index)
+        self.assertAlmostEqual(actual_delta, brute_costs[expected_index])
+
+        base_distance = allocator.route_distance(path)
+        brute_distances = []
+        for index in range(len(path) + 1):
+            candidate = list(path)
+            candidate.insert(index, slot)
+            brute_distances.append(
+                max(
+                    0.0,
+                    allocator.route_distance(candidate) - base_distance,
+                )
+            )
+        expected_distance_index = min(
+            range(len(brute_distances)),
+            key=lambda index: brute_distances[index],
+        )
+        distance_index, distance_delta = allocator.best_distance_insertion(
+            path, slot
+        )
+        self.assertEqual(distance_index, expected_distance_index)
+        self.assertAlmostEqual(
+            distance_delta, brute_distances[expected_distance_index]
+        )
+
+        allocator.path = list(path)
+        allocator._refresh_local_significance()
+        full_cost = allocator.route_cost(path)
+        for index, item in enumerate(path):
+            without = path[:index] + path[index + 1 :]
+            expected = max(0.0, full_cost - allocator.route_cost(without))
+            # Native claims use a compact single-precision array on the RP.
+            self.assertAlmostEqual(
+                runtime.state.claim_value[item], expected, places=6
+            )
+
+    def test_future_all_tasks_are_not_registered_until_admission(self) -> None:
+        config = _config("ACBBA")
+        config["all_tasks"] = [[1, 1], [9, 9]]
+        initial = _state(1)
+        initial["all_tasks"] = [[1, 1], [9, 9]]
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial({}, initial)
+
+        self.assertIsNone(runtime.state.slot_for_cell((9, 9)))
+        runtime.choose_goal()
+        retained_path = list(runtime.allocator.path)
+        retained_counter = runtime.allocator.bid_counter
+
+        runtime.begin_call_setup()
+        runtime.apply_delta(
+            {
+                "events": [
+                    {
+                        "kind": "allocation_epoch",
+                        "payload": {
+                            "epoch_index": 0,
+                            "trigger_reason": "arrival_bound",
+                            "admitted_cells": [[9, 9]],
+                        },
+                    }
+                ]
+            }
+        )
+
+        self.assertIsNotNone(runtime.state.slot_for_cell((9, 9)))
+        self.assertEqual(runtime.allocator.path, retained_path)
+        self.assertEqual(runtime.allocator.bid_counter, retained_counter)
+        self.assertEqual(runtime.algorithm_epoch_reset_time_us(), 0)
+        runtime.choose_goal()
+        self.assertEqual(len(runtime.allocator.path), 2)
+        self.assertEqual(runtime.allocator.path[0], retained_path[0])
+
+    def test_primary_bundle_allocators_are_not_capped_at_three(self) -> None:
+        initial = _state(8)
+        initial["peer_positions"] = {}
+        for algorithm in ("ACBBA", "PI", "HIPC"):
+            with self.subTest(algorithm=algorithm):
+                config = _config(algorithm, limit=2)
+                config["robot_ids"] = ["00"]
+                runtime = create_persistent_runtime(config)
+                runtime.reset_trial({}, initial)
+
+                runtime.choose_goal()
+
+                self.assertEqual(len(runtime.allocator.path), 8)
+                self.assertEqual(runtime.candidate_counts(), (8, 8))
+                messages = runtime.drain_messages()
+                field = (
+                    "path_cells" if algorithm == "PI" else "bundle_cells"
+                )
+                snapshots = [
+                    message[field]
+                    for message in messages
+                    if isinstance(message.get(field), list)
+                ]
+                self.assertEqual(len(snapshots), 8)
+                self.assertTrue(
+                    all(item is snapshots[0] for item in snapshots[1:])
+                )
+
+    def test_consensus_completion_and_recovery_wait_for_choose(self) -> None:
+        config = _config("CBAA")
+        config["robot_ids"] = ["00", "01"]
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial({}, _state(2))
+        first = runtime.choose_goal().goal
+        runtime.drain_messages()
+        slot = runtime.state.slot_for_cell(first)
+
+        runtime.begin_call_setup()
+        runtime.apply_delta(
+            {
+                "events": [
+                    {
+                        "kind": "allocator_task_completed",
+                        "payload": {
+                            "cell": list(first),
+                            "reason": "service",
+                            "local": True,
+                        },
+                    },
+                    {"kind": "allocator_recovery", "payload": {}},
+                ]
+            }
+        )
+
+        self.assertTrue(runtime.state.is_active(slot))
+        self.assertEqual(len(runtime.pending_allocator_events), 2)
+        decision = runtime.choose_goal()
+        self.assertFalse(runtime.state.is_active(slot))
+        self.assertNotEqual(decision.goal, first)
+        self.assertTrue(decision.debug["recovery_requested"])
+        self.assertEqual(runtime.pending_allocator_events, [])
+
+    def test_recovery_expires_only_local_blockage_without_forged_release(self) -> None:
+        for algorithm in ("CBAA", "ACBBA", "PI"):
+            with self.subTest(algorithm=algorithm):
+                config = _config(algorithm)
+                config["robot_ids"] = ["00", "01"]
+                runtime = create_persistent_runtime(config)
+                runtime.reset_trial({}, _state(3))
+                blocking_value = 0.0 if algorithm == "PI" else 1.0e6
+                for slot in runtime.state.active_slots():
+                    runtime.state.set_claim(slot, 1, blocking_value, 10)
+                runtime.allocator.path = []
+                runtime.state.current_goal = None
+
+                runtime.begin_call_setup()
+                runtime.apply_delta(
+                    {
+                        "events": [
+                            {"kind": "allocator_recovery", "payload": {}}
+                        ]
+                    }
+                )
+                decision = runtime.choose_goal()
+                messages = runtime.drain_messages()
+
+                owners = [
+                    int(runtime.state.claim_owner[slot])
+                    for slot in runtime.state.active_slots()
+                ]
+                self.assertTrue(decision.debug["recovery_applied"])
+                self.assertEqual(owners.count(runtime.state.robot_index), 1)
+                self.assertEqual(owners.count(1), 2)
+                self.assertFalse(
+                    any(bool(message.get("released")) for message in messages)
+                )
+
+    def test_hipc_recovery_preserves_head_and_expires_peer_prediction(self) -> None:
+        config = _config("HIPC")
+        config["robot_ids"] = ["00", "01"]
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial({}, _state(3))
+        head = runtime.state.active_slots()[0]
+        runtime.allocator.path = [head]
+        runtime.state.set_claim(head, runtime.state.robot_index, -2.0, 1)
+        runtime.state.current_goal = int(runtime.state.targets[head])
+
+        runtime.begin_call_setup()
+        runtime.apply_delta(
+            {"events": [{"kind": "allocator_recovery", "payload": {}}]}
+        )
+        decision = runtime.choose_goal()
+
+        self.assertTrue(decision.debug["recovery_applied"])
+        self.assertEqual(runtime.allocator.path[0], head)
+        self.assertEqual(len(runtime.allocator.path), 3)
+        self.assertGreaterEqual(
+            runtime.allocator.bad_prediction_count["01"],
+            runtime.allocator.BAD_PRED_LIMIT,
+        )
 
     def test_cbaa_peer_claim_changes_another_robot_decision(self) -> None:
         first_config = _config("CBAA")

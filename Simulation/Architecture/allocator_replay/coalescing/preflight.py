@@ -167,14 +167,21 @@ def _assert_probe(
         raise RuntimeError("allocation epoch hook idempotence probe failed")
     before = int(metrics.get("candidate_count_before", -1))
     after = int(metrics.get("candidate_count_after", -1))
+    resident = metrics.get("resident_active_task_count")
+    if resident is None or int(resident) != visible_count:
+        raise RuntimeError(
+            "online admission did not populate the resident task registry: "
+            f"expected {visible_count}, received {resident!r}"
+        )
+    if before != after:
+        raise RuntimeError("allocator call applied a candidate restriction")
+    filter_calls = int(metrics.get("candidate_filter_calls", 0))
     expected_counts = (visible_count, visible_count)
-    if require_enumeration and (before, after) != expected_counts:
+    if require_enumeration and filter_calls and (before, after) != expected_counts:
         raise RuntimeError(
             "unrestricted visible-set probe failed: "
             f"expected {visible_count}, received before={before}, after={after}"
         )
-    if not require_enumeration and before != after:
-        raise RuntimeError("duplicate epoch call applied a candidate restriction")
     if require_full_solve and metrics.get("call_class") != "full_allocation_solve":
         raise RuntimeError("online admission did not force a full allocation solve")
 

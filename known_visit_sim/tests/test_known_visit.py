@@ -7,6 +7,7 @@ from pathlib import Path
 
 from known_visit_sim.algorithms.registry import load_allocator_class
 from known_visit_sim.algorithms.base import AllocatorBase
+from known_visit_sim.comms.message import Message
 from known_visit_sim.comms.models import BernoulliModel, IdealModel
 from known_visit_sim.config import SimConfig, edge_even_start_positions, generate_robot_ids
 from known_visit_sim.core.scenario_loader import load_scenarios
@@ -23,6 +24,7 @@ ALGORITHMS = ("CBAA", "ACBBA", "PI", "HIPC", "DMCHBA", "DGA", "AuctionGreedy")
 ALLOWED_TOPICS = {
     "state", "collision_intent", "cbaa_entry", "acbba_entry", "pi_entry",
     "pi_clear_path", "hipc_entry", "hipc_clear_bundle", "dga_entry",
+    "task_completion",
 }
 
 
@@ -39,6 +41,16 @@ def config(grid_size: int = 5, robot_count: int = 2, **overrides) -> SimConfig:
     )
     values.update(overrides)
     return SimConfig(**values)
+
+
+def run_causal_allocator_call(robot, now_s: float):
+    reason = robot.causal_allocation_reason()
+    if reason is None:
+        raise AssertionError("robot has no causal allocation reason")
+    prepared = robot.prepare_causal_allocation(now_s, reason)
+    staged = robot.stage_causal_allocation(prepared)
+    robot.complete_causal_allocation(now_s, staged)
+    return staged
 
 
 class GeneratorTests(unittest.TestCase):
@@ -102,7 +114,7 @@ class CommunicationAndWorldTests(unittest.TestCase):
         self.assertEqual(rayleigh.sensitivity_dbm, -50.66)
         self.assertEqual(rayleigh.tx_power_dbm, 30.0)
 
-    def test_state_infers_completion_but_does_not_create_world_visit(self) -> None:
+    def test_state_never_infers_completion_or_creates_world_visit(self) -> None:
         cfg = config()
         scenario = TrialScenario(0, [(2, 2)])
         state = AsyncTrialRunner(cfg, load_allocator_class("CBAA"), IdealModel(), 2).new_trial(scenario)
@@ -111,7 +123,7 @@ class CommunicationAndWorldTests(unittest.TestCase):
         sender._last_published_state_pos = None
         sender.publish_state()
         state.bus.pump(1.0)
-        self.assertNotIn((2, 2), receiver.active_tasks)
+        self.assertIn((2, 2), receiver.active_tasks)
         self.assertFalse(state.world.target_records[(2, 2)].completed)
         self.assertNotIn((2, 2), state.world.visits)
 
@@ -193,10 +205,38 @@ class AllocatorAndOutputTests(unittest.TestCase):
                     self.assertTrue(set(state.bus.counters.sent_by_topic).issubset(ALLOWED_TOPICS))
                     self.assertEqual(invalid_goals, [])
 
-    def test_preserved_multi_task_caps_and_dga_defaults(self) -> None:
-        self.assertEqual(load_allocator_class("ACBBA").BUNDLE_SIZE, 3)
-        self.assertEqual(load_allocator_class("PI").BUNDLE_SIZE, 3)
-        self.assertEqual(load_allocator_class("HIPC").BUNDLE_SIZE, 3)
+    def test_primary_allocators_have_no_fixed_bundle_cap(self) -> None:
+        tasks = [(1, 0), (2, 0), (3, 0), (4, 0), (4, 1), (4, 2)]
+        scenario = TrialScenario(40, tasks)
+
+        cbaa_state = AsyncTrialRunner(
+            config(robot_count=1), load_allocator_class("CBAA"), IdealModel(), 40
+        ).new_trial(scenario)
+        cbaa = cbaa_state.robots["00"]
+        cbaa.allocator.choose_goal(cbaa)
+        self.assertEqual(cbaa.candidate_count_after_filter, len(tasks))
+        self.assertIn(cbaa.cbaa_current_task, tasks)
+        self.assertFalse(hasattr(cbaa, "cbaa_bundle"))
+
+        path_attr = {
+            "ACBBA": "acbba_path",
+            "PI": "pi_path",
+            "HIPC": "hipc_path",
+        }
+        for algorithm, attr in path_attr.items():
+            with self.subTest(algorithm=algorithm):
+                allocator_cls = load_allocator_class(algorithm)
+                self.assertIsNone(allocator_cls.BUNDLE_SIZE)
+                state = AsyncTrialRunner(
+                    config(robot_count=1), allocator_cls, IdealModel(), 40
+                ).new_trial(scenario)
+                robot = state.robots["00"]
+                robot.allocator.choose_goal(robot)
+                self.assertEqual(robot.candidate_count_after_filter, len(tasks))
+                self.assertEqual(set(getattr(robot, attr)), set(tasks))
+                self.assertGreater(len(getattr(robot, attr)), 3)
+
+    def test_legacy_dmchba_and_dga_defaults_remain_bounded(self) -> None:
         self.assertEqual(load_allocator_class("DMCHBA").COMMITMENT_HORIZON, 3)
         dga = load_allocator_class("DGA")
         self.assertEqual(dga.COMMITMENT_HORIZON, 3)
@@ -229,16 +269,26 @@ class AllocatorAndOutputTests(unittest.TestCase):
         receiver.hipc_winning_bid_by_cell[(2, 0)] = 3.0
         receiver.hipc_bid_time_by_cell[(2, 0)] = 1.0
 
-        receiver._deliver_allocator_payload({
-            "type": "hipc_clear_bundle",
-            "sender": "00",
-            "timestamp": 2.0,
-            "bundle_cells": [],
-            "bundle_size": 0,
-        })
-
-        self.assertIsNone(receiver.hipc_winner_by_cell[(2, 0)])
-        self.assertEqual(receiver.hipc_winning_bid_by_cell[(2, 0)], receiver.allocator.NO_BID)
+        receiver.receive_message(
+            Message(
+                "00",
+                "robot/00/hipc_clear_bundle",
+                {
+                    "type": "hipc_clear_bundle",
+                    "sender": "00",
+                    "timestamp": 2.0,
+                    "bundle_cells": [],
+                    "bundle_size": 0,
+                },
+                created_at_s=2.0,
+                delivered_at_s=2.0,
+            )
+        )
+        # Decoding queues allocator input; consensus does not change until the
+        # public timed allocator transaction consumes that input.
+        self.assertEqual(receiver.hipc_winner_by_cell[(2, 0)], "00")
+        run_causal_allocator_call(receiver, 2.0)
+        self.assertNotEqual(receiver.hipc_winner_by_cell[(2, 0)], "00")
 
     def test_dmchba_preserves_local_suffix_and_replans_external_invalidation(self) -> None:
         cfg = config(grid_size=7, commitment_horizon=3)
@@ -248,12 +298,13 @@ class AllocatorAndOutputTests(unittest.TestCase):
             cfg, load_allocator_class("DMCHBA"), IdealModel(), 17
         ).new_trial(scenario)
         local_robot = local_state.robots["00"]
-        first = local_robot.allocator.choose_goal(local_robot)
+        first = run_causal_allocator_call(local_robot, 0.0).decision
         initial_path = list(local_robot.dmchba_path)
         self.assertGreaterEqual(len(initial_path), 2)
 
+        local_robot._now = 1.0
         local_robot._complete_task_locally(initial_path[0], "local_target_visit")
-        second = local_robot.allocator.choose_goal(local_robot)
+        second = run_causal_allocator_call(local_robot, 1.0).decision
         self.assertIsNone(second.debug["dmchba_trigger"])
         self.assertEqual(local_robot.dmchba_path, initial_path[1:])
         self.assertEqual(second.goal, initial_path[1])
@@ -262,21 +313,30 @@ class AllocatorAndOutputTests(unittest.TestCase):
             cfg, load_allocator_class("DMCHBA"), IdealModel(), 18
         ).new_trial(scenario)
         peer_robot = peer_state.robots["00"]
-        peer_robot.allocator.choose_goal(peer_robot)
+        run_causal_allocator_call(peer_robot, 0.0)
         preserved_path = list(peer_robot.dmchba_path)
         unrelated_cell = next(iter(peer_robot.active_tasks - set(preserved_path)))
-        peer_robot._complete_task_locally(unrelated_cell, "peer_state_at_target")
-        preserved = peer_robot.allocator.choose_goal(peer_robot)
+        peer_robot.receive_message(
+            Message(
+                "01", "robot/01/task_completion", {"cell": list(unrelated_cell)},
+                created_at_s=1.0, delivered_at_s=1.0,
+            )
+        )
+        preserved = run_causal_allocator_call(peer_robot, 1.0).decision
         self.assertIsNone(preserved.debug["dmchba_trigger"])
         self.assertEqual(peer_robot.dmchba_path, preserved_path)
 
         invalidated_cell = peer_robot.dmchba_path[-1]
-        peer_robot._complete_task_locally(invalidated_cell, "peer_state_at_target")
-        replanned = peer_robot.allocator.choose_goal(peer_robot)
-        self.assertEqual(
-            replanned.debug["dmchba_trigger"], "external_task_invalidated_path"
+        prefix = peer_robot.dmchba_path[:-1]
+        peer_robot.receive_message(
+            Message(
+                "01", "robot/01/task_completion", {"cell": list(invalidated_cell)},
+                created_at_s=2.0, delivered_at_s=2.0,
+            )
         )
+        run_causal_allocator_call(peer_robot, 2.0)
         self.assertNotIn(invalidated_cell, peer_robot.dmchba_path)
+        self.assertEqual(peer_robot.dmchba_path[: len(prefix)], prefix)
 
     def test_metrics_and_all_output_files(self) -> None:
         cfg = config(condition_id="smoke")

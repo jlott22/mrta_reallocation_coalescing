@@ -83,7 +83,7 @@ def _compact_message_fields(
     return mask, values
 
 
-def _compact_causal_events(events: Any) -> list[Any]:
+def compact_causal_events(events: Any) -> list[Any]:
     """Pack verbose captured causal events without changing their order/effect.
 
     Consecutive allocator snapshot entries share type/sender/path metadata.
@@ -105,7 +105,11 @@ def _compact_causal_events(events: Any) -> list[Any]:
             continue
         kind = str(event.get("kind", ""))
         payload = decode_value(event.get("payload", {}))
-        if kind == "allocator_message" and isinstance(payload, dict):
+        if (
+            kind == "allocator_message"
+            and isinstance(payload, dict)
+            and all(name in _CAUSAL_MESSAGE_FIELDS for name in payload)
+        ):
             common_mask, common_values = _compact_message_fields(
                 payload, common=True
             )
@@ -133,6 +137,10 @@ def _compact_causal_events(events: Any) -> list[Any]:
         else:
             result.append([3, kind, payload])
     return result
+
+
+# Backward-compatible private spelling retained for existing callers/tests.
+_compact_causal_events = compact_causal_events
 
 
 class ReplayTransportError(RuntimeError):
@@ -897,7 +905,7 @@ class SerialReplayDevice:
             projected.get("setup_mode") == "causal_context"
             and "events" in root_parts
         ):
-            root_parts["events"] = _compact_causal_events(
+            root_parts["events"] = compact_causal_events(
                 root_parts["events"]
             )
         header = {

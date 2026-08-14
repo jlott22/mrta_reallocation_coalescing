@@ -2,7 +2,6 @@
 
 from .acbba import ACBBAAllocator
 from .cbaa import CBAAAllocator
-from .compat import ticks_diff, ticks_us
 from .dga import DGAAllocator
 from .dmchba import DMCHBAAllocator
 from .hipc import HIPCAllocator
@@ -167,7 +166,16 @@ class PersistentCollaborativeRuntime:
         self.synchronized_authoritative_state = False
         self.behavior_last_sent = []
         self.behavior_last_sent_initialized = False
+        self.pending_allocator_events = []
+        self.pending_message_sequences = {}
+        self.pending_admitted_cells = set()
+        self.pending_post_admission_active = None
+        self.pending_post_admission_unavailable = None
+        self.pending_post_admission_completed = None
+        self.pending_post_admission_activated = None
+        self.pending_post_admission_probabilities = None
         self.pending_algorithm_epoch_reset_us = 0
+        self.last_call_had_recovery = False
 
     def reset_trial(self, config, initial_state):
         """Start a trial and return small identity/capacity metadata."""
@@ -210,18 +218,21 @@ class PersistentCollaborativeRuntime:
         if allocator_class is None:
             raise ValueError("unknown collaborative allocator: " + algorithm)
 
+        if algorithm in ("CBAA", "ACBBA", "PI", "HIPC"):
+            # The experimental allocators must see the complete locally known
+            # admitted pool.  Legacy candidate and bundle caps would otherwise
+            # reintroduce residual tasks independently of coalescing.
+            merged["max_candidate_cells"] = None
+
         self.config = merged
         self.algorithm = algorithm
         state_initial = dict(initial)
         if isinstance(resume, dict):
             state_resume = _plain_mapping(resume.get("state"))
             if state_resume:
-                state_initial["all_tasks"] = list(
-                    state_resume.get("targets", ())
-                )
-                state_initial["active_tasks"] = list(
-                    state_resume.get("active", state_resume.get("targets", ()))
-                )
+                # Let restore_resume append learned cells in their saved slot
+                # order.  No future all_tasks list is required or accepted.
+                state_initial["active_tasks"] = []
                 state_initial["robot_ids"] = list(
                     state_resume.get(
                         "robot_ids",
@@ -232,9 +243,21 @@ class PersistentCollaborativeRuntime:
         if isinstance(resume, dict):
             self.state.restore_resume(resume.get("state"))
             # The host environment is newer than the resume record. Overlay it
-            # after restoring allocator-owned state.
+            # after restoring allocator-owned state, but do not learn an
+            # unknown coordinate from the checkpoint.  Its queued admission
+            # event will append it after reset.
             if "active_tasks" in initial:
-                self.state._replace_active(initial["active_tasks"])
+                active = self.state._normalize_cell_collection(
+                    initial["active_tasks"]
+                )
+                self.state._replace_active(
+                    [
+                        cell
+                        for cell in active
+                        if cell in self.state.slot_by_cell
+                    ],
+                    register_unknown=False,
+                )
             if "pos" in initial or "position" in initial:
                 self.state.update_position(
                     value_from(initial, ("pos", "position"))
@@ -271,13 +294,22 @@ class PersistentCollaborativeRuntime:
         ) if isinstance(resume, dict) else 0
         self.epoch_reallocation_pending = False
         self.last_call_had_epoch_reallocation = False
+        self.last_call_had_recovery = False
+        self.pending_allocator_events = []
+        self.pending_message_sequences = {}
+        self.pending_admitted_cells = set()
+        self.pending_post_admission_active = None
+        self.pending_post_admission_unavailable = None
+        self.pending_post_admission_completed = None
+        self.pending_post_admission_activated = None
+        self.pending_post_admission_probabilities = None
         self.pending_algorithm_epoch_reset_us = 0
         return {
             "mission": "collaborative_visit",
             "algorithm": self.algorithm,
             "robot_id": self.state.robot_id,
             "grid_size": int(self.state.grid_size),
-            "target_capacity": int(self.state.DEFAULT_MAX_TARGETS),
+            "target_capacity": int(self.state.max_targets),
             "target_count": len(self.state.targets),
             "team_size": len(self.state.robot_ids),
             "persistent": True,
@@ -575,19 +607,118 @@ class PersistentCollaborativeRuntime:
     def begin_call_setup(self):
         """Start one logical call that may span several bounded PSETUPs."""
 
+        self.pending_allocator_events = []
+        self.pending_message_sequences = {}
+        self.pending_admitted_cells = set()
+        self.pending_post_admission_active = None
+        self.pending_post_admission_unavailable = None
+        self.pending_post_admission_completed = None
+        self.pending_post_admission_activated = None
+        self.pending_post_admission_probabilities = None
         self.pending_algorithm_epoch_reset_us = 0
 
     def _require_trial(self):
         if self.state is None or self.allocator is None:
             raise RuntimeError("reset_trial must be called first")
 
+    @staticmethod
+    def _cell_collection(value):
+        """Normalize one cell-shaped value without decoding its coordinates."""
+
+        if isinstance(value, dict):
+            return [value]
+        if (
+            isinstance(value, tuple)
+            and len(value) == 2
+            and isinstance(value[0], int)
+        ):
+            return [value]
+        return value
+
+    def _queue_allocator_event(self, kind, payload, event_counter):
+        """Queue decoded allocator input without executing allocator logic."""
+
+        kind = str(kind)
+        if kind == "allocator_message" and isinstance(payload, dict):
+            payload = self._intern_message_cell_sequences(payload)
+        if kind == "task_announcement":
+            kind = "allocation_epoch"
+        if kind == "allocation_epoch":
+            if not isinstance(payload, dict):
+                raise TypeError("allocation epoch payload must be a mapping")
+            # Decode/register shell knowledge during PSETUP, but leave the new
+            # slots inactive until the ordered allocator admission hook runs in
+            # W_alloc.  Thus an earlier queued peer message cannot use a task
+            # before the corresponding announcement callback.
+            admitted = payload.get("admitted_cells", ())
+            for encoded in self.state._normalize_cell_collection(admitted):
+                self.pending_admitted_cells.add(encoded)
+            self.state._register_cells(admitted)
+            self.pending_allocator_events.append(
+                ("__allocator_admission__", payload, int(event_counter))
+            )
+            return
+        self.pending_allocator_events.append(
+            (kind, payload, int(event_counter))
+        )
+
+    def _intern_message_cell_sequences(self, payload):
+        """Share repeated decoded path/bundle arrays across one call.
+
+        PI, ACBBA, and HIPC snapshots can contain one entry per task, with the
+        same full 50-cell path repeated in every entry.  Wire compaction keeps
+        each event below the serial staging bound; interning here also avoids
+        retaining 50 independent decoded copies beside the resident contexts.
+        This is transport/state ingestion and intentionally precedes W_alloc.
+        """
+
+        result = payload
+        for field in ("path_cells", "bundle_cells"):
+            raw = payload.get(field)
+            if not isinstance(raw, list):
+                continue
+            normalized = []
+            flat = []
+            try:
+                for item in raw:
+                    if isinstance(item, dict):
+                        cell = (int(item["x"]), int(item["y"]))
+                    else:
+                        cell = (int(item[0]), int(item[1]))
+                    normalized.append(cell)
+                    flat.extend(cell)
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+            key = (field, tuple(flat))
+            shared = self.pending_message_sequences.get(key)
+            if shared is None:
+                shared = normalized
+                self.pending_message_sequences[key] = shared
+            if result is payload:
+                result = dict(payload)
+            result[field] = shared
+        return result
+
+    def _guard_announced_unknown(self, encoded, source):
+        unknown = [
+            cell
+            for cell in encoded
+            if cell not in self.state.slot_by_cell
+        ]
+        unannounced = [
+            cell for cell in unknown
+            if cell not in self.pending_admitted_cells
+        ]
+        if unannounced:
+            raise ValueError(
+                source + " contains a task not learned through admission"
+            )
+        return unknown
+
     def apply_delta(self, delta):
-        """Apply one environmental/peer delta outside the timed allocator call."""
+        """Patch environment state and queue allocator inputs outside timing."""
 
         self._require_trial()
-        # One setup transaction feeds exactly one subsequent allocator call.
-        # Keep policy-induced allocator reset work separate from generic state
-        # synchronization so the worker can add only the former to W_alloc.
         if not isinstance(delta, dict):
             raise TypeError("delta must be a mapping")
         changed = delta.get("set")
@@ -606,6 +737,66 @@ class PersistentCollaborativeRuntime:
                 return
 
         state = self.state
+
+        # Decode and retain allocator inputs in their causal order.  PSETUP
+        # performs no consensus callback, recovery rule, or admission hook;
+        # those operations are drained by choose_goal inside the worker timer.
+        queued_event_counter = int(state.event_counter)
+        messages = value_from(
+            flattened,
+            ("messages", "allocator_messages", "peer_messages"),
+            [],
+        )
+        if isinstance(messages, dict):
+            messages = [messages]
+        for message in messages or []:
+            payload = (
+                message.get("payload")
+                if isinstance(message, dict)
+                and isinstance(message.get("payload"), dict)
+                else message
+            )
+            self._queue_allocator_event(
+                "allocator_message", payload, queued_event_counter
+            )
+
+        for event in delta.get("events", ()) or ():
+            if isinstance(event, (list, tuple)) and event:
+                tag = int(event[0])
+                if tag == 0:
+                    common = _expand_compact_message(event[1], event[2])
+                    for row in event[3]:
+                        payload = dict(common)
+                        payload.update(
+                            _expand_compact_message(row[0], row[1])
+                        )
+                        self._queue_allocator_event(
+                            "allocator_message",
+                            payload,
+                            queued_event_counter,
+                        )
+                    continue
+                if tag == 1:
+                    kind = "allocation_epoch"
+                    payload = {
+                        "epoch_index": int(event[1]),
+                        "trigger_reason": str(event[2]),
+                        "admitted_cells": _compact_cells(event[3]),
+                    }
+                elif tag == 3:
+                    kind = str(event[1])
+                    payload = event[2]
+                else:
+                    raise ValueError("unknown compact causal event tag")
+            else:
+                if not isinstance(event, dict):
+                    continue
+                kind = str(event.get("kind", ""))
+                payload = decode_value(event.get("payload", {}))
+            self._queue_allocator_event(
+                kind, payload, queued_event_counter
+            )
+
         if "pos" in flattened or "position" in flattened:
             state.update_position(
                 value_from(flattened, ("pos", "position"))
@@ -655,6 +846,8 @@ class PersistentCollaborativeRuntime:
         )
         if probabilities is not None:
             state.update_probabilities(probabilities)
+            if self.pending_admitted_cells:
+                self.pending_post_admission_probabilities = probabilities
         collision = value_from(
             flattened,
             (
@@ -667,143 +860,62 @@ class PersistentCollaborativeRuntime:
         if collision is not None:
             state.set_collision(collision)
 
-        messages = value_from(
-            flattened,
-            ("messages", "allocator_messages", "peer_messages"),
-            [],
-        )
-        if isinstance(messages, dict):
-            messages = [messages]
-        for message in messages or []:
-            payload = (
-                message.get("payload")
-                if isinstance(message, dict)
-                and isinstance(message.get("payload"), dict)
-                else message
-            )
-            self.allocator.handle_message(payload)
-
-        saw_allocation_epoch = False
-        for event in delta.get("events", ()) or ():
-            if isinstance(event, (list, tuple)) and event:
-                tag = int(event[0])
-                if tag == 0:
-                    common = _expand_compact_message(event[1], event[2])
-                    for row in event[3]:
-                        payload = dict(common)
-                        payload.update(
-                            _expand_compact_message(row[0], row[1])
-                        )
-                        self.allocator.handle_message(payload)
-                    continue
-                if tag == 1:
-                    kind = "allocation_epoch"
-                    payload = {
-                        "epoch_index": int(event[1]),
-                        "trigger_reason": str(event[2]),
-                        "admitted_cells": _compact_cells(event[3]),
-                    }
-                elif tag == 3:
-                    kind = str(event[1])
-                    payload = event[2]
-                else:
-                    raise ValueError("unknown compact causal event tag")
-            else:
-                if not isinstance(event, dict):
-                    continue
-                kind = str(event.get("kind", ""))
-                payload = decode_value(event.get("payload", {}))
-            if kind == "allocator_message":
-                # Replay against the resident pre-hook context.  A complete
-                # frozen checkpoint is loaded below, after all ordered events,
-                # so this setup-only replay cannot double-apply an update to
-                # the logical choose_goal input.
-                self.allocator.handle_message(payload)
-            elif kind == "allocation_epoch":
-                if not isinstance(payload, dict):
-                    raise TypeError("allocation epoch payload must be a mapping")
-                epoch_index = int(payload.get("epoch_index", -1))
-                reason = str(payload.get("trigger_reason", ""))
-                admitted = payload.get("admitted_cells", ())
-                # The frozen checkpoint is post-hook and can already show an
-                # admitted task as completed.  Replay the ordered admission
-                # against resident pre-hook state first, including the
-                # desktop behavior that reopens a previously traversed cell.
-                state.activate_cells(admitted)
-                for encoded in state._normalize_cell_collection(admitted):
-                    slot = state.slot_by_cell.get(encoded)
-                    if slot is not None:
-                        state.unavailable[slot] = 0
-                if state.apply_allocation_epoch(
-                    epoch_index, reason, admitted
-                ):
-                    saw_allocation_epoch = True
-                    reset_started = ticks_us()
-                    try:
-                        epoch_reallocated = bool(
-                            self.allocator.on_allocation_epoch(
-                                reason, admitted, epoch_index
-                            )
-                        )
-                        if admitted:
-                            # These resident protocol caches are the native
-                            # counterparts of the desktop pending/last-sent
-                            # structures cleared by on_allocation_epoch.  Their
-                            # reset is policy-induced allocator work and is
-                            # therefore inside the device reset timer.
-                            self.authoritative_message_seed = []
-                            self.authoritative_pending_snapshot = False
-                            self.authoritative_last_sent = {}
-                            self.behavior_last_sent = []
-                            self.behavior_last_sent_initialized = False
-                    finally:
-                        self.pending_algorithm_epoch_reset_us += max(
-                            0, ticks_diff(ticks_us(), reset_started)
-                        )
-                    self.epoch_reallocation_pending = epoch_reallocated
-            elif kind in (
-                "on_collision_avoidance_activated",
-                "collision_avoidance",
-            ):
-                state.set_collision(True)
-
-        # Environmental values in ``set`` are the authoritative post-hook
-        # checkpoint.  Apply them after ordered event replay so a task that
-        # was admitted and then completed before this allocator call is active
-        # while its callback runs, but inactive for choose_goal.
+        # Apply the known portion of the authoritative checkpoint now.  Newly
+        # announced cells have shell registry slots but remain inactive until
+        # their timed admission callback; a final small reconciliation below
+        # preserves admitted-then-completed post-event ordering.
         if "active_tasks" in flattened:
-            state._replace_active(flattened["active_tasks"])
-        if any(name in flattened for name in unavailable_names):
-            state.replace_unavailable(
-                *(flattened.get(name, ()) for name in unavailable_names)
+            active = state._normalize_cell_collection(
+                flattened["active_tasks"]
             )
+            self._guard_announced_unknown(active, "active_tasks")
+            known = [
+                cell
+                for cell in active
+                if (
+                    cell in state.slot_by_cell
+                    and cell not in self.pending_admitted_cells
+                )
+            ]
+            state._replace_active(
+                known, register_unknown=False
+            )
+            if self.pending_admitted_cells:
+                self.pending_post_admission_active = active
+        if any(name in flattened for name in unavailable_names):
+            unavailable = tuple(
+                flattened.get(name, ()) for name in unavailable_names
+            )
+            state.replace_unavailable(*unavailable)
+            if self.pending_admitted_cells:
+                self.pending_post_admission_unavailable = unavailable
         if completed is not None:
-            if isinstance(completed, (tuple, dict)):
-                # A single (x, y) tuple/dict is one cell, while a tuple of
-                # tuples is already a collection.
-                if isinstance(completed, dict) or (
-                    isinstance(completed, tuple)
-                    and len(completed) == 2
-                    and isinstance(completed[0], int)
-                ):
-                    completed = [completed]
+            completed = self._cell_collection(completed)
             state.complete_cells(completed)
+            if self.pending_admitted_cells:
+                self.pending_post_admission_completed = completed
         if activated is not None:
-            state.activate_cells(activated)
+            activated = self._cell_collection(activated)
+            encoded = state._normalize_cell_collection(activated)
+            self._guard_announced_unknown(encoded, "activated_tasks")
+            state.activate_cells(
+                [
+                    cell
+                    for cell in encoded
+                    if (
+                        cell in state.slot_by_cell
+                        and cell not in self.pending_admitted_cells
+                    )
+                ]
+            )
+            if self.pending_admitted_cells:
+                self.pending_post_admission_activated = activated
 
-        # The AGX snapshot is intentionally post-hook.  Event replay above
-        # therefore starts from the still-resident native pre-hook context so
-        # the timed callback sees and clears the real populated native state.
-        # Loading the authoritative post-hook checkpoint only afterwards keeps
-        # choose_goal parity fail-closed without timing USB/state translation.
-        synchronized = self._synchronize_authoritative_state(flattened)
-        if synchronized:
-            # Messages created while replaying already-authoritative inputs are
-            # setup artifacts.  The synchronized pending cache below is the
-            # sole source of pre-call outbound deltas.
-            state.drain_messages()
-            if saw_allocation_epoch:
-                self.epoch_reallocation_pending = True
+        # Frozen state translation and transport decoding stay outside W_alloc.
+        # The queued callbacks still execute inside the timer, on top of this
+        # authoritative checkpoint.  Consensus messages are idempotent under
+        # the protocol timestamps/ownership rules used by the four algorithms.
+        self._synchronize_authoritative_state(flattened)
 
         deleted = delta.get("delete", {})
         if isinstance(deleted, dict):
@@ -824,24 +936,131 @@ class PersistentCollaborativeRuntime:
         if sequence is not None:
             self.last_delta_sequence = sequence
 
+    def _drain_allocator_events(self):
+        """Execute queued callbacks as the first part of W_alloc."""
+
+        state = self.state
+        events = self.pending_allocator_events
+        self.pending_allocator_events = []
+        choose_counter = int(state.event_counter)
+        saw_epoch = False
+        allocation_reason = ""
+        recovery_requested = False
+        recovery_applied = False
+        for kind, payload, event_counter in events:
+            state.event_counter = int(event_counter)
+            try:
+                if kind == "allocator_message":
+                    self.allocator.handle_message(payload)
+                elif kind in ("allocation_epoch", "__allocator_admission__"):
+                    epoch_index = int(payload.get("epoch_index", -1))
+                    reason = str(payload.get("trigger_reason", ""))
+                    admitted = payload.get("admitted_cells", ())
+                    state.activate_cells(admitted)
+                    for encoded in state._normalize_cell_collection(admitted):
+                        slot = state.slot_by_cell.get(encoded)
+                        if slot is not None:
+                            state.unavailable[slot] = 0
+                    if state.apply_allocation_epoch(
+                        epoch_index, reason, admitted
+                    ):
+                        saw_epoch = True
+                        allocation_reason = reason
+                        state.active_allocation_reason = reason
+                        self.allocator.on_allocation_epoch(
+                            reason, admitted, epoch_index
+                        )
+                elif kind in (
+                    "recover_stalled_allocation",
+                    "allocator_recovery",
+                    "stalled_recovery",
+                ):
+                    recovery_requested = True
+                    recovery_applied = bool(
+                        self.allocator.recover_stalled_allocation(payload)
+                    ) or recovery_applied
+                elif kind == "allocator_task_completed":
+                    if not isinstance(payload, dict) or "cell" not in payload:
+                        raise TypeError(
+                            "allocator task completion requires a cell payload"
+                        )
+                    completion_hook = getattr(
+                        self.allocator, "on_task_completed", None
+                    )
+                    if callable(completion_hook):
+                        completion_hook(
+                            payload["cell"],
+                            payload.get("reason", ""),
+                            bool(payload.get("local", False)),
+                        )
+                    state.complete_cells([payload["cell"]])
+                elif kind in (
+                    "on_collision_avoidance_activated",
+                    "collision_avoidance",
+                ):
+                    state.set_collision(True)
+            finally:
+                state.event_counter = choose_counter
+
+        # Reconcile only after all ordered callbacks.  This covers a task that
+        # was announced and completed before the same choose transaction while
+        # ensuring the coordinate first entered state through the announcement.
+        if self.pending_post_admission_active is not None:
+            state._replace_active(
+                self.pending_post_admission_active,
+                register_unknown=False,
+            )
+        if self.pending_post_admission_unavailable is not None:
+            state.replace_unavailable(
+                *self.pending_post_admission_unavailable
+            )
+        if self.pending_post_admission_completed is not None:
+            state.complete_cells(self.pending_post_admission_completed)
+        if self.pending_post_admission_activated is not None:
+            state.activate_cells(self.pending_post_admission_activated)
+        if self.pending_post_admission_probabilities is not None:
+            state.update_probabilities(
+                self.pending_post_admission_probabilities
+            )
+
+        self.pending_admitted_cells = set()
+        self.pending_post_admission_active = None
+        self.pending_post_admission_unavailable = None
+        self.pending_post_admission_completed = None
+        self.pending_post_admission_activated = None
+        self.pending_post_admission_probabilities = None
+        self.pending_message_sequences = {}
+        return (
+            saw_epoch,
+            recovery_requested,
+            recovery_applied,
+            allocation_reason,
+        )
+
     def choose_goal(self):
-        """Run allocation; the shared worker supplies the outer total timer."""
+        """Run the complete allocator transaction under the worker timer."""
 
         self._require_trial()
         state = self.state
         state.begin_allocator_call()
         self._pre_choose_path = list(self.allocator.path)
-        self._pre_choose_claims = [
-            (
-                int(state.claim_owner[slot]),
-                float(state.claim_value[slot]),
-                int(state.claim_epoch[slot]),
-            )
-            for slot in range(len(state.targets))
-        ]
-        epoch_reallocation = bool(self.epoch_reallocation_pending)
-        goal = self.allocator.choose()
+        (
+            saw_epoch,
+            recovery_requested,
+            recovery_applied,
+            allocation_reason,
+        ) = (
+            self._drain_allocator_events()
+        )
+        epoch_reallocation = bool(
+            saw_epoch or self.epoch_reallocation_pending
+        )
+        try:
+            goal = self.allocator.choose()
+        finally:
+            state.active_allocation_reason = ""
         self.last_call_had_epoch_reallocation = epoch_reallocation
+        self.last_call_had_recovery = recovery_requested
         self.epoch_reallocation_pending = False
         self.call_index += 1
         self._post_choose_path = list(self.allocator.path)
@@ -855,6 +1074,9 @@ class PersistentCollaborativeRuntime:
                 "call_index": int(self.call_index - 1),
                 "call_path": self.allocator.last_call_path,
                 "allocation_epoch_reallocation": epoch_reallocation,
+                "recovery_requested": recovery_requested,
+                "recovery_applied": recovery_applied,
+                "trigger_reason": allocation_reason,
                 "allocation_epoch_index": int(
                     state.last_allocation_epoch_index
                 ),
@@ -1040,7 +1262,9 @@ class PersistentCollaborativeRuntime:
                     and cell in path_index
                 ):
                     message["order"] = path_index[cell]
-                    message["bundle_cells"] = list(path_cells)
+                    # All entries describe one immutable snapshot; sharing the
+                    # list avoids O(n^2) resident references before streaming.
+                    message["bundle_cells"] = path_cells
                     message["bundle_size"] = len(path_cells)
             messages = sorted(
                 messages,
@@ -1113,9 +1337,13 @@ class PersistentCollaborativeRuntime:
                     self.allocator.last_call_path
                     if "collision" in str(self.allocator.last_call_path)
                     else (
-                        "allocation_epoch"
-                        if self.last_call_had_epoch_reallocation
-                        else self.allocator.last_call_path
+                        "allocator_recovery"
+                        if self.last_call_had_recovery
+                        else (
+                            "allocation_epoch"
+                            if self.last_call_had_epoch_reallocation
+                            else self.allocator.last_call_path
+                        )
                     )
                 ),
                 "pending_messages": [],
@@ -1189,9 +1417,9 @@ class PersistentCollaborativeRuntime:
         return self.state
 
     def algorithm_epoch_reset_time_us(self):
-        """Policy-induced allocator callback time awaiting the next call."""
+        """Legacy timing component; admission ingestion is intentionally zero."""
 
-        return max(0, int(self.pending_algorithm_epoch_reset_us))
+        return 0
 
     def candidate_counts(self):
         self._require_trial()
@@ -1202,7 +1430,10 @@ class PersistentCollaborativeRuntime:
 
     def call_class(self):
         self._require_trial()
-        if self.last_call_had_epoch_reallocation:
+        if (
+            self.last_call_had_epoch_reallocation
+            or self.last_call_had_recovery
+        ):
             return "full_allocation_solve"
         path = str(self.allocator.last_call_path)
         if self.algorithm in ("DGA", "DMCHBA") and path in (

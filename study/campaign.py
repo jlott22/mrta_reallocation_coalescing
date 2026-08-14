@@ -46,6 +46,7 @@ ALLOWED_TRIGGER_REASONS = {
     "task_arrival_eager",
     "batch_threshold",
     "age_timeout",
+    "terminal_residual",
     "final_release_flush",
     "initial_allocation",
     "robot_idle",
@@ -55,11 +56,16 @@ ALLOWED_TRIGGER_REASONS = {
     "consensus",
     "internal",
     "stalled_recovery",
+    "allocator_message",
+    "peer_state_update",
+    "peer_task_completion",
+    "quarantine_expired",
     "other",
 }
 
 ARRIVAL_TRIGGER_REASONS = {
-    "task_arrival_eager", "batch_threshold", "age_timeout", "final_release_flush",
+    "task_arrival_eager", "batch_threshold", "age_timeout",
+    "terminal_residual", "final_release_flush",
 }
 
 REQUIRED_SUMMARY_INTEGER_METRICS = {
@@ -708,14 +714,30 @@ def _validate_epoch_output(
         raise OutputValidationError("trigger_reason_counts disagrees with epoch rows")
     if "allocator_call_ids" in fields:
         expected_calls = _integer(summary["allocator_call_count"], "allocator_call_count")
-        if len(allocator_call_ids) != expected_calls:
-            raise OutputValidationError("allocator_call_count disagrees with epoch call IDs")
-    _close(
-        allocator_time_s,
-        _finite_number(summary["cumulative_allocator_time_s"], "cumulative_allocator_time_s"),
-        "cumulative_allocator_time_s",
+        if len(allocator_call_ids) > expected_calls:
+            raise OutputValidationError(
+                "epoch call IDs exceed the reported allocator call count"
+            )
+    else:
+        expected_calls = _integer(summary["allocator_call_count"], "allocator_call_count")
+    cumulative_allocator_time_s = _finite_number(
+        summary["cumulative_allocator_time_s"], "cumulative_allocator_time_s"
     )
-    return {"epoch_count": len(rows)}
+    if len(allocator_call_ids) == expected_calls:
+        _close(
+            allocator_time_s,
+            cumulative_allocator_time_s,
+            "cumulative_allocator_time_s",
+        )
+    elif allocator_time_s > cumulative_allocator_time_s + 1e-8:
+        raise OutputValidationError(
+            "admission-epoch allocator time exceeds total allocator time"
+        )
+    return {
+        "epoch_count": len(rows),
+        "admission_associated_allocator_call_count": len(allocator_call_ids),
+        "autonomous_allocator_call_count": expected_calls - len(allocator_call_ids),
+    }
 
 
 def validate_job_outputs(job: CampaignJob, directory: Path) -> dict[str, Any]:
@@ -857,6 +879,12 @@ def validate_job_outputs(job: CampaignJob, directory: Path) -> dict[str, Any]:
         "task_count": task_metrics["task_count"],
         "completed_task_count": completed_count,
         "epoch_count": epoch_metrics["epoch_count"],
+        "admission_associated_allocator_call_count": epoch_metrics[
+            "admission_associated_allocator_call_count"
+        ],
+        "autonomous_allocator_call_count": epoch_metrics[
+            "autonomous_allocator_call_count"
+        ],
         "all_tasks_completed": completed_value,
         "algorithmic_status": "completed" if completed_value else "incomplete",
         "algorithmic_failure_type": (

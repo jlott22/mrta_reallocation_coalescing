@@ -1,65 +1,46 @@
 {
   "manifest": {
-    "manifest_set_id": "collaborative_visit_g19_t50_n25_calibrated_v2",
+    "manifest_set_id": "collaborative_visit_g19_t50_n5_corrected_pilot_v1",
     "root": "study/generated/manifests",
-    "master_seed": 20260808,
-    "trace_count": 25,
+    "master_seed": 2026081401,
+    "trace_count": 5,
     "grid_size": 19,
     "robot_count": 4,
     "task_count": 50,
     "initial_task_count": 8,
     "arrival_loads": {
-      "low": 0.075,
-      "medium": 0.3,
-      "high": 1.2
+      "rate_003": 0.03,
+      "rate_0075": 0.075,
+      "rate_015": 0.15,
+      "rate_03": 0.3,
+      "rate_06": 0.6,
+      "rate_12": 1.2,
+      "rate_24": 2.4
     },
     "arrival_rate_units": "tasks_per_mission_second",
-    "design_status": "calibrated_from_pilots_d_and_e"
+    "design_status": "corrected_message_driven_strict_bound_pilot"
   },
   "campaign": {
-    "campaign_id": "agx_pilot_v2_calibrated",
-    "output_root": "study/output/agx_pilot_v2_calibrated",
-    "algorithms": [
-      "CBAA",
-      "ACBBA",
-      "PI",
-      "HIPC"
-    ],
+    "campaign_id": "corrected_architecture_rate_pilot_v1",
+    "output_root": "study/output/corrected_architecture_rate_pilot_v1",
+    "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
     "loads": [
-      "low",
-      "medium",
-      "high"
+      "rate_003",
+      "rate_0075",
+      "rate_015",
+      "rate_03",
+      "rate_06",
+      "rate_12",
+      "rate_24"
     ],
     "policies": [
-      {
-        "policy_id": "eager_b1",
-        "mode": "eager",
-        "batch_size": 1
-      },
-      {
-        "policy_id": "count_b2",
-        "mode": "count",
-        "batch_size": 2
-      },
-      {
-        "policy_id": "count_b4",
-        "mode": "count",
-        "batch_size": 4
-      },
-      {
-        "policy_id": "count_b8",
-        "mode": "count",
-        "batch_size": 8
-      },
-      {
-        "policy_id": "bounded_b4_w5",
-        "mode": "bounded",
-        "batch_size": 4,
-        "max_pending_age_s": 5.0
-      }
+      {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1},
+      {"policy_id": "count_b4", "mode": "count", "batch_size": 4}
     ],
     "trace_limit": 3,
-    "max_workers": 4,
+    "max_workers": 6,
+    "schedule_seed": 2026081402,
+    "allow_dirty": true,
     "required_outputs": [
       "trial_summary.json",
       "task_events.csv",
@@ -67,8 +48,8 @@
     ],
     "runner": {
       "module": "known_visit_sim.run_online_trials",
-      "extra_args": []
+      "extra_args": ["--timing-mode", "agx_host_proxy"]
     },
-    "notes": "Three paired smoke traces across all four core allocators using Pilot-D/E calibrated rates and W=5 s."
+    "notes": "Replacement rate-screening stage on the corrected strict-bound, message-only, non-destructive, event-driven architecture. Three of five fresh paired traces; seven candidate loads; paired Eager and Count B4; six rolling host-measured workers."
   }
 }

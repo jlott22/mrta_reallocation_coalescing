@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from allocator_replay.capture.codec import canonical_json_bytes, decode_value
+from allocator_replay.host.transport import compact_causal_events
 
 from .binding import BoardFingerprint, BoardLease, StableBoardBinding
 from .errors import (
@@ -33,6 +34,13 @@ from .types import (
 
 
 PERSISTENT_EVENT_BATCH_BYTES = 768
+DEVICE_ALLOCATOR_TIMER_SCOPE = (
+    "allocator input integration, consensus message handling, "
+    "allocator-local recovery, and choose_goal; excludes transport, "
+    "message decoding, generic PSETUP synchronization, outbound extraction, "
+    "serialization, and explicit pre-call GC; GC triggered naturally inside "
+    "the allocator transaction remains included"
+)
 
 
 def persistent_event_batches(
@@ -51,7 +59,12 @@ def persistent_event_batches(
     batches: list[list[Mapping[str, Any]]] = []
     for event in events:
         batch = [event]
-        encoded_size = len(canonical_json_bytes(batch))
+        # The transport sends the lossless compact representation and streams
+        # it in bounded PART chunks.  Bound that actual wire form rather than
+        # rejecting a verbose 50-cell path/bundle that compacts below 768 B.
+        encoded_size = len(
+            canonical_json_bytes(compact_causal_events(batch))
+        )
         if encoded_size > max_bytes:
             raise ValueError(
                 "persistent callback event exceeds bounded setup payload: "
@@ -789,13 +802,7 @@ class CausalBoardSession:
         attestation: dict[str, Any] | None = None
         attestation_sha256 = ""
         host_serialization_setup_measured = False
-        device_allocator_timer_scope = (
-            "choose_goal plus policy-induced on_allocation_epoch allocator "
-            "callback; excludes generic PSETUP state synchronization, USB, "
-            "explicit pre-call GC, and post-call result serialization; GC "
-            "triggered naturally inside either measured allocator operation "
-            "remains included"
-        )
+        device_allocator_timer_scope = DEVICE_ALLOCATOR_TIMER_SCOPE
         serial_roundtrip_definition = (
             "PSETUP transaction wall plus PTIME/result transaction wall; "
             "includes USB/protocol and device-side work and is excluded "

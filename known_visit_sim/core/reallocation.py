@@ -4,11 +4,13 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from math import ceil, isfinite
 from statistics import mean, median
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, TYPE_CHECKING, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, TYPE_CHECKING, Union
 
 from .types import Cell, TrialScenario
+from .timing import DEVICE_ALLOCATOR_TIMER_SCOPE
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from known_visit_sim.comms.bus import MessageBus
     from .robot import RobotShell
     from .scheduler import TrialState
     from .world import World
@@ -228,6 +230,8 @@ class AllocatorCallRecord:
     device_message_sha256: str = ""
     device_post_state_sha256: str = ""
     call_class: str = "allocator_call"
+    allocator_input_event_count: int = 0
+    recovery_invoked: bool = False
     board_id: str = ""
     serial_device: str = ""
     attempt_id: str = ""
@@ -252,6 +256,9 @@ class AllocatorCallRecord:
             )
         self.timing_decomposition_schema = max(
             0, int(self.timing_decomposition_schema)
+        )
+        self.allocator_input_event_count = max(
+            0, int(self.allocator_input_event_count)
         )
         if self.device_allocator_duration_ns is None:
             self.device_allocator_duration_ns = self.duration_ns
@@ -413,6 +420,8 @@ class AllocationEpoch:
     called_robot_ids: List[str] = field(default_factory=list)
     allocator_time_ns: int = 0
     closed_time_s: Optional[float] = None
+    terminal_residual: bool = False
+    announcement_delivery_time_s_by_robot: Dict[str, float] = field(default_factory=dict)
 
     @property
     def admitted_count(self) -> int:
@@ -424,6 +433,9 @@ class AllocationEpoch:
         row["allocator_time_s"] = self.allocator_time_ns / 1_000_000_000.0
         row["initial_call_phase_completed_time_s"] = self.closed_time_s
         row["closure_semantics"] = "first_expected_allocator_call_per_robot_not_consensus_convergence"
+        row["announcement_delivery_count"] = len(
+            self.announcement_delivery_time_s_by_robot
+        )
         return row
 
 
@@ -450,7 +462,7 @@ ARRIVAL_REASONS = {
     "task_arrival_eager",
     "batch_threshold",
     "age_timeout",
-    "final_release_flush",
+    "terminal_residual",
 }
 MANDATORY_REASONS = {"task_completion", "invalid_goal", "robot_idle"}
 
@@ -458,9 +470,15 @@ MANDATORY_REASONS = {"task_completion", "invalid_goal", "robot_idle"}
 class OnlineReallocationScheduler:
     """Global environment scheduler above otherwise unchanged allocators."""
 
-    def __init__(self, world: "World", policy: ReallocationPolicy) -> None:
+    def __init__(
+        self,
+        world: "World",
+        policy: ReallocationPolicy,
+        bus: Optional["MessageBus"] = None,
+    ) -> None:
         self.world = world
         self.policy = ReallocationPolicy.from_spec(policy)
+        self.bus = bus
         self.robots: Dict[str, "RobotShell"] = {}
         self.pending_cells: List[Cell] = []
         self.epochs: List[AllocationEpoch] = []
@@ -468,10 +486,16 @@ class OnlineReallocationScheduler:
         self.allocator_calls: List[AllocatorCallRecord] = []
         self._next_epoch_id = 1
         self._contexts: Dict[str, List[tuple[int, str]]] = {}
-        self._active_epoch_by_robot: Dict[str, int] = {}
+        self._delivered_admission_contexts: Set[tuple[str, int]] = set()
 
     def attach_robots(self, robots: Mapping[str, "RobotShell"]) -> None:
         self.robots = dict(robots)
+        if self.bus is None and self.robots:
+            self.bus = next(iter(self.robots.values())).bus
+        if self.bus is not None and any(
+            robot.bus is not self.bus for robot in self.robots.values()
+        ):
+            raise ValueError("all online robots and the scheduler must share one message bus")
         for robot in self.robots.values():
             robot.attach_reallocation_scheduler(self)
         initially_admitted = [
@@ -488,7 +512,14 @@ class OnlineReallocationScheduler:
                 admitted_task_ids=[record.task_id for record in initially_admitted],
                 expected_robot_ids=sorted(self.robots),
             )
-            self._set_contexts(epoch, self.robots)
+            for record in initially_admitted:
+                self.world.record_admission_metadata(
+                    record.cell, epoch.epoch_id, epoch.trigger_reason, False
+                )
+            self._broadcast_admission(
+                epoch,
+                [record.cell for record in initially_admitted],
+            )
 
     @property
     def pending_count(self) -> int:
@@ -532,15 +563,34 @@ class OnlineReallocationScheduler:
             self._sample(now_s, "release")
         if not due:
             return None
+        epochs: List[AllocationEpoch] = []
         if self.policy.mode == "eager":
-            return self._admit_pending(now_s, "task_arrival_eager", mandatory=False)
-        if self.pending_count >= self.policy.batch_size:
-            return self._admit_pending(now_s, "batch_threshold", mandatory=False)
-        # The final exogenous release is an explicit deterministic tail flush;
-        # pure count batching therefore cannot strand fewer than B tasks.
-        if self.unreleased_count == 0:
-            return self._admit_pending(now_s, "final_release_flush", mandatory=False)
-        return None
+            while self.pending_cells:
+                epochs.append(
+                    self._admit_pending(
+                        now_s,
+                        "task_arrival_eager",
+                        mandatory=False,
+                        limit=1,
+                    )
+                )
+        else:
+            # A threshold epoch contains exactly B tasks.  Simultaneous bursts
+            # may therefore create multiple epochs at the same timestamp while
+            # preserving a final sub-B residual in the pending queue.
+            while self.pending_count >= self.policy.batch_size:
+                epochs.append(
+                    self._admit_pending(
+                        now_s,
+                        "batch_threshold",
+                        mandatory=False,
+                        limit=self.policy.batch_size,
+                    )
+                )
+        terminal = self.maybe_admit_terminal_residual(now_s)
+        if terminal is not None:
+            epochs.append(terminal)
+        return epochs[-1] if epochs else None
 
     def timeout_due(self, now_s: float) -> Optional[AllocationEpoch]:
         deadline = self.next_timeout_s()
@@ -554,17 +604,15 @@ class OnlineReallocationScheduler:
         reason: str,
         source_robot_id: Optional[str] = None,
     ) -> AllocationEpoch:
-        """Open one logical epoch for a genuine pre-existing mission event.
+        """Open a bookkeeping epoch without altering pending-task admission.
 
-        Pending tasks are always piggybacked and therefore make the epoch
-        global. A task completion is global even without pending work; a local
-        invalid-goal event expects only its source robot.
+        This compatibility API records genuine robot events.  Completion,
+        invalid-goal, and idle events never bypass B or W and never expose
+        pending tasks.
         """
 
         if reason not in MANDATORY_REASONS:
             raise ValueError(f"unsupported mandatory trigger reason: {reason}")
-        if self.pending_cells:
-            return self._admit_pending(float(now_s), reason, mandatory=True)
         expected = (
             [str(source_robot_id)]
             if source_robot_id is not None
@@ -577,13 +625,62 @@ class OnlineReallocationScheduler:
         )
         selected = {rid: self.robots[rid] for rid in expected if rid in self.robots}
         self._set_contexts(epoch, selected)
-        if reason == "task_completion":
-            # Peer consensus calls caused by this completion attach to the
-            # same logical epoch, but only the newly idle source robot is a
-            # mandatory first-round participant.
-            for rid in self.robots:
-                self._active_epoch_by_robot[rid] = epoch.epoch_id
         return epoch
+
+    def register_admission_delivery(
+        self,
+        robot_id: str,
+        epoch_id: int,
+        trigger_reason: Optional[str] = None,
+        delivered_at_s: Optional[float] = None,
+    ) -> bool:
+        """Register allocator context only after a robot receives an announcement.
+
+        The environment may know that an epoch exists when it is opened, but a
+        robot cannot act on that epoch until its reliable task-admission message
+        crosses the bus delivery boundary. Duplicate delivery registration is
+        idempotent.
+        """
+
+        rid = str(robot_id)
+        if rid not in self.robots:
+            raise KeyError(f"unknown robot for admission delivery: {rid}")
+        epoch = self.epoch_by_id(int(epoch_id))
+        if epoch is None or not epoch.admitted_task_ids:
+            raise ValueError("admission delivery must reference an admission epoch")
+        if rid not in epoch.expected_robot_ids:
+            raise ValueError(f"robot {rid} is not expected for epoch {epoch.epoch_id}")
+        if trigger_reason is not None and str(trigger_reason) != epoch.trigger_reason:
+            raise ValueError("admission delivery trigger reason does not match epoch")
+        key = (rid, epoch.epoch_id)
+        if key in self._delivered_admission_contexts:
+            return False
+        self._delivered_admission_contexts.add(key)
+        self._contexts.setdefault(rid, []).append(
+            (epoch.epoch_id, epoch.trigger_reason)
+        )
+        epoch.announcement_delivery_time_s_by_robot[rid] = float(
+            epoch.opened_time_s if delivered_at_s is None else delivered_at_s
+        )
+        return True
+
+    def note_admission_received(
+        self,
+        robot_id: str,
+        epoch_id: int,
+        trigger_reason: Optional[str] = None,
+    ) -> bool:
+        """Compatibility name used by ``RobotShell`` at message receipt."""
+
+        rid = str(robot_id)
+        robot = self.robots.get(rid)
+        delivered_at_s = getattr(robot, "_now", None)
+        return self.register_admission_delivery(
+            rid,
+            epoch_id,
+            trigger_reason,
+            delivered_at_s=delivered_at_s,
+        )
 
     def before_allocator_call(
         self, robot: "RobotShell", now_s: float, reason: str
@@ -593,28 +690,11 @@ class OnlineReallocationScheduler:
             context = contexts.pop(0)
             if not contexts:
                 self._contexts.pop(robot.rid, None)
-            self._active_epoch_by_robot[robot.rid] = context[0]
             return context
-        # Pending arrivals may piggyback only on a genuine mandatory call.
-        # Consensus/internal polling must never bypass B or W.
-        # Completion and invalid-goal triggers are opened at their concrete
-        # event source via ``mandatory_event``.  Only a transition to a truly
-        # idle robot is discovered here; peer completion inference and
-        # consensus retries must not create duplicate mandatory epochs.
-        if self.pending_cells and reason == "robot_idle":
-            epoch = self._admit_pending(float(now_s), reason, mandatory=True)
-            contexts = self._contexts.get(robot.rid, [])
-            if contexts:
-                context = contexts.pop(0)
-                if not contexts:
-                    self._contexts.pop(robot.rid, None)
-                self._active_epoch_by_robot[robot.rid] = context[0]
-                return context
-            return epoch.epoch_id, epoch.trigger_reason
-        # Intrinsic consensus/retry calls remain part of the most recent
-        # logical trigger epoch. Calls before any trigger are intentionally
-        # unassociated rather than fabricating polling epochs.
-        return self._active_epoch_by_robot.get(robot.rid), str(reason)
+        # Consensus, completion, invalid-goal, and recovery calls are
+        # autonomous agent activity. They retain their causal reason and are
+        # never charged to the most recent admission epoch.
+        return None, str(reason)
 
     def record_allocator_call(
         self,
@@ -659,14 +739,56 @@ class OnlineReallocationScheduler:
     def has_queued_context(self, robot_id: str) -> bool:
         return bool(self._contexts.get(str(robot_id)))
 
-    def _admit_pending(self, now_s: float, reason: str, mandatory: bool) -> AllocationEpoch:
+    def maybe_admit_terminal_residual(
+        self, now_s: float
+    ) -> Optional[AllocationEpoch]:
+        """Admit the sole sub-bound residual after all prior work is complete."""
+
+        if not self.pending_cells or self.unreleased_count != 0:
+            return None
+        admitted = [
+            record
+            for record in self.world.target_records.values()
+            if record.admission_time_s is not None
+        ]
+        if any(not record.completed for record in admitted):
+            return None
+        if (
+            self.policy.mode in {"count", "bounded"}
+            and self.pending_count >= self.policy.batch_size
+        ):
+            raise AssertionError(
+                "a full threshold batch remained pending until terminal drain"
+            )
+        return self._admit_pending(
+            float(now_s),
+            "terminal_residual",
+            mandatory=False,
+            terminal_residual=True,
+        )
+
+    # Readable alias for event-loop call sites.
+    terminal_residual_due = maybe_admit_terminal_residual
+
+    def _admit_pending(
+        self,
+        now_s: float,
+        reason: str,
+        mandatory: bool,
+        *,
+        limit: Optional[int] = None,
+        terminal_residual: bool = False,
+    ) -> AllocationEpoch:
         if not self.pending_cells:
             raise RuntimeError("cannot open an admission epoch with an empty pending queue")
         pending_depth = self.pending_count
         oldest_age = self.oldest_pending_age_s(now_s)
         self._sample(now_s, f"trigger:{reason}")
-        cells = list(self.pending_cells)
-        self.pending_cells.clear()
+        admission_count = self.pending_count if limit is None else int(limit)
+        if admission_count <= 0 or admission_count > self.pending_count:
+            raise ValueError("admission limit must select at least one pending task")
+        cells = list(self.pending_cells[:admission_count])
+        del self.pending_cells[:admission_count]
         for cell in cells:
             self.world.admit_task(cell, now_s)
         task_ids = [self.world.target_records[cell].task_id for cell in cells]
@@ -678,13 +800,39 @@ class OnlineReallocationScheduler:
             oldest_age_s=oldest_age,
             admitted_task_ids=task_ids,
             expected_robot_ids=sorted(self.robots),
-            piggybacked_pending=mandatory,
+            piggybacked_pending=False,
+            terminal_residual=terminal_residual,
         )
-        for robot in self.robots.values():
-            robot.admit_tasks(cells, epoch.epoch_id, reason)
-        self._set_contexts(epoch, self.robots)
+        for cell in cells:
+            self.world.record_admission_metadata(
+                cell,
+                epoch.epoch_id,
+                epoch.trigger_reason,
+                terminal_residual,
+            )
+        self._broadcast_admission(epoch, cells)
         self._sample(now_s, f"admit:{reason}")
         return epoch
+
+    def _broadcast_admission(
+        self, epoch: AllocationEpoch, cells: Sequence[Cell]
+    ) -> None:
+        if self.bus is None:
+            raise RuntimeError("online task admission requires a message bus")
+        task_ids = [self.world.target_records[cell].task_id for cell in cells]
+        self.bus.publish_task_admission(
+            {
+                "type": "task_admission",
+                "epoch_index": int(epoch.epoch_id),
+                "epoch_id": int(epoch.epoch_id),
+                "trigger_reason": str(epoch.trigger_reason),
+                "admission_time_s": float(epoch.opened_time_s),
+                "admitted_cells": [list(cell) for cell in cells],
+                "task_ids": list(task_ids),
+                "terminal_residual": bool(epoch.terminal_residual),
+            },
+            epoch.opened_time_s,
+        )
 
     def _open_epoch(
         self,
@@ -696,6 +844,7 @@ class OnlineReallocationScheduler:
         admitted_task_ids: List[Any],
         expected_robot_ids: List[str],
         piggybacked_pending: bool = False,
+        terminal_residual: bool = False,
     ) -> AllocationEpoch:
         epoch = AllocationEpoch(
             epoch_id=self._next_epoch_id,
@@ -707,6 +856,7 @@ class OnlineReallocationScheduler:
             oldest_pending_age_s=float(oldest_age_s),
             admitted_task_ids=list(admitted_task_ids),
             expected_robot_ids=list(expected_robot_ids),
+            terminal_residual=bool(terminal_residual),
         )
         self._next_epoch_id += 1
         self.epochs.append(epoch)
@@ -714,7 +864,6 @@ class OnlineReallocationScheduler:
 
     def _set_contexts(self, epoch: AllocationEpoch, robots: Mapping[str, "RobotShell"]) -> None:
         for rid in robots:
-            self._active_epoch_by_robot[str(rid)] = epoch.epoch_id
             self._contexts.setdefault(str(rid), []).append(
                 (epoch.epoch_id, epoch.trigger_reason)
             )
@@ -754,6 +903,24 @@ def build_online_metrics(state: "TrialState") -> dict:
         record.first_completion_time_s - record.released_time_s
         for record in completed
         if record.released_time_s is not None
+    ]
+    release_to_current_goal = [
+        record.first_current_goal_time_s - record.released_time_s
+        for record in records
+        if record.first_current_goal_time_s is not None
+        and record.released_time_s is not None
+    ]
+    admission_to_current_goal = [
+        record.first_current_goal_time_s - record.admission_time_s
+        for record in records
+        if record.first_current_goal_time_s is not None
+        and record.admission_time_s is not None
+    ]
+    announcement_receipt_latencies = [
+        receipt_s - record.admission_time_s
+        for record in records
+        if record.admission_time_s is not None
+        for receipt_s in record.knowledge_receipt_time_s_by_robot.values()
     ]
     queue = scheduler.queue_samples if scheduler is not None else []
     epochs = scheduler.epochs if scheduler is not None else []
@@ -797,6 +964,17 @@ def build_online_metrics(state: "TrialState") -> dict:
     total_steps = sum(robot.counters.steps_total for robot in state.robots.values())
     assignment_mean = mean(release_to_assignment) if release_to_assignment else 0.0
     completion_mean = mean(release_to_completion) if release_to_completion else 0.0
+    current_goal_mean = (
+        mean(release_to_current_goal) if release_to_current_goal else 0.0
+    )
+    hardware_call_count = sum(call.hardware_validated for call in calls)
+    hardware_validated = bool(calls) and hardware_call_count == len(calls)
+    recovery_attempt_count = sum(call.recovery_invoked for call in calls)
+    recovery_state_change_count = sum(
+        int(getattr(robot, "_stall_recovery_count", 0))
+        for robot in state.robots.values()
+    )
+    bus = state.bus.counters
     return {
         "trial_id": state.scenario.trial_id,
         "all_tasks_completed": all_tasks_completed,
@@ -814,11 +992,19 @@ def build_online_metrics(state: "TrialState") -> dict:
         "release_time_axis": "absolute_causal_mission_time_s",
         "execution_time_accounting": "causal_event_clock_includes_overlapping_per_robot_compute_and_explicit_movement",
         "cumulative_allocator_time_s": allocator_time_s,
+        "device_allocator_processor_work_s": allocator_time_s,
+        "device_allocator_measurement_source": str(
+            getattr(state, "timing_provider_name", "")
+        ),
+        "device_allocator_hardware_validated": hardware_validated,
+        "hardware_validated_allocator_call_count": hardware_call_count,
         "rp2040_allocator_processor_work_s": allocator_time_s,
         "rp2040_choose_goal_processor_work_s": rp2040_choose_goal_s,
         "rp2040_epoch_reset_processor_work_s": rp2040_epoch_reset_s,
         "W_alloc_rp2040_s": allocator_time_s,
         "allocator_time_aggregation": "sum_of_valid_device_allocator_durations_processor_seconds",
+        "allocator_processor_timer_scope": DEVICE_ALLOCATOR_TIMER_SCOPE,
+        "allocator_processor_timer_excludes_messaging": True,
         "cumulative_agx_allocator_time_s": agx_allocator_time_s,
         "agx_allocator_processor_work_s": agx_allocator_time_s,
         "agx_choose_goal_processor_work_s": agx_choose_goal_s,
@@ -841,6 +1027,40 @@ def build_online_metrics(state: "TrialState") -> dict:
         ),
         "host_program_runtime_s": state.host_program_runtime_s,
         "allocator_call_count": len(calls),
+        "allocator_input_event_count": sum(
+            call.allocator_input_event_count for call in calls
+        ),
+        "recovery_attempt_count": recovery_attempt_count,
+        "recovery_state_change_count": recovery_state_change_count,
+        "periodic_idle_allocator_polling_enabled": False,
+        "task_knowledge_source": "authenticated_task_admission_and_peer_messages_only",
+        "messages_sent_total": bus.sent_total,
+        "messages_delivered_total": bus.delivered_total,
+        "messages_dropped_total": bus.dropped_total,
+        "core_messages_sent_total": bus.core_sent_total,
+        "allocation_messages_sent_total": bus.allocation_sent_total,
+        "logical_message_payload_bytes_sent_total": (
+            bus.payload_bytes_sent_total
+        ),
+        "logical_core_payload_bytes_sent_total": (
+            bus.core_payload_bytes_sent_total
+        ),
+        "logical_allocation_payload_bytes_sent_total": (
+            bus.allocation_payload_bytes_sent_total
+        ),
+        "logical_message_payload_bytes_delivered_total": (
+            bus.payload_bytes_delivered_total
+        ),
+        "logical_message_payload_bytes_dropped_total": (
+            bus.payload_bytes_dropped_total
+        ),
+        "logical_payload_bytes_definition": (
+            "compact canonical JSON payload before provider-specific wire "
+            "compression, framing, fan-out, or transport"
+        ),
+        "logical_payload_bytes_sent_by_topic": dict(
+            sorted(bus.payload_bytes_sent_by_topic.items())
+        ),
         "invalid_allocator_call_count": len(all_calls) - len(calls),
         "compute_group_count": int(getattr(state, "compute_group_count", 0)),
         "timing_provider": str(getattr(state, "timing_provider_name", "")),
@@ -880,9 +1100,40 @@ def build_online_metrics(state: "TrialState") -> dict:
         ),
         "processor_capacity_fraction_definition": "rp2040_processor_work_divided_by_robot_count_times_causal_mission_elapsed",
         "mean_release_to_first_assignment_latency_s": assignment_mean,
+        "first_assignment_metric_semantics": (
+            "first_allocator_plan_incorporation_or_claim; compare execution "
+            "commitment with first_current_goal metrics"
+        ),
+        "mean_release_to_first_plan_incorporation_latency_s": assignment_mean,
         "median_release_to_first_assignment_latency_s": median(release_to_assignment) if release_to_assignment else 0.0,
         "p95_release_to_first_assignment_latency_s": _percentile(release_to_assignment, 0.95),
         "max_release_to_first_assignment_latency_s": max(release_to_assignment, default=0.0),
+        "claim_or_plan_assignment_event_count": sum(
+            record.assignment_events for record in records
+        ),
+        "claim_or_plan_reassignment_count": sum(
+            max(0, record.assignment_events - 1) for record in records
+        ),
+        "mean_release_to_first_current_goal_latency_s": current_goal_mean,
+        "median_release_to_first_current_goal_latency_s": (
+            median(release_to_current_goal) if release_to_current_goal else 0.0
+        ),
+        "p95_release_to_first_current_goal_latency_s": _percentile(
+            release_to_current_goal, 0.95
+        ),
+        "max_release_to_first_current_goal_latency_s": max(
+            release_to_current_goal, default=0.0
+        ),
+        "mean_admission_to_first_current_goal_latency_s": (
+            mean(admission_to_current_goal) if admission_to_current_goal else 0.0
+        ),
+        "mean_task_announcement_delivery_latency_s": (
+            mean(announcement_receipt_latencies)
+            if announcement_receipt_latencies else 0.0
+        ),
+        "max_task_announcement_delivery_latency_s": max(
+            announcement_receipt_latencies, default=0.0
+        ),
         "mean_release_to_completion_latency_s": completion_mean,
         "median_release_to_completion_latency_s": median(release_to_completion) if release_to_completion else 0.0,
         "p95_release_to_completion_latency_s": _percentile(release_to_completion, 0.95),
@@ -899,6 +1150,18 @@ def build_online_metrics(state: "TrialState") -> dict:
         "piggybacked_admission_epoch_count": sum(epoch.piggybacked_pending for epoch in epochs),
         "timeout_trigger_count": sum(epoch.trigger_reason == "age_timeout" for epoch in epochs),
         "batch_threshold_trigger_count": sum(epoch.trigger_reason == "batch_threshold" for epoch in epochs),
+        "terminal_residual_trigger_count": sum(
+            epoch.trigger_reason == "terminal_residual" for epoch in epochs
+        ),
+        "terminal_residual_admitted_task_count": sum(
+            epoch.admitted_count for epoch in epochs if epoch.terminal_residual
+        ),
+        "ordinary_admission_epoch_count": sum(
+            bool(epoch.admitted_task_ids) and not epoch.terminal_residual
+            for epoch in epochs
+        ),
+        # Retained as a zero-valued compatibility field for readers of the
+        # superseded architecture. Final-release flushing is no longer legal.
         "final_flush_trigger_count": sum(epoch.trigger_reason == "final_release_flush" for epoch in epochs),
         "mean_pending_queue_depth": mean(sample.depth for sample in queue) if queue else 0.0,
         "max_pending_queue_depth": max((sample.depth for sample in queue), default=0),

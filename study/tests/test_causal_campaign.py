@@ -154,6 +154,13 @@ class CausalStudyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "escapes"):
             load_causal_config(self.config_path, self.root)
 
+    def test_causal_campaign_rejects_out_of_design_algorithms(self) -> None:
+        bad = self._config()
+        bad["campaign"]["algorithms"].append("DGA")
+        self.config_path.write_bytes(canonical_json_bytes(bad))
+        with self.assertRaisesRegex(ValueError, "must be exactly"):
+            load_causal_config(self.config_path, self.root)
+
     def test_external_binding_bytes_are_part_of_effective_config_hash(self) -> None:
         config = self._config()
         bindings = {"schema_version": 1, "boards": config["hardware"].pop("boards"), "core_affinities": config["hardware"].pop("core_affinities")}

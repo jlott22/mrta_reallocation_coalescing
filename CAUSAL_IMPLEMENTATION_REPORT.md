@@ -1,5 +1,10 @@
 # Causal implementation report
 
+> **Archived pre-correction implementation report.** The source has since
+> adopted the strict-bound, message-only, non-destructive architecture in
+> `docs/SIMULATION_ARCHITECTURE.md`. Results and validation recorded here must
+> not be treated as validation of the corrected rerun.
+
 Date: 2026-08-10 (America/Los_Angeles)
 
 ## Status and scope

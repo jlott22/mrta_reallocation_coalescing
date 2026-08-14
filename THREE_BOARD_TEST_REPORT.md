@@ -1,5 +1,11 @@
 # Three-board AGX test report
 
+> **Archived pre-correction hardware evidence.** This establishes historical
+> board/transport feasibility only. It does not validate the corrected
+> allocator transaction boundary, dynamic admitted-only registry, or current
+> allocator state semantics; fresh physical parity/timing is required when the
+> boards are available.
+
 Date: 2026-08-10 (America/Los_Angeles)
 
 ## Outcome

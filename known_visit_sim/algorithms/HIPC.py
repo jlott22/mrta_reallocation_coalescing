@@ -11,19 +11,52 @@ class HIPCAllocator(AllocatorBase):
 
     name = "HIPC"
 
-    # Keep bundle depth matched to the other bundle allocators for fair comparison.
-    BUNDLE_SIZE = 3
+    # Compatibility metadata only. HIPC now plans across the complete locally
+    # admitted task pool rather than imposing a fixed per-agent bundle depth.
+    BUNDLE_SIZE = None
 
     def recover_stalled_allocation(self, robot: Any) -> bool:
-        """Locally expire peer assignments after the shared stall timeout."""
+        """Expire one blocking peer claim without clearing valid local state."""
+
         self._ensure_hipc_state(robot)
-        counts = getattr(robot, "hipc_bad_prediction_count", {}) or {}
-        for peer_id in self._safe_peer_positions(robot):
-            peer_key = self._rid_key(peer_id)
-            if peer_key != self._rid_key(robot.rid):
-                counts[peer_key] = max(int(counts.get(peer_key, 0)), self.BAD_PRED_LIMIT)
+        self._clear_invalid_or_completed_cells(robot)
+        self._repair_bundle_after_consensus(robot)
+        if self._get_path(robot):
+            return True
+
+        winner_by_cell, winning_bid_by_cell = self._consensus_maps(robot)
+        bid_time_by_cell = self._bid_time_map(robot)
+        blocked_cell: Optional[Cell] = None
+        blocked_score = self.NO_BID
+        blocked_owner: Any = self.NO_WINNER
+        origin = self._robot_pos(robot)
+        for cell in self._candidate_cells(robot):
+            score = self._bid_from_reference(robot, cell, origin)
+            if self._can_claim(robot, cell, score):
+                return True
+            owner = winner_by_cell.get(cell, self.NO_WINNER)
+            if owner is self.NO_WINNER or self._same_robot_id(owner, robot.rid):
+                continue
+            if (
+                blocked_cell is None
+                or score > blocked_score + self.EPS
+                or (abs(score - blocked_score) <= self.EPS and cell < blocked_cell)
+            ):
+                blocked_cell = cell
+                blocked_score = score
+                blocked_owner = owner
+
+        if blocked_cell is None:
+            return False
+        winner_by_cell[blocked_cell] = self.NO_WINNER
+        winning_bid_by_cell[blocked_cell] = self.NO_BID
+        bid_time_by_cell[blocked_cell] = self.NO_TIME
+        counts = dict(getattr(robot, "hipc_bad_prediction_count", {}) or {})
+        owner_key = self._rid_key(blocked_owner)
+        counts[owner_key] = max(
+            int(counts.get(owner_key, 0)), self.BAD_PRED_LIMIT
+        )
         setattr(robot, "hipc_bad_prediction_count", counts)
-        self._reset_path_state(robot)
         return True
 
     # Same reward scaling as CBAA/AuctionGreedy.
@@ -61,7 +94,7 @@ class HIPCAllocator(AllocatorBase):
                 "hipc_trigger": getattr(robot, "hipc_last_reallocation_trigger", None),
                 "hipc_team_size": int(getattr(robot, "hipc_last_team_size", 1)),
                 "hipc_candidate_count": int(getattr(robot, "hipc_last_candidate_count", 0)),
-                "hipc_bundle_size": self._planning_horizon(robot, self.BUNDLE_SIZE),
+                "hipc_bundle_size": None,
                 "hipc_candidate_count_before_filter": int(getattr(robot, "candidate_count_before_filter", 0)),
                 "hipc_candidate_count_after_filter": int(getattr(robot, "candidate_count_after_filter", 0)),
                 "hipc_max_candidate_cells": getattr(robot, "max_candidate_cells", None),
@@ -96,6 +129,53 @@ class HIPCAllocator(AllocatorBase):
             return None
         return path[0]
 
+    def on_task_completed(
+        self,
+        robot: Any,
+        cell: Cell,
+        reason: str = "",
+        local: bool = False,
+    ) -> bool:
+        """Preserve a locally executed suffix; suffix-release peer completions."""
+
+        self._ensure_hipc_state(robot)
+        try:
+            completed = (int(cell[0]), int(cell[1]))
+        except Exception:
+            return False
+
+        invalidated_goal = self._current_goal(robot) == completed
+        path = self._get_path(robot)
+        bundle = self._get_bundle(robot)
+        winner_by_cell, winning_bid_by_cell = self._consensus_maps(robot)
+        bid_time_by_cell = self._bid_time_map(robot)
+        if completed in path:
+            index = path.index(completed)
+            completed_locally = bool(local) or str(reason).startswith("local")
+            if completed_locally and index == 0:
+                if self._same_robot_id(winner_by_cell.get(completed), robot.rid):
+                    winner_by_cell[completed] = self.NO_WINNER
+                    winning_bid_by_cell[completed] = self.NO_BID
+                    bid_time_by_cell[completed] = self.NO_TIME
+                released = set(
+                    getattr(robot, "hipc_pending_releases", set()) or set()
+                )
+                released.add(completed)
+                setattr(robot, "hipc_pending_releases", released)
+                setattr(robot, "hipc_path", path[1:])
+                if completed in bundle:
+                    bundle.remove(completed)
+                setattr(robot, "hipc_bundle", bundle)
+                setattr(robot, "hipc_pending_snapshot", True)
+            else:
+                self._truncate_bundle_from(robot, index)
+
+        if completed in winner_by_cell:
+            winner_by_cell[completed] = self.NO_WINNER
+            winning_bid_by_cell[completed] = self.NO_BID
+            bid_time_by_cell[completed] = self.NO_TIME
+        return invalidated_goal
+
     def _build_bundle(self, robot: Any) -> None:
         """Build this robot's HIPC bundle from a local team-level TAA."""
 
@@ -106,8 +186,7 @@ class HIPCAllocator(AllocatorBase):
         team_plan = self._run_local_team_taa(robot, team_agents, candidates)
 
         rid_key = self._rid_key(robot.rid)
-        bundle_size = self._planning_horizon(robot, self.BUNDLE_SIZE)
-        new_path = team_plan.get(rid_key, [])[:bundle_size]
+        new_path = team_plan.get(rid_key, [])
 
         setattr(robot, "hipc_last_team_size", len(team_agents))
         setattr(robot, "hipc_last_candidate_count", len(candidates))
@@ -139,7 +218,9 @@ class HIPCAllocator(AllocatorBase):
                 cells.append((-probability, distance, cell))
 
         cells.sort(key=lambda item: (item[0], item[1], item[2]))
-        return self._filter_candidate_cells(robot, [cell for _, _, cell in cells])
+        return self._unrestricted_candidate_cells(
+            robot, [cell for _, _, cell in cells]
+        )
 
     def _hipc_team_agents(self, robot: Any) -> Dict[str, Cell]:
         """
@@ -197,8 +278,7 @@ class HIPCAllocator(AllocatorBase):
         endpoint: Dict[str, Cell] = dict(team_agents)
         assigned_cells: Set[Cell] = set()
 
-        bundle_size = self._planning_horizon(robot, self.BUNDLE_SIZE)
-        max_assignments = max(1, len(team_agents) * bundle_size)
+        max_assignments = len(candidates)
 
         for _ in range(max_assignments):
             best_rid: Optional[str] = None
@@ -206,9 +286,6 @@ class HIPCAllocator(AllocatorBase):
             best_score = self.NO_BID
 
             for rid in sorted(team_agents.keys()):
-                if len(plan[rid]) >= bundle_size:
-                    continue
-
                 reference = endpoint[rid]
 
                 for cell in candidates:
@@ -262,37 +339,44 @@ class HIPCAllocator(AllocatorBase):
         return False
 
     def _replace_own_bundle_if_changed(self, robot: Any, new_path: List[Cell]) -> None:
-        """Replace this robot's own claimed bundle if the HIPC TAA changed it."""
+        """Reconcile a team plan from its first changed suffix item."""
 
         self._ensure_hipc_state(robot)
 
         old_path = self._get_path(robot)
-        bundle_size = self._planning_horizon(robot, self.BUNDLE_SIZE)
-        normalized_new = self._normalize_cell_list(list(new_path))[:bundle_size]
+        normalized_new = self._normalize_cell_list(list(new_path))
+
+        # An admission notification may expand the suffix, but it must not
+        # voluntarily recall a robot already executing a still-valid head.
+        current = self._current_goal(robot)
+        if (
+            self._is_admission_allocation(robot)
+            and current is not None
+            and current in old_path
+            and self._valid_task_cell(robot, current)
+        ):
+            normalized_new = [current] + [
+                cell for cell in normalized_new if cell != current
+            ]
 
         if tuple(old_path) == tuple(normalized_new):
             return
 
-        released = set(getattr(robot, "hipc_pending_releases", set()) or set())
-        released.update(cell for cell in old_path if cell not in normalized_new)
-        setattr(robot, "hipc_pending_releases", released)
+        common_prefix = 0
+        for old_cell, new_cell in zip(old_path, normalized_new):
+            if old_cell != new_cell:
+                break
+            common_prefix += 1
 
-        winner_by_cell, winning_bid_by_cell = self._consensus_maps(robot)
-        bid_time_by_cell = self._bid_time_map(robot)
+        if common_prefix < len(old_path):
+            # HIPC retains its native suffix-dependency rule, but valid claims
+            # before the first changed item keep their bid values/timestamps.
+            self._truncate_bundle_from(robot, common_prefix)
 
-        # Release old local self-claims. Other agents learn releases via future
-        # bundle snapshots, matching the lightweight HIPC messaging style.
-        for cell in old_path:
-            if self._same_robot_id(winner_by_cell.get(cell), robot.rid):
-                winner_by_cell[cell] = self.NO_WINNER
-                winning_bid_by_cell[cell] = self.NO_BID
-                bid_time_by_cell[cell] = self.NO_TIME
-
-        setattr(robot, "hipc_path", [])
-        setattr(robot, "hipc_bundle", [])
-
-        prefix: List[Cell] = []
-        for cell in normalized_new:
+        prefix = self._get_path(robot)
+        for cell in normalized_new[common_prefix:]:
+            if cell in prefix:
+                continue
             if not self._valid_task_cell(robot, cell):
                 continue
 

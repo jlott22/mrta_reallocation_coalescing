@@ -1,150 +1,184 @@
-# Pilot report
+# Corrected-architecture pilot report
 
-Pilot date: 2026-08-08 through 2026-08-09 (America/Los_Angeles)
+Pilot date: 2026-08-14 (America/Los_Angeles)
 
-All simulation pilots used ideal communication, unrestricted candidate sets,
-paired scenario/release manifests, and at most 16 worker processes, the exact
-`floor(0.75 * 22)` cap on the development machine. Timings are measured host
-timings, so conclusions use paired within-campaign comparisons. Raw outputs are
-ignored; compact evidence is retained under `artifacts/pilots/`.
+This pilot replaces every pre-correction pilot. Old rates, policy conclusions,
+and pilot tables must not be pooled with or used to configure the corrected
+experiment.
 
-## Pilot A: copied-source regression
+## Architecture under test
 
-The clean copied Collaborative Visit source passed its 17 original tests. One
-static scenario (scenario 0, seed 9137, ideal communication) was then replayed
-before and after the online changes. Coordinates, starts, completion, team/max
-steps, allocator call counts, and event counts remained exact for all six
-allocators:
+All retained pilot jobs used the corrected online architecture:
 
-| Algorithm | Team steps | Max steps | Calls | Events |
-| --- | ---: | ---: | ---: | ---: |
-| CBAA | 82 | 25 | 92 | 234 |
-| ACBBA | 62 | 23 | 129 | 237 |
-| PI | 68 | 23 | 107 | 227 |
-| HIPC | 61 | 31 | 242 | 355 |
-| DMCHBA | 92 | 27 | 101 | 272 |
-| DGA | 80 | 21 | 54 | 184 |
+- tasks become allocator-visible only through authenticated environment
+  messages;
+- Eager admits exactly one task and Count admits exact B-sized batches;
+- no completion, invalid-goal, idle, or allocator call can piggyback pending
+  work;
+- the sole sub-B terminal residual is admitted only after all previously
+  admitted work is physically complete;
+- admission is non-destructive and does not recall an executing robot;
+- CBAA sees the full admitted pool but retains one task, while ACBBA, PI, and
+  HIPC have no bundle cap;
+- idle robots are event-driven, with robot-owned targeted recovery; and
+- allocator processor time includes allocator input integration, consensus,
+  recovery when invoked, and goal selection, but excludes messaging and
+  transport.
 
-Allocator-duration samples were present but intentionally excluded from exact
-comparison because `perf_counter` measurements are nondeterministic. The
-machine-readable record is `artifacts/pilot_a_static_regression.json`.
+The pilot used four robots, 50 tasks, eight initial tasks, ideal communication,
+six rolling worker processes, host-measured causal timing, and a fresh immutable
+five-trace manifest set. No RP2040 result was produced by this pilot.
 
-## Pilots B and C: lifecycle and scheduler semantics
+## Pilot-discovered correction
 
-Deterministic synthetic tests covered isolated/simultaneous/rapid arrivals;
-Eager and Count B=2/4/8; bounded timeout; mandatory completion, invalid-goal,
-and true robot-idle piggyback; arrivals during active epochs; the final partial
-batch; lifecycle ordering; no pre-release service; paired determinism; and
-mission-time arithmetic.
+An initial diagnostic run exposed a CBAA feedback loop: CBAA recomputed and
+rebroadcast its retained winning bid after movement, allowing delayed old/new
+messages to oscillate indefinitely. CBAA now keeps the auction-time winning bid
+fixed until a real outbid, release, completion, or recovery event. The native
+implementation was changed identically and regression-tested. All retained
+pilot evidence was generated after this correction; pre-fix outputs are
+excluded.
 
-The tests exposed and fixed three copied-architecture assumptions in the new
-repository only:
+## Arrival-load screen
 
-1. A task released at a cell traversed before release was incorrectly excluded
-   by every allocator's historical `searched` set. Admission now reopens that
-   cell locally while retaining physical visit/revisit history.
-2. A task released under a stationary robot was not serviced because the
-   movement path had length zero. It now records assignment followed by a
-   post-admission, zero-motion completion.
-3. A delayed peer-state message created before admission could falsely prove
-   post-admission service. Peer inference now checks message creation time
-   against admission time unless world truth already records completion.
+The accepted rate screen contains 200 paired Eager/Count-B4 jobs. The first
+three fresh traces screened seven rates; two unused traces independently
+confirmed 0.6 versus 1.2 tasks per mission-second.
 
-An early rate-sweep output (`pilot_d_rate_sweep_v1`) preceded these fixes and
-was rejected as technically invalid. It was not used for calibration or copied
-into retained evidence. The corrected online suite and full simulator suite
-pass 20/20 and 37/37 tests respectively.
+| Rate | Retained jobs complete | Mean Eager epochs | Mean B4 epochs | Interpretation |
+| ---: | ---: | ---: | ---: | --- |
+| 0.030 | 24/24 | 43 | 12 | Too sparse and unnecessarily long |
+| **0.075** | **24/24** | **43** | **12** | Selected sparse/limited-coalescing load |
+| 0.150 | 24/24 | 43 | 12 | Intermediate but redundant |
+| **0.300** | **24/24** | **43** | **12** | Selected overlapping-arrival load |
+| **0.600** | **40/40** | **43** | **12** | Selected sustained-high load |
+| 1.200 | 37/40 | 43 | 11.9 | Rejected: repeated ACBBA stagnation |
+| 2.400 | 21/24 | 43 | 11.25 | Rejected: compressed arrivals and ACBBA stagnation |
 
-## Pilot D: arrival-rate calibration
+The corrected Count-B4 epoch count is intentionally almost invariant: eight
+initial tasks, ten exact four-task online batches, and one final two-task
+terminal residual produce 12 epochs. This is evidence that the bound is now
+actually enforced, not evidence that load has no effect. Load changes the wait
+for those epochs, overlap with execution, allocator contention, and latency.
 
-The corrected sweep ran 280 semantically validated jobs: seven candidate rates,
-five paired traces, all four core allocators, and Eager versus Count B=4. Every
-job completed all 50 tasks.
+The selected common loads are **0.075, 0.30, and 0.60 tasks per
+mission-second**. In the broader policy sweep, low and medium completed 96/96
+jobs each; high completed 94/96. Both high-load incomplete jobs were ACBBA
+stagnation outcomes. They remain retained as algorithmic outcomes rather than
+being silently deleted.
 
-| Rate (tasks/mission-s) | Eager epochs | B4 epochs | Eager compute (s) | B4 compute (s) | Eager assignment (s) | B4 assignment (s) | B4 max queue |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0.030 | 92.60 | 80.60 | 0.7885 | 0.8269 | 0.353 | 1.829 | 1.90 |
-| **0.075 (low)** | 92.30 | 64.80 | 0.6682 | 0.7272 | 0.423 | 3.729 | 3.10 |
-| 0.150 | 92.25 | 58.05 | 0.5392 | 0.5042 | 0.651 | 3.795 | 4.00 |
-| **0.300 (medium)** | 92.05 | 53.70 | 0.4759 | 0.3581 | 1.375 | 3.454 | 3.95 |
-| 0.600 | 92.00 | 54.45 | 0.7758 | 0.5226 | 4.972 | 6.170 | 4.00 |
-| **1.200 (high)** | 92.00 | 56.05 | 1.3632 | 0.8322 | 10.042 | 9.984 | 4.00 |
-| 2.400 | 92.05 | 58.40 | 1.6424 | 0.9856 | 13.616 | 14.127 | 4.00 |
+A focused zero-time diagnostic then reran ACBBA at 0.6 across all eight pilot
+policies and all three traces. It completed 24/24, including the two cells that
+were incomplete under host-measured timing. The selected high load therefore
+does not create a structural zero-time deadlock; it exposes sensitivity to real
+compute delay and its effect on consensus event ordering.
 
-The selected common rates are 0.075, 0.30, and 1.20 tasks per mission-second.
-At 0.075, batching opportunities are limited and B4 can increase calls/compute;
-this is retained unfavorable evidence. At 0.30 the threshold is consistently
-reached while all missions remain healthy. At 1.20 overlap and allocator
-pressure are strong, yet every condition completes. Rate 2.40 releases almost
-the entire online set during the opening phase and was rejected as less
-representative of a continuously online mission.
+## Policy screen
 
-## Pilot E: bounded timeout
+The policy screen ran 288 jobs: three selected loads, three paired traces, four
+allocators, and eight policies. It compared Eager, Count B=2/4/8, and Bounded
+B=4 with W=2/5/10/20 seconds. No admission piggybacking or final-release flush
+occurred in any retained job.
 
-The timeout sweep ran 300 jobs: W=2/5/10/20 plus Eager, the selected three
-loads, five traces, and four core allocators. All jobs completed.
+The final five policies are:
 
-At low load, mean assignment latency was 1.326, 2.221, 3.128, and 3.687 s for
-W=2/5/10/20. At medium load, W=5 reduced mean epochs from 92.05 (Eager) to
-56.80 and mean cumulative compute from 0.4288 to 0.3620 s, with assignment
-latency rising from 1.375 to 3.112 s. At high load, B=4 usually triggered before
-the timeout: W=5 produced 56.30 epochs, 0.7039 s compute, and a 3.83 s mean
-maximum pending age versus 92 epochs and 1.1324 s compute for Eager.
+1. Eager B=1
+2. Count B=2
+3. Count B=4
+4. Count B=8
+5. Bounded B=4, W=10 mission-seconds
 
-The selected bounded point is **B=4, W=5 mission-seconds**. It gives a firm
-sparse-load wait cap while retaining the mechanism at medium/high load. It was
-not selected to maximize apparent compute savings; the low-load mean compute
-increase remains in the results.
+Count B=2/4/8 supplies a deliberate coalescing-strength ladder. W=10 is a
+better hybrid point under the corrected architecture than the old W=5 choice:
 
-## Initial-task-count check
+| Load | Mean total epochs | Mean timeout epochs | Timeout share of total epochs | Mean release-to-completion (s) |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.075 | 26.67 | 24.25 | 90.9% | 21.96 |
+| 0.300 | 15.00 | 7.67 | 51.1% | 29.22 |
+| 0.600 | 12.33 | 2.33 | 18.9% | 34.66 |
 
-Counts 4, 8, and 12 were evaluated under medium/Eager with all four core
-allocators. Every initial task and every mission completed. Four tasks produced
-only 1.8-2.8 distinct eventual winning first assignees on average. Eight
-improved that to 2.8-3.7 while leaving 42 online arrivals. Twelve improved it to
-3.4-4.0 but makes 24% of the mission static. The final design retains **8**:
-twice the robot count, an initial allocator call for every robot, and a stronger
-online fraction. Eventual winning-assignee diversity is not identical to
-whether each robot performed useful initial allocation work.
+Thus the same bounded policy is timeout-dominated when arrivals are sparse,
+mixed at medium load, and threshold-dominated at high load. W=5 remained
+timeout-dominated at medium load and provides less separation from Eager.
 
-## Pilot F: variance and 25-trace decision
+## Final design consequence
 
-The variance pilot ran 240 jobs: ten paired traces, three selected loads, four
-core allocators, and Eager versus Count B=4. All completed. Using the pilot
-sample SD as a planning estimate, an exploratory two-sided 95% mean half-width
-for n=25 was calculated as `t(24) * SD / 5`.
+The primary factorial remains 60 conditions:
 
-- Epoch reductions were 25.6-39.1 epochs and their projected intervals excluded
-  zero for every allocator/load.
-- Medium/high compute savings were clear except the small ACBBA medium effect
-  (0.02385 s with a projected 0.02668 s half-width).
-- Low-load compute effects were small, mixed, and sometimes unfavorable.
-- Medium assignment penalties were clear; high-load assignment and completion
-  differences were too variable to resolve reliably.
-- Mission-time differences were highly variable and mostly projected to span
-  zero.
+`4 allocators x 3 loads x 5 policies`.
 
-The requested **25 paired traces** are retained because they are adequate for
-the primary epoch mechanism and most medium/high compute effects in a short
-paper. They are not guaranteed to resolve subtle/null mission-time or high-load
-latency effects; no significance claim should be made when the final paired
-uncertainty includes zero. Exact projections are in
-`artifacts/pilots/pilot_f_n25_projection.csv`.
+Only two factor values change from the superseded design: high load changes
+from 1.2 to 0.6 tasks/s, and Bounded B4/W5 changes to Bounded B4/W10. The
+eight-initial-task and 50-task mission structure remains appropriate and was
+not reopened by this pilot.
 
-## Extended algorithms and HIL software pilot
+Each AGX condition will use 50 independent paired traces, staged as 25 in
+Round 1 and 25 in Round 2. Round-1 verification is informational and places no
+restriction on starting Round 2. The RP2040 subset remains four traces per
+selected hardware condition; it is not expanded to 25 or 50.
 
-DMCHBA and DGA each completed a full 50-task medium-load trace under Eager and
-Count B=4 with unrestricted candidates. B4 reduced epochs by 38 for both;
-team-serial compute fell 23.45% for DMCHBA and 31.62% for DGA. DGA remained
-substantially heavier (44-65 s on the development host), which justifies its
-exclusion from the 1,500-job primary matrix without removing support.
+## Recommended final performance analysis
 
-The final HIL loopback exercised all selected admission epochs through the real
-chunked protocol and persistent four-context runtime. It completed 12/12
-conditions and 1,168 calls, then resumed without duplication. All 1,192 journal
-rows passed record/build/device-binding verification. Every visible-set-growth
-call invoked the epoch hook and ran a full unrestricted solve. A compiled
-loopback preflight exercised initial visibility, online growth, and duplicate
-epoch idempotence for all six allocators. This is software validation only. No
-RP2040 or Pololu hardware was connected, and no result is marked
-hardware-validated.
+The most informative tradeoff is **total allocator processor work versus task
+completion latency, under a mission-completion constraint**. Coalescing can
+reduce admission epochs and allocator work, but tasks wait longer before they
+are eligible and execution/consensus ordering can change. No one scalar should
+combine these effects.
+
+Bounded B4/W10 is the pilot's best balanced policy to evaluate, not a declared
+universal winner. Its aggregate pilot means stayed near Eager responsiveness
+while moving from timeout-dominated to threshold-dominated behavior as load
+increased. Count B4 is the useful more-aggressive reference; B2 and B8 show the
+shape on either side.
+
+Against Eager in the three-trace aggregate, W10 showed the following
+descriptive tradeoff (not an inferential estimate):
+
+| Load | Allocator-work change | Release-to-completion change | W10 completion | Eager completion |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.075 | -4.9% | +33.5% | 12/12 | 12/12 |
+| 0.300 | -4.3% | +15.4% | 12/12 | 12/12 |
+| 0.600 | -1.7% | +5.1% | 12/12 | 11/12 |
+
+Count B4 was more aggressive: at low load it saved 10.8% work but increased
+completion latency 135.7%; at medium it increased both work and latency; at
+high it saved 10.2% work while increasing latency 14.4%. This is why the final
+matrix should estimate a Pareto frontier rather than rank policies by one
+average score.
+
+Use this outcome hierarchy:
+
+1. **Completion/liveness:** mission completion indicator and structured
+   algorithmic failure type. Report failure rates before success-only means.
+2. **Primary efficiency:** total allocator processor work per trial. Keep AGX,
+   zero-time, and hardware-provider results separate; never label a proxy as
+   RP2040 performance.
+3. **Primary responsiveness:** per-trial mean release-to-completion latency,
+   plus per-trial p95 release-to-completion latency for tail behavior.
+4. **System outcome:** mission elapsed time and total/max robot steps.
+5. **Mechanism:** admission-epoch count, threshold/timeout/terminal-residual
+   mix, allocator-call count, per-call duration, and logical allocation bytes.
+6. **Latency decomposition:** release-to-admission,
+   admission-to-first-current-goal, and first-current-goal-to-completion where
+   derivable.
+
+Treat each trial as the replicate and use paired trace-level contrasts against
+Eager within `(allocator, load, trace)`. Analyze allocator and load interactions
+rather than relying on one pooled mean. Raw first-plan claims, bundle length,
+and reassignment churn are not fair primary comparisons: CBAA owns one task,
+whereas ACBBA/PI/HIPC expose full-path claims and use different suffix/item
+repair rules.
+
+## Measurement caveat
+
+Host-measured causal trials are not bitwise replays: measured allocator
+duration affects simulated event ordering, so OS scheduling or processor
+contention can alter a later consensus trajectory. This is part of the causal
+compute treatment, but it requires dedicated AGX cores, no worker
+oversubscription, paired manifests, and distributional analysis over 25+25
+traces. The zero-time trials isolate architecture/policy behavior without this
+host-timing path. Absolute host timings from separate campaigns must never be
+compared as if they were hardware-calibrated RP2040 measurements.
+
+Compact evidence is retained in `artifacts/pilots/`; raw campaign outputs are
+local, ignored, and must not be promoted as publication data.

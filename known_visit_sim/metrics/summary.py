@@ -122,6 +122,20 @@ def build_rows(state: TrialState, algorithm: str, comm_model: str,
         "unprotected_messages_sent_total": bus.unprotected_sent_total,
         "core_messages_sent_total": bus.core_sent_total,
         "allocation_messages_sent_total": bus.allocation_sent_total,
+        "logical_message_payload_bytes_sent_total": bus.payload_bytes_sent_total,
+        "logical_allocation_payload_bytes_sent_total": (
+            bus.allocation_payload_bytes_sent_total
+        ),
+        "logical_core_payload_bytes_sent_total": bus.core_payload_bytes_sent_total,
+        "logical_message_payload_bytes_delivered_total": (
+            bus.payload_bytes_delivered_total
+        ),
+        "logical_message_payload_bytes_dropped_total": (
+            bus.payload_bytes_dropped_total
+        ),
+        "logical_payload_bytes_sent_by_topic": _counts(
+            bus.payload_bytes_sent_by_topic
+        ),
         "message_drop_fraction": bus.dropped_total / unprotected_attempts if unprotected_attempts else 0.0,
         "messages_per_completed_target": bus.sent_total / completed if completed else 0.0,
         "allocation_messages_per_completed_target": bus.allocation_sent_total / completed if completed else 0.0,

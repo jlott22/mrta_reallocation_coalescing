@@ -29,6 +29,15 @@ from known_visit_sim.core.types import TrialScenario
 from known_visit_sim.run_online_trials import load_paired_manifests
 
 
+ALLOCATOR_PROCESSOR_WORK_DEFINITION = (
+    "allocator input integration, consensus message handling, allocator-local "
+    "recovery, and choose_goal; excludes transport, message decoding, generic "
+    "PSETUP synchronization, outbound extraction, serialization, and explicit "
+    "pre-call GC; GC triggered naturally inside the allocator transaction remains "
+    "included"
+)
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -113,6 +122,8 @@ def _event_id(trace_id: str, epoch_id: int | None) -> str:
 def _trigger_class(epoch: Any) -> str:
     if epoch.trigger_reason == "initial_allocation":
         return "initial"
+    if epoch.trigger_reason == "terminal_residual":
+        return "terminal_residual"
     if epoch.trigger_reason == "final_release_flush":
         return "final_flush"
     if epoch.mandatory:
@@ -120,6 +131,33 @@ def _trigger_class(epoch: Any) -> str:
     if epoch.trigger_reason in ARRIVAL_REASONS:
         return "arrival_driven"
     return "arrival_driven"
+
+
+def _allocator_event_id(trace_id: str, call: Any, scheduler: Any) -> str:
+    """Associate only the call that consumes a task-admission announcement.
+
+    Autonomous consensus, completion, invalid-goal, and recovery calls may retain
+    the scheduler's most recent epoch ID as diagnostic context.  That context is
+    not an admission-event association and must not make those calls look like
+    centralized reallocations in the exported data.
+    """
+
+    epoch = scheduler.epoch_by_id(call.epoch_id)
+    if (
+        epoch is None
+        or not epoch.admitted_task_ids
+        or str(call.trigger_reason) != str(epoch.trigger_reason)
+    ):
+        return ""
+    return _event_id(trace_id, epoch.epoch_id)
+
+
+def _allocator_timing_source(*, zero_compute: bool, hardware_validated: bool) -> str:
+    if hardware_validated:
+        return "rp2040_hardware"
+    if zero_compute:
+        return "zero_compute_counterfactual"
+    return "simulated_duration_development_proxy"
 
 
 def _positive_release_times(task_rows: Iterable[Mapping[str, Any]]) -> list[float]:
@@ -310,16 +348,36 @@ def run_causal_manifest_job(
             "release_time_s": row["release_time_s"],
             "pending_time_s": row["pending_time_s"],
             "admission_time_s": row["admission_time_s"],
+            "admission_epoch_id": row["admission_epoch_id"],
+            "admission_trigger": row["admission_trigger"],
+            "terminal_residual": row["terminal_residual"],
+            "knowledge_receipt_time_s_by_robot": row[
+                "knowledge_receipt_time_s_by_robot"
+            ],
+            "first_knowledge_receipt_time_s": row[
+                "first_knowledge_receipt_time_s"
+            ],
+            "first_eligible_allocator_start_time_s": row[
+                "first_eligible_allocator_start_time_s"
+            ],
             "first_eligible_processing_time_s": row["first_eligible_processing_time_s"],
+            "first_eligible_robot": row["first_eligible_robot"],
             "first_assignment_time_s": row["first_assignment_time_s"],
             "first_assigned_robot": row["first_assigned_robot"],
+            "first_current_goal_time_s": row["first_current_goal_time_s"],
+            "first_current_goal_robot": row["first_current_goal_robot"],
+            "current_goal_events": row["current_goal_events"],
             "completion_time_s": row["completion_time_s"],
             "completing_robot": row["completing_robot"],
             "completion_mode": row["completion_mode"],
+            "assignment_events": row["assignment_events"],
             "reassignment_count": row["reassignment_count"],
             "release_to_admission_latency_s": row["release_to_admission_latency_s"],
             "release_to_first_assignment_latency_s": row["release_to_first_assignment_latency_s"],
             "admission_to_first_assignment_latency_s": row["admission_to_first_assignment_latency_s"],
+            "admission_to_first_current_goal_latency_s": row[
+                "admission_to_first_current_goal_latency_s"
+            ],
             "admission_to_first_eligible_allocator_start_latency_s": row[
                 "admission_to_first_eligible_allocator_start_latency_s"
             ],
@@ -333,10 +391,6 @@ def run_causal_manifest_job(
     scheduler = state.reallocation_scheduler
     if scheduler is None:
         raise AssertionError("causal run has no reallocation scheduler")
-    numeric_to_provider = {
-        call.call_id: (call.provider_call_id or str(call.call_id))
-        for call in scheduler.allocator_calls
-    }
     call_rows = []
     for call in scheduler.allocator_calls:
         if not call.valid_for_mission or not call.parity_passed:
@@ -360,16 +414,44 @@ def run_causal_manifest_job(
             device_message_hash = device_message_hash or call.outbound_message_sha256
             device_state_hash = device_state_hash or call.authoritative_post_state_sha256
         hardware_attestation = call.provider_metadata.get("hardware_attestation")
+        allocator_timing_source = _allocator_timing_source(
+            zero_compute=zero_compute,
+            hardware_validated=bool(call.hardware_validated),
+        )
+        # The neutral allocator-processor columns are valid for hardware,
+        # development proxies, and the zero-compute counterfactual.  RP2040-
+        # named timing columns are populated only by attested hardware calls.
+        rp2040_duration_s = (
+            call.device_allocator_duration_s if call.hardware_validated else None
+        )
+        rp2040_choose_goal_s = (
+            call.device_choose_goal_duration_s if call.hardware_validated else None
+        )
+        rp2040_epoch_reset_s = (
+            call.algorithm_epoch_reset_duration_s
+            if call.hardware_validated else None
+        )
         call_rows.append({
             **dimensions,
             "call_id": provider_call_id,
             "call_group_id": call.group_id,
-            "event_id": _event_id(trace_id, call.epoch_id),
+            "event_id": _allocator_event_id(trace_id, call, scheduler),
             "logical_robot_id": call.robot_id,
             "context_id": call.logical_context_id,
             "algorithm": algorithm,
             "virtual_compute_start_s": call.compute_start_time_s,
-            "rp2040_device_duration_s": call.device_allocator_duration_s,
+            "allocator_processor_duration_s": call.device_allocator_duration_s,
+            "allocator_processor_primary_duration_s": (
+                call.device_choose_goal_duration_s
+            ),
+            "allocator_processor_admission_callback_duration_s": (
+                call.algorithm_epoch_reset_duration_s
+            ),
+            "allocator_processor_work_definition": (
+                ALLOCATOR_PROCESSOR_WORK_DEFINITION
+            ),
+            "allocator_processor_timing_source": allocator_timing_source,
+            "rp2040_device_duration_s": rp2040_duration_s,
             "virtual_compute_completion_s": call.compute_completion_time_s,
             "agx_allocator_duration_s": call.agx_allocator_duration_s,
             "device_choose_goal_us": int(
@@ -378,12 +460,8 @@ def run_causal_manifest_job(
             "algorithm_epoch_reset_us": int(
                 call.algorithm_epoch_reset_duration_ns or 0
             ) // 1_000,
-            "rp2040_choose_goal_duration_s": (
-                call.device_choose_goal_duration_s
-            ),
-            "rp2040_algorithm_epoch_reset_duration_s": (
-                call.algorithm_epoch_reset_duration_s
-            ),
+            "rp2040_choose_goal_duration_s": rp2040_choose_goal_s,
+            "rp2040_algorithm_epoch_reset_duration_s": rp2040_epoch_reset_s,
             "agx_choose_goal_duration_s": call.agx_choose_goal_duration_s,
             "agx_algorithm_epoch_reset_duration_s": (
                 call.agx_algorithm_epoch_reset_duration_s
@@ -402,7 +480,6 @@ def run_causal_manifest_job(
             "ptime_result_transaction_s": call.ptime_result_transaction_s,
             "host_prepare_cpu_s": call.host_prepare_cpu_s,
             "active_task_count": call.active_task_count,
-            "pending_task_count": call.provider_metadata.get("pending_task_count", 0),
             "candidate_count": call.candidate_count,
             "current_x": (
                 None if call.current_position is None else call.current_position[0]
@@ -420,6 +497,8 @@ def run_causal_manifest_job(
             "pre_state_hash": call.pre_state_sha256,
             "call_class": call.call_class,
             "trigger_reason": call.trigger_reason,
+            "allocator_input_event_count": call.allocator_input_event_count,
+            "recovery_invoked": call.recovery_invoked,
             "board_id": worker_board_id,
             "device_uid": call_board,
             "serial_device": call.serial_device,
@@ -451,11 +530,30 @@ def run_causal_manifest_job(
             ),
         })
 
+    if any(epoch.piggybacked_pending for epoch in scheduler.epochs):
+        raise RuntimeError("strict-admission architecture emitted a piggybacked epoch")
+    if any(epoch.trigger_reason == "final_release_flush" for epoch in scheduler.epochs):
+        raise RuntimeError("strict-admission architecture emitted a final-release flush")
+
+    calls_by_event: dict[str, list[dict[str, Any]]] = {}
+    for row in call_rows:
+        if row["event_id"]:
+            calls_by_event.setdefault(str(row["event_id"]), []).append(row)
+
     event_rows = []
     for epoch in scheduler.epochs:
+        event_id = _event_id(trace_id, epoch.epoch_id)
+        associated_calls = calls_by_event.get(event_id, [])
+        participants = sorted({
+            str(row["logical_robot_id"]) for row in associated_calls
+        })
+        event_completion = (
+            max(float(row["virtual_compute_completion_s"]) for row in associated_calls)
+            if associated_calls else None
+        )
         event_rows.append({
             **dimensions,
-            "event_id": _event_id(trace_id, epoch.epoch_id),
+            "event_id": event_id,
             "trigger_reason": epoch.trigger_reason,
             "trigger_class": _trigger_class(epoch),
             "event_time_s": epoch.opened_time_s,
@@ -463,14 +561,21 @@ def run_causal_manifest_job(
             "oldest_pending_age_s": epoch.oldest_pending_age_s,
             "admitted_task_ids": ";".join(map(str, epoch.admitted_task_ids)),
             "admitted_task_count": epoch.admitted_count,
-            "piggybacked": epoch.piggybacked_pending,
-            "participating_logical_robots": ";".join(epoch.called_robot_ids),
-            "associated_call_ids": ";".join(
-                numeric_to_provider[item]
-                for item in epoch.allocator_call_ids
-                if item in numeric_to_provider
+            # Compatibility column: piggyback admission is forbidden in the
+            # strict architecture and therefore always false in new output.
+            "piggybacked": False,
+            "terminal_residual": epoch.terminal_residual,
+            "announcement_delivery_count": len(
+                epoch.announcement_delivery_time_s_by_robot
             ),
-            "virtual_event_completion_s": epoch.closed_time_s,
+            "announcement_delivery_time_s_by_robot": dict(
+                epoch.announcement_delivery_time_s_by_robot
+            ),
+            "participating_logical_robots": ";".join(participants),
+            "associated_call_ids": ";".join(
+                str(row["call_id"]) for row in associated_calls
+            ),
+            "virtual_event_completion_s": event_completion,
         })
 
     queue_rows = [
@@ -523,6 +628,38 @@ def run_causal_manifest_job(
         and call_rows
         and all(call.hardware_validated for call in scheduler.allocator_calls)
     )
+    allocator_work_s = sum(
+        int(call.device_allocator_duration_ns or 0)
+        for call in scheduler.allocator_calls
+    ) / 1_000_000_000.0
+    allocator_primary_work_s = sum(
+        int(call.device_choose_goal_duration_ns or 0)
+        for call in scheduler.allocator_calls
+    ) / 1_000_000_000.0
+    allocator_admission_callback_work_s = sum(
+        int(call.algorithm_epoch_reset_duration_ns or 0)
+        for call in scheduler.allocator_calls
+    ) / 1_000_000_000.0
+    if not abs(
+        allocator_work_s
+        - allocator_primary_work_s
+        - allocator_admission_callback_work_s
+    ) <= 1e-12:
+        raise AssertionError("allocator processor-work decomposition is inconsistent")
+    completed_task_count = sum(
+        record.completed for record in state.world.target_records.values()
+    )
+    timing_source = _allocator_timing_source(
+        zero_compute=zero_compute,
+        hardware_validated=hardware_validated,
+    )
+    rp2040_work_s = allocator_work_s if hardware_validated else None
+    rp2040_primary_work_s = (
+        allocator_primary_work_s if hardware_validated else None
+    )
+    rp2040_admission_callback_work_s = (
+        allocator_admission_callback_work_s if hardware_validated else None
+    )
     all_tasks_completed = bool(metrics["all_tasks_completed"])
     algorithmic_failure_type = metrics.get("algorithmic_failure_type")
     zero_pair_id = (
@@ -531,7 +668,7 @@ def run_causal_manifest_job(
         else f"{job_id}__zero"
     )
     summary = {
-        "schema_version": 2,
+        "schema_version": 3,
         "trial_status": (
             "completed" if all_tasks_completed else "algorithmic_incomplete"
         ),
@@ -546,12 +683,34 @@ def run_causal_manifest_job(
         "zero_compute_paired_id": zero_pair_id,
         **dimensions,
         **metrics,
-        "completed_task_count": sum(record.completed for record in state.world.target_records.values()),
+        "completed_task_count": completed_task_count,
         "reallocation_event_count": len(event_rows),
         "arrival_driven_event_count": event_classes.count("arrival_driven"),
         "mandatory_event_count": event_classes.count("mandatory"),
-        "piggybacked_admission_event_count": sum(epoch.piggybacked_pending for epoch in scheduler.epochs),
-        "final_flush_event_count": sum(epoch.trigger_reason == "final_release_flush" for epoch in scheduler.epochs),
+        "arrival_induced_trigger_count": event_classes.count("arrival_driven"),
+        "piggybacked_admission_event_count": 0,
+        "piggybacked_admission_epoch_count": 0,
+        "final_flush_event_count": 0,
+        "final_flush_trigger_count": 0,
+        "terminal_residual_event_count": event_classes.count(
+            "terminal_residual"
+        ),
+        "terminal_residual_trigger_count": event_classes.count(
+            "terminal_residual"
+        ),
+        "terminal_residual_admitted_task_count": sum(
+            epoch.admitted_count
+            for epoch in scheduler.epochs
+            if epoch.terminal_residual
+        ),
+        "allocator_input_event_total": sum(
+            call.allocator_input_event_count
+            for call in scheduler.allocator_calls
+        ),
+        "recovery_invocation_count": sum(
+            bool(call.recovery_invoked)
+            for call in scheduler.allocator_calls
+        ),
         "online_release_event_count": len(online_release_times),
         "release_events_during_compute_count": releases_during_compute,
         "release_events_during_compute_fraction": (
@@ -560,9 +719,75 @@ def run_causal_manifest_job(
         ),
         "hardware_validated": hardware_validated,
         "parity_passed": all(call.parity_passed and call.valid_for_mission for call in scheduler.allocator_calls),
-        "timing_source": "zero_compute" if zero_compute else (
-            "rp2040_device_allocator" if hardware_validated else "simulated_duration_development"
+        "timing_source": timing_source,
+        "allocator_processor_timing_source": timing_source,
+        "allocator_processor_work_definition": (
+            ALLOCATOR_PROCESSOR_WORK_DEFINITION
         ),
+        "allocator_processor_work_s": allocator_work_s,
+        "allocator_processor_primary_work_s": allocator_primary_work_s,
+        "allocator_processor_admission_callback_work_s": (
+            allocator_admission_callback_work_s
+        ),
+        "cumulative_allocator_time_s": allocator_work_s,
+        "allocator_time_aggregation": (
+            "sum_of_valid_timed_allocator_transactions_processor_seconds"
+        ),
+        # RP2040-labelled performance fields are deliberately null for host
+        # development proxies and zero-compute counterfactuals.
+        "rp2040_allocator_processor_work_s": rp2040_work_s,
+        "rp2040_choose_goal_processor_work_s": rp2040_primary_work_s,
+        "rp2040_epoch_reset_processor_work_s": (
+            rp2040_admission_callback_work_s
+        ),
+        "W_alloc_rp2040_s": rp2040_work_s,
+        "mean_rp2040_allocator_call_time_s": (
+            metrics["mean_allocator_call_time_s"]
+            if hardware_validated else None
+        ),
+        "median_rp2040_allocator_call_time_s": (
+            metrics["median_allocator_call_time_s"]
+            if hardware_validated else None
+        ),
+        "p95_rp2040_allocator_call_time_s": (
+            metrics["p95_allocator_call_time_s"]
+            if hardware_validated else None
+        ),
+        "rp2040_processor_work_per_call_s": (
+            allocator_work_s / len(call_rows)
+            if hardware_validated and call_rows else None
+        ),
+        "rp2040_processor_work_per_reallocation_event_s": (
+            allocator_work_s / len(event_rows)
+            if hardware_validated and event_rows else None
+        ),
+        "rp2040_processor_work_per_completed_task_s": (
+            allocator_work_s / completed_task_count
+            if hardware_validated and completed_task_count else None
+        ),
+        "allocator_time_per_completed_task_s": (
+            allocator_work_s / completed_task_count
+            if completed_task_count else 0.0
+        ),
+        "allocator_processor_work_per_call_s": (
+            allocator_work_s / len(call_rows) if call_rows else 0.0
+        ),
+        "allocator_processor_work_per_reallocation_event_s": (
+            allocator_work_s / len(event_rows) if event_rows else 0.0
+        ),
+        "allocator_processor_work_per_completed_task_s": (
+            allocator_work_s / completed_task_count
+            if completed_task_count else 0.0
+        ),
+        "processor_capacity_fraction": (
+            allocator_work_s / (len(state.robots) * state.mission_elapsed_time_s)
+            if state.robots and all_tasks_completed
+            and state.mission_elapsed_time_s > 0.0 else 0.0
+        ),
+        "processor_capacity_fraction_definition": (
+            "allocator_processor_work_divided_by_robot_count_times_causal_mission_elapsed"
+        ),
+        "rp2040_performance_reported": hardware_validated,
         "causal_compute_duration_excludes_transport": True,
         "physical_measurement_order_serializes_virtual_time": False,
     }
@@ -580,6 +805,11 @@ def run_causal_manifest_job(
         "movement_timing_model": state.movement_timing_model,
         "movement_timing_seed": state.movement_timing_seed,
         "movement_timing_trace_id": state.movement_timing_trace_id,
+        "allocator_processor_work_definition": (
+            ALLOCATOR_PROCESSOR_WORK_DEFINITION
+        ),
+        "allocator_processor_timing_source": timing_source,
+        "rp2040_performance_reported": hardware_validated,
         "scenario_manifest": str(Path(scenario_manifest).resolve()),
         "release_manifest": str(Path(release_manifest).resolve()),
     }

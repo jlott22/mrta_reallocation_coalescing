@@ -76,6 +76,69 @@ class CBAAAllocator(AllocatorBase):
         self._claim_cell(robot, best_cell, best_bid)
         return best_cell
 
+    def on_task_completed(
+        self,
+        robot: Any,
+        cell: Cell,
+        reason: str = "",
+        local: bool = False,
+    ) -> bool:
+        """Remove only the completed single-task entry from local CBAA state."""
+
+        del reason, local
+        self._ensure_cbaa_state(robot)
+        try:
+            completed = (int(cell[0]), int(cell[1]))
+        except Exception:
+            return False
+
+        invalidated_goal = self._current_goal(robot) == completed
+        winner_by_cell, _ = self._consensus_maps(robot)
+        if completed in winner_by_cell:
+            self._set_table_entry(robot, completed, self.NO_WINNER, self.NO_BID)
+        if self._get_current_task(robot) == completed:
+            setattr(robot, "cbaa_current_task", None)
+        return invalidated_goal
+
+    def recover_stalled_allocation(self, robot: Any) -> bool:
+        """Expire at most one locally blocking peer claim after a true stall.
+
+        The robot-level liveness watchdog decides when recovery is warranted.
+        CBAA then keeps all valid local state and forgets only the peer claim on
+        the task this robot would otherwise choose next.  The following normal
+        CBAA call publishes this robot's ordinary competing claim.
+        """
+
+        self._ensure_cbaa_state(robot)
+        self._clear_invalid_or_completed_cells(robot)
+        if self._resolve_current_task(robot) is not None:
+            return True
+
+        winner_by_cell, winning_bid_by_cell = self._consensus_maps(robot)
+        blocked_cell: Optional[Cell] = None
+        blocked_bid = self.NO_BID
+        for candidate in self._candidate_cells(robot):
+            my_bid = self._bid(robot, candidate)
+            if self._can_claim(robot, candidate, my_bid):
+                return True
+            winner = winner_by_cell.get(candidate, self.NO_WINNER)
+            if winner is self.NO_WINNER or self._same_robot_id(winner, robot.rid):
+                continue
+            if self._better_new_choice(
+                robot, candidate, my_bid, blocked_cell, blocked_bid
+            ):
+                blocked_cell = candidate
+                blocked_bid = my_bid
+
+        if blocked_cell is None:
+            return False
+
+        # This is a local lease expiry, not evidence that the peer explicitly
+        # released the task, so do not enqueue a fabricated peer release.
+        winner_by_cell[blocked_cell] = self.NO_WINNER
+        winning_bid_by_cell[blocked_cell] = self.NO_BID
+        return True
+
     @timed_candidate_filter
     def _candidate_cells(self, robot: Any) -> List[Cell]:
         grid_size = self._grid_size(robot)
@@ -85,7 +148,7 @@ class CBAAAllocator(AllocatorBase):
                 cell = (x, y)
                 if self._valid_task_cell(robot, cell):
                     cells.append(cell)
-        return self._filter_candidate_cells(robot, cells)
+        return self._unrestricted_candidate_cells(robot, cells)
 
     def _bid(self, robot: Any, cell: Cell) -> float:
         """Return this robot's own CBAA bid for a task cell."""
@@ -423,12 +486,16 @@ class CBAAAllocator(AllocatorBase):
                 self._set_table_entry(robot, cell, self.NO_WINNER, self.NO_BID)
 
     def _refresh_current_claim(self, robot: Any) -> None:
-        current = self._resolve_current_task(robot)
-        if current is None:
-            return
+        """Validate the retained claim without rebidding while it executes.
 
-        bid = self._bid(robot, current)
-        self._set_table_entry(robot, current, robot.rid, float(bid))
+        A CBAA bid is the value used to win the assignment.  Recomputing it
+        after every movement turns route progress into a stream of revised
+        same-winner bids.  Forwarding those revisions can make peers replay
+        older and newer values indefinitely.  Normal consensus messages may
+        still outbid the retained claim; movement alone does not rewrite it.
+        """
+
+        self._resolve_current_task(robot)
 
     def _message_signature(self, payload: Dict[str, Any]) -> Tuple[Cell, Any, float]:
         cell = (int(payload["x"]), int(payload["y"]))

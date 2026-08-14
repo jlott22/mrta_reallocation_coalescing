@@ -22,10 +22,17 @@ class TargetRecord:
     released_time_s: Optional[float] = 0.0
     pending_time_s: Optional[float] = 0.0
     admission_time_s: Optional[float] = 0.0
+    admission_epoch_id: Optional[int] = None
+    admission_trigger: Optional[str] = "initial_allocation"
+    terminal_residual: bool = False
+    knowledge_receipt_time_s_by_robot: Dict[str, float] = field(default_factory=dict)
     first_eligible_allocator_start_time_s: Optional[float] = None
     first_eligible_robot: Optional[str] = None
     first_assignment_time_s: Optional[float] = None
     first_assigned_robot: Optional[str] = None
+    first_current_goal_time_s: Optional[float] = None
+    first_current_goal_robot: Optional[str] = None
+    current_goal_events: int = 0
     first_completion_time_s: Optional[float] = None
     first_found_by: Optional[str] = None
     completion_mode: Optional[str] = None
@@ -90,6 +97,13 @@ class World:
             record.release_time_s = release_s
             record.first_assignment_time_s = None
             record.first_assigned_robot = None
+            record.first_current_goal_time_s = None
+            record.first_current_goal_robot = None
+            record.current_goal_events = 0
+            record.admission_epoch_id = None
+            record.admission_trigger = None
+            record.terminal_residual = False
+            record.knowledge_receipt_time_s_by_robot = {}
             record.first_eligible_allocator_start_time_s = None
             record.first_eligible_robot = None
             record.first_completion_time_s = None
@@ -101,6 +115,7 @@ class World:
                 record.released_time_s = 0.0
                 record.pending_time_s = 0.0
                 record.admission_time_s = 0.0
+                record.admission_trigger = "initial_allocation"
                 record.state = TaskState.ADMITTED
                 record.state_history = [
                     TaskStateEvent(TaskState.RELEASED, 0.0),
@@ -139,6 +154,39 @@ class World:
         record.state_history.append(TaskStateEvent(TaskState.ADMITTED, float(time_s)))
         return record
 
+    def record_admission_metadata(
+        self,
+        cell: Cell,
+        epoch_id: int,
+        trigger_reason: str,
+        terminal_residual: bool = False,
+    ) -> None:
+        record = self.target_records[cell]
+        record.admission_epoch_id = int(epoch_id)
+        record.admission_trigger = str(trigger_reason)
+        record.terminal_residual = bool(terminal_residual)
+
+    def record_task_knowledge(
+        self,
+        rid: str,
+        cells: Iterable[Cell],
+        time_s: float,
+        epoch_id: int,
+    ) -> None:
+        """Record message receipt without making it allocator-visible."""
+
+        for cell in cells:
+            record = self.target_records.get(cell)
+            if record is None or record.admission_time_s is None:
+                continue
+            if record.admission_epoch_id not in (None, int(epoch_id)):
+                raise RuntimeError("task knowledge receipt references the wrong epoch")
+            if float(time_s) + 1e-12 < record.admission_time_s:
+                raise RuntimeError("task knowledge cannot precede admission")
+            record.knowledge_receipt_time_s_by_robot.setdefault(
+                str(rid), float(time_s)
+            )
+
     def record_assignment(self, rid: str, cells: Iterable[Cell], time_s: float) -> None:
         for cell in cells:
             record = self.target_records.get(cell)
@@ -156,6 +204,20 @@ class World:
                 record.state_history.append(
                     TaskStateEvent(TaskState.ASSIGNED, float(time_s), str(rid))
                 )
+
+    def record_current_goal(self, rid: str, cell: Cell, time_s: float) -> None:
+        """Record execution-head selection separately from bundle ownership."""
+
+        record = self.target_records.get(cell)
+        if record is None or record.admission_time_s is None or record.completed:
+            return
+        receipt = record.knowledge_receipt_time_s_by_robot.get(str(rid))
+        if receipt is not None and float(time_s) + 1e-12 < receipt:
+            raise RuntimeError("robot selected a task before learning it")
+        record.current_goal_events += 1
+        if record.first_current_goal_time_s is None:
+            record.first_current_goal_time_s = float(time_s)
+            record.first_current_goal_robot = str(rid)
 
     def record_allocator_start(
         self, rid: str, cells: Iterable[Cell], time_s: float
@@ -238,11 +300,24 @@ class World:
                 "release_time_s": release,
                 "pending_time_s": record.pending_time_s,
                 "admission_time_s": admission,
+                "admission_epoch_id": record.admission_epoch_id,
+                "admission_trigger": record.admission_trigger,
+                "terminal_residual": record.terminal_residual,
+                "knowledge_receipt_time_s_by_robot": dict(
+                    record.knowledge_receipt_time_s_by_robot
+                ),
+                "first_knowledge_receipt_time_s": min(
+                    record.knowledge_receipt_time_s_by_robot.values(),
+                    default=None,
+                ),
                 "first_eligible_allocator_start_time_s": eligible,
                 "first_eligible_processing_time_s": eligible,
                 "first_eligible_robot": record.first_eligible_robot,
                 "first_assignment_time_s": assignment,
                 "first_assigned_robot": record.first_assigned_robot,
+                "first_current_goal_time_s": record.first_current_goal_time_s,
+                "first_current_goal_robot": record.first_current_goal_robot,
+                "current_goal_events": record.current_goal_events,
                 "completion_time_s": completion,
                 "completing_robot": record.first_found_by,
                 "completion_mode": record.completion_mode,
@@ -256,6 +331,11 @@ class World:
                 ),
                 "admission_to_first_assignment_latency_s": (
                     assignment - admission if assignment is not None and admission is not None else None
+                ),
+                "admission_to_first_current_goal_latency_s": (
+                    record.first_current_goal_time_s - admission
+                    if record.first_current_goal_time_s is not None
+                    and admission is not None else None
                 ),
                 "admission_to_first_eligible_allocator_start_latency_s": (
                     eligible - admission if eligible is not None and admission is not None else None

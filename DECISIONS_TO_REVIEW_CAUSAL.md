@@ -1,5 +1,10 @@
 # Scientifically important causal decisions and assumptions
 
+> **Archived pre-correction decision list.** Previously selected values and
+> approvals do not freeze the redesigned experiment. Use
+> `docs/SIMULATION_ARCHITECTURE.md` as the architecture contract and create a
+> fresh design-freeze record before collecting results.
+
 This file lists the remaining operator/reviewer decisions and the assumptions
 that must be disclosed. It does not reopen the fixed architecture in the study
 request. Three-board preflight and focused parity evidence now exist, but the

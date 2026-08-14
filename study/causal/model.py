@@ -223,8 +223,10 @@ def _validate_primary_algorithms(values: Any) -> tuple[str, ...]:
     algorithms = tuple(_safe_id(item, "algorithm") for item in values)
     if len(algorithms) != len(set(algorithms)):
         raise ValueError("campaign.algorithms contains duplicates")
-    if not set(PRIMARY_ALGORITHMS).issubset(algorithms):
-        raise ValueError("causal campaign must include CBAA, ACBBA, PI, and HIPC")
+    if set(algorithms) != set(PRIMARY_ALGORITHMS):
+        raise ValueError(
+            "causal campaign algorithms must be exactly CBAA, ACBBA, PI, and HIPC"
+        )
     return algorithms
 
 

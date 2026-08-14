@@ -3,10 +3,16 @@
 > **Superseded campaign description.** This file documents the retained
 > first-generation, post-hoc timing campaign. Its 75%-of-core worker rule,
 > previously selected rates/W, and additive critical-path mission estimate do
-> not govern the causal paper campaign. Use `study/causal/`, the
-> `scripts/agx_*causal*` launchers, and the root `EXPERIMENTAL_PLAN.md` and
-> `AGX_NATIVE_RUNBOOK.md`. Historical material below is preserved so earlier
-> artifacts remain interpretable.
+> not govern the corrected rerun. `docs/SIMULATION_ARCHITECTURE.md` is the
+> current contract. The old causal launchers, `EXPERIMENTAL_PLAN.md`, and
+> `AGX_NATIVE_RUNBOOK.md` are also archived until fresh manifests, validation,
+> and a new design freeze exist. Historical material below is preserved so
+> earlier artifacts remain interpretable.
+
+The corrected replacement pilot is now complete. Its current selections are
+0.075/0.30/0.60 tasks per mission-second and Eager, Count B2/B4/B8, and
+Bounded B4/W10. See `../PILOT_REPORT.md`; all 1.2/W5 values below remain
+historical only.
 
 This directory owns reproducible paired inputs, resumable AGX execution, and
 trial-level analysis. It intentionally does not implement allocator internals.
@@ -153,6 +159,19 @@ This is an explicit deployment-facing estimate, not a physical wall-clock
 measurement. Allocator durations are not fed back into the event schedule, so
 task latency timestamps remain on the exogenous event-time axis. Actual RP2040
 execution is measured separately by the HIL campaign.
+
+For causal schema-v3 output, `allocator_processor_work_s` is the neutral total
+used for every timing provider. Its per-call timer includes allocator input
+integration, consensus-message handling, allocator-local recovery, and
+`choose_goal`; transport, decoding, PSETUP synchronization, outbound extraction,
+serialization, message construction, and explicit pre-call GC are outside the
+timer. RP2040-named performance fields are populated only for attested
+`hardware_validated` calls; development-duration and zero-compute runs retain
+only the neutral timing fields.
+
+Schema-v3 admission events distinguish `terminal_residual` from ordinary B/W
+admissions. Piggyback and `final_release_flush` compatibility counters are always
+zero in new runs, while older schema outputs remain readable.
 
 ## AGX commands
 

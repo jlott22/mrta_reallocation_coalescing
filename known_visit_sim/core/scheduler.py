@@ -256,6 +256,18 @@ class TrialState:
                 raise AssertionError(f"task timestamp order invalid for {record.task_id}")
             if record.completed and record.first_assignment_time_s is None:
                 raise AssertionError(f"completed task {record.task_id} lacks an assignment")
+            if record.completed:
+                receipt = record.knowledge_receipt_time_s_by_robot.get(
+                    str(record.first_found_by)
+                )
+                if receipt is None:
+                    raise AssertionError(
+                        f"completing robot lacked task knowledge for {record.task_id}"
+                    )
+                if record.first_completion_time_s + 1e-12 < receipt:
+                    raise AssertionError(
+                        f"task {record.task_id} completed before message receipt"
+                    )
         for movement in self.movement_records:
             if movement.completion_time_s <= movement.start_time_s:
                 raise AssertionError("movement completion must follow movement start")
@@ -338,17 +350,22 @@ class AsyncTrialRunner:
                 world,
                 bus,
                 self.allocator_cls(),
+                initial_task_knowledge=False,
             )
             for rid in self.cfg.robot_ids
         }
         for robot in robots.values():
             # Consumed only by online-aware stochastic allocators.  Static
             # trials retain their exact legacy per-robot seed behavior.
-            robot._online_trace_seed = trace_seed_material
+            # Allocators receive only an opaque deterministic seed—not future
+            # task coordinates or release times.
+            robot._online_trace_seed = hashlib.sha256(
+                repr(trace_seed_material).encode("utf-8")
+            ).hexdigest()
         for robot in robots.values():
             robot.publish_state()
         coordinator = OnlineReallocationScheduler(
-            world, ReallocationPolicy.from_spec(policy)
+            world, ReallocationPolicy.from_spec(policy), bus
         )
         coordinator.attach_robots(robots)
         return TrialState(
@@ -451,11 +468,10 @@ class AsyncTrialRunner:
             "mission": "known_visit_online",
             "algorithm": algorithm,
             "seed": int(self.seed),
-            # The native resident context validates delayed admissions against
-            # this immutable universe.  Only already admitted release-zero
-            # tasks belong in the initial active set.
-            "all_tasks": [list(cell) for cell in scenario.targets],
-            "active_tasks": [list(cell) for cell in sorted(state.world.admitted_targets)],
+            # Future task coordinates never enter an agent/device context.
+            # Native contexts allocate anonymous capacity and register cells
+            # only from task-admission messages.
+            "max_targets": 50,
             "logical_context_count": len(state.robots),
         })
         binding = MissionTimingBinding(
@@ -486,6 +502,7 @@ class AsyncTrialRunner:
         scheduled_timeouts: set[float] = set()
         call_sequence = 0
         group_sequence = 0
+        movement_sequence = 0
         movement_action_counts = {rid: 0 for rid in state.robots}
         zero_duration_completed_at: set[str] = set()
         zero_duration_time_s: Optional[float] = None
@@ -530,8 +547,26 @@ class AsyncTrialRunner:
                     not robot.causal_is_busy
                     and scheduler.has_queued_context(rid)
                     and rid not in zero_duration_completed_at
+                    and rid not in ready
                 ):
                     robot_tokens[rid] += 1  # invalidate a later idle/control wake
+                    ready.add(rid)
+
+        def wake_delivered_robots(
+            delivered: Sequence[str], ready: set[str]
+        ) -> None:
+            """Wake idle receivers without disturbing in-flight work."""
+
+            for rid in delivered:
+                zero_duration_completed_at.discard(rid)
+                robot = state.robots.get(rid)
+                if robot is None or robot.causal_is_busy:
+                    continue
+                if rid not in ready:
+                    # Cancel a later recovery/control timer. Move and compute
+                    # events are never invalidated because those robots are
+                    # busy and take the branch above.
+                    robot_tokens[rid] += 1
                     ready.add(rid)
 
         def schedule_control_result(
@@ -539,7 +574,7 @@ class AsyncTrialRunner:
         ) -> bool:
             """Schedule the result; return True for an instantaneous retry."""
 
-            nonlocal order
+            nonlocal order, movement_sequence
             state.events_processed += 1
             if on_step:
                 on_step(state, robot, result)
@@ -559,8 +594,9 @@ class AsyncTrialRunner:
                     source_cell=robot.pos,
                     target_cell=result.action_target,
                 )
+                movement_sequence += 1
                 movement = MovementRecord(
-                    movement_id=len(state.movement_records) + 1,
+                    movement_id=movement_sequence,
                     robot_id=rid,
                     start_time_s=now_s,
                     completion_time_s=now_s + duration_s,
@@ -569,49 +605,27 @@ class AsyncTrialRunner:
                     robot_action_index=action_index,
                     timing_key_sha256=timing_key,
                 )
-                state.movement_records.append(movement)
                 inflight_movements[rid] = movement
                 schedule_robot("move_complete", movement.completion_time_s, rid, 2)
                 return False
+            if result.reason in {"no_goal", "idle"}:
+                # Online robots sleep until new information or their own next
+                # recovery/quarantine deadline.  There is no periodic
+                # allocator polling while the scheduler holds pending work.
+                deadline = robot.next_local_wake_s()
+                if deadline is not None:
+                    schedule_robot(
+                        "control", max(float(now_s), float(deadline)), rid, 3
+                    )
+                return False
             delay = self._interval_for(result, state.event_rng)
             next_control = now_s + delay
-            if (
-                result.reason in {"no_goal", "idle"}
-                and not any(item.active_tasks for item in state.robots.values())
-                and scheduler.pending_count == 0
-                and scheduler.unreleased_count > 0
-            ):
-                next_release = min(
-                    record.release_time_s
-                    for record in state.world.target_records.values()
-                    if record.state == TaskState.UNRELEASED
-                )
-                next_control = max(next_control, next_release)
             schedule_robot("control", next_control, rid, 3)
             return False
 
         def execute_call_group(now_s: float, ready: set[str]) -> None:
             nonlocal call_sequence, group_sequence
-            # A newly idle robot can turn a below-threshold pending tail into
-            # a mandatory global admission. Resolve that shared scheduler
-            # transition before freezing *any* member of this same-time
-            # compute group, so no peer receives a pre-admission snapshot at
-            # the identical virtual start.
-            if scheduler.pending_count:
-                idle_trigger = next((
-                    rid
-                    for rid in sorted(ready)
-                    if not state.robots[rid].causal_is_busy
-                    and state.robots[rid].causal_allocation_reason() == "robot_idle"
-                ), None)
-                if idle_trigger is not None:
-                    scheduler.mandatory_event(
-                        now_s, "robot_idle", source_robot_id=idle_trigger
-                    )
-                    ready_queued_robots(ready)
             prepared: Dict[str, Any] = {}
-            # Acquiring a robot-idle context can piggyback pending admissions
-            # and queue peers.  Expand the group before any authoritative call.
             while True:
                 additions = [
                     rid for rid in sorted(ready)
@@ -709,7 +723,6 @@ class AsyncTrialRunner:
                         "authoritative_messages": item.outbound_payloads,
                         "authoritative_post_state": item.post_state,
                         "candidate_count": item.signature.active_candidate_count,
-                        "pending_task_count": scheduler.pending_count,
                         "current_position": tuple(robot.pos),
                         "device_events": device_events,
                         "device_deleted": {},
@@ -798,6 +811,10 @@ class AsyncTrialRunner:
                     device_message_sha256=measured.device_message_sha256,
                     device_post_state_sha256=measured.device_post_state_sha256,
                     call_class=item.signature.call_class,
+                    allocator_input_event_count=(
+                        item.prepared.allocator_input_count
+                    ),
+                    recovery_invoked=item.prepared.recovery_requested,
                     board_id=measured.board_id,
                     serial_device=measured.serial_device,
                     attempt_id=measured.attempt_id,
@@ -898,6 +915,12 @@ class AsyncTrialRunner:
                         if result.first_completion:
                             target = state.world.target_records.get(movement.target_cell)
                             movement.completed_task_id = target.task_id if target else None
+                        # A movement becomes a mission event only when its
+                        # physical transition commits. Other robots may still
+                        # have future completions queued when the final task
+                        # ends the mission; those uncommitted intervals are
+                        # intentionally absent from movement/step metrics.
+                        state.movement_records.append(movement)
                         state.events_processed += 1
                         reasons[result.reason] += 1
                         if on_step:
@@ -926,6 +949,13 @@ class AsyncTrialRunner:
                         continue
                     raise AssertionError(f"unknown online event {event.kind}")
 
+                # Releases and every same-time physical completion are now
+                # committed.  Only the centralized admission gate evaluates
+                # the final residual predicate; it never assigns or recovers.
+                if scheduler.terminal_residual_due(now_s) is not None:
+                    state.scheduler_events_processed += 1
+                    schedule_timeout()
+
                 # Deliver every message whose communication delay expires at
                 # this timestamp. Computing receivers buffer it; idle receivers
                 # may use it in a call that starts now.
@@ -933,8 +963,7 @@ class AsyncTrialRunner:
                 # A delivered message is an external input and therefore a
                 # valid reason for its idle receiver to take another
                 # zero-duration microstep at the same timestamp.
-                for rid in delivered_receivers:
-                    zero_duration_completed_at.discard(rid)
+                wake_delivered_robots(delivered_receivers, ready)
                 ready_queued_robots(ready)
                 if state.world.all_targets_completed():
                     state.done = True
@@ -948,8 +977,8 @@ class AsyncTrialRunner:
                         raise RuntimeError("same-time causal control loop did not quiesce")
                     execute_call_group(now_s, ready)
                     # Calls have now become busy. Advance remaining idle robots
-                    # by at most one control action before reconsidering any
-                    # new same-time mandatory context.
+                    # by at most one control action before reconsidering new
+                    # same-time local information.
                     retry: set[str] = set()
                     for rid in sorted(ready):
                         robot = state.robots[rid]
@@ -962,9 +991,11 @@ class AsyncTrialRunner:
                         elif result.time_cost_s <= 0.0:
                             retry.add(rid)
                     ready = retry
+                    if scheduler.terminal_residual_due(now_s) is not None:
+                        state.scheduler_events_processed += 1
+                        schedule_timeout()
                     delivered_receivers = state.bus.pump(now_s)
-                    for rid in delivered_receivers:
-                        zero_duration_completed_at.discard(rid)
+                    wake_delivered_robots(delivered_receivers, ready)
                     ready_queued_robots(ready)
                     if state.world.all_targets_completed():
                         state.done = True
@@ -977,7 +1008,10 @@ class AsyncTrialRunner:
                 else:
                     last_progress = progress
                     stagnant_events = 0
-                if stagnant_events >= stagnation_horizon:
+                if (
+                    stagnant_events >= stagnation_horizon
+                    and not self._has_unexercised_recovery_opportunity(state)
+                ):
                     state.algorithmic_failure_type = "stagnation_horizon"
                     state.algorithmic_failure_detail = self._diagnostics(
                         state, reasons
@@ -1012,147 +1046,16 @@ class AsyncTrialRunner:
                     )
             state.host_program_runtime_s = max(0.0, perf_counter() - host_started)
         if not state.done and state.algorithmic_failure_type is None:
-            state.algorithmic_failure_type = "event_queue_exhausted"
-            state.algorithmic_failure_detail = self._diagnostics(state, reasons)
-        state.validate_online_invariants()
-        return state
-
-    def _run_online_trial_legacy(
-        self,
-        scenario: TrialScenario,
-        release_times: ReleaseTimes,
-        policy: Union[ReallocationPolicy, str, Mapping[str, Any]],
-        on_step: Optional[Callable[[TrialState, RobotShell, StepResult], None]] = None,
-    ) -> TrialState:
-        """Replay one predetermined absolute-time online arrival condition."""
-
-        host_started = perf_counter()
-        state = self.new_online_trial(scenario, release_times, policy)
-        scheduler = state.reallocation_scheduler
-        if scheduler is None:  # pragma: no cover - construction invariant
-            raise AssertionError("online trial requires a reallocation scheduler")
-
-        def service_global_epochs() -> None:
-            for rid in sorted(state.robots):
-                state.robots[rid].service_queued_allocation_epochs(state.clock_s)
-
-        service_global_epochs()
-
-        queue: List[OnlineEvent] = []
-        order = 0
-        for wake in self.initial_queue(state):
-            heapq.heappush(
-                queue,
-                OnlineEvent(wake.time_s, 2, order, "wake", wake.rid),
+            admitted_unfinished = any(
+                record.admission_time_s is not None and not record.completed
+                for record in state.world.target_records.values()
             )
-            order += 1
-        release_times_unique = sorted({
-            record.release_time_s
-            for record in state.world.target_records.values()
-            if record.release_time_s > 0.0
-        })
-        for release_s in release_times_unique:
-            heapq.heappush(queue, OnlineEvent(release_s, 0, order, "release"))
-            order += 1
-        scheduled_timeouts: set[float] = set()
-
-        def schedule_timeout() -> None:
-            nonlocal order
-            deadline = scheduler.next_timeout_s()
-            if deadline is None:
-                return
-            key = round(float(deadline), 12)
-            if key in scheduled_timeouts:
-                return
-            scheduled_timeouts.add(key)
-            heapq.heappush(queue, OnlineEvent(float(deadline), 1, order, "timeout"))
-            order += 1
-
-        last_progress = self._progress_signature(state)
-        stagnant_events = 0
-        reasons: Counter[str] = Counter()
-        online_event_cap = max(
-            self.cfg.debug_max_events,
-            1_000 + 5_000 * len(state.world.target_records),
-        )
-        online_stagnant_cap = max(
-            self.cfg.debug_max_stagnant_events,
-            500 + 100 * len(state.world.target_records),
-        )
-        try:
-            while queue and not state.done:
-                event = heapq.heappop(queue)
-                state.clock_s = event.time_s
-                if event.kind == "release":
-                    scheduler.release_due(state.clock_s)
-                    service_global_epochs()
-                    state.scheduler_events_processed += 1
-                    schedule_timeout()
-                    last_progress = self._progress_signature(state)
-                    stagnant_events = 0
-                    continue
-                if event.kind == "timeout":
-                    scheduler.timeout_due(state.clock_s)
-                    service_global_epochs()
-                    state.scheduler_events_processed += 1
-                    schedule_timeout()
-                    last_progress = self._progress_signature(state)
-                    stagnant_events = 0
-                    continue
-                if event.rid is None:  # pragma: no cover - queue invariant
-                    raise AssertionError("wake event lacks a robot ID")
-                state.bus.pump(state.clock_s)
-                robot = state.robots[event.rid]
-                result = robot.step(state.clock_s, state.planner)
-                state.events_processed += 1
-                reasons[result.reason] += 1
-                if on_step:
-                    on_step(state, robot, result)
-                # A completion/idle/invalid-goal event may have piggybacked
-                # pending admissions and opened a global epoch from inside the
-                # robot step. Complete its allocation phase before termination
-                # or further physical execution.
-                service_global_epochs()
-                if state.world.all_targets_completed():
-                    state.done = True
-                    break
-                progress = self._progress_signature(state)
-                if progress == last_progress:
-                    stagnant_events += 1
-                else:
-                    last_progress = progress
-                    stagnant_events = 0
-                if stagnant_events >= online_stagnant_cap:
-                    raise RuntimeError(
-                        f"Stagnation detected in online trial {scenario.trial_id}; "
-                        f"diagnostics={json.dumps(self._diagnostics(state, reasons), sort_keys=True, default=str)}"
-                    )
-                if state.events_processed >= online_event_cap:
-                    raise RuntimeError(
-                        f"Debug safety cap reached in online trial {scenario.trial_id}; "
-                        f"diagnostics={json.dumps(self._diagnostics(state, reasons), sort_keys=True, default=str)}"
-                    )
-                next_wake_s = state.clock_s + self._interval_for(result, state.event_rng)
-                # Sparse traces are fast-forwarded safely. Release events remain
-                # in the queue and therefore retain their exact absolute times.
-                if (
-                    result.reason in {"no_goal", "idle"}
-                    and not any(item.active_tasks for item in state.robots.values())
-                    and scheduler.pending_count == 0
-                    and scheduler.unreleased_count > 0
-                ):
-                    next_release_s = min(
-                        record.release_time_s
-                        for record in state.world.target_records.values()
-                        if record.state == TaskState.UNRELEASED
-                    )
-                    next_wake_s = max(next_wake_s, next_release_s)
-                heapq.heappush(
-                    queue, OnlineEvent(next_wake_s, 2, order, "wake", event.rid)
-                )
-                order += 1
-        finally:
-            state.host_program_runtime_s = max(0.0, perf_counter() - host_started)
+            state.algorithmic_failure_type = (
+                "architecture_event_queue_exhausted"
+                if admitted_unfinished
+                else "event_queue_exhausted"
+            )
+            state.algorithmic_failure_detail = self._diagnostics(state, reasons)
         state.validate_online_invariants()
         return state
 
@@ -1164,7 +1067,43 @@ class AsyncTrialRunner:
             for record in sorted(state.world.target_records.values(), key=lambda item: item.index)
         )
         positions = tuple((rid, robot.pos) for rid, robot in sorted(state.robots.items()))
-        return completed, lifecycle, positions
+        # Only a recovery that changes allocator state is progress.  Merely
+        # reaching a local watchdog and declining recovery must not reset the
+        # simulator's diagnostic stagnation counter forever.
+        recoveries = tuple(
+            (
+                rid,
+                robot._stall_recovery_count,
+            )
+            for rid, robot in sorted(state.robots.items())
+        )
+        return completed, lifecycle, positions, recoveries
+
+    @staticmethod
+    def _has_unexercised_recovery_opportunity(state: TrialState) -> bool:
+        """Keep diagnosis from pre-empting the next robot-owned watchdog.
+
+        The simulator does not initiate recovery.  It only allows an idle
+        robot one locally scheduled attempt after its most recently observed
+        progress before declaring a stagnant mission.  A declined attempt is
+        therefore exhausted and cannot indefinitely mask a real deadlock.
+        """
+
+        for robot in state.robots.values():
+            if not robot.active_tasks or robot.current_goal is not None:
+                continue
+            anchors = [
+                value
+                for value in (robot._no_goal_since, robot._last_team_progress_s)
+                if value is not None
+            ]
+            if not anchors:
+                continue
+            last_progress_s = max(float(value) for value in anchors)
+            last_attempt_s = robot._last_recovery_attempt_s
+            if last_attempt_s is None or float(last_attempt_s) + 1e-12 < last_progress_s:
+                return True
+        return False
 
     @staticmethod
     def _diagnostics(state: TrialState, reasons: Counter[str]) -> dict:

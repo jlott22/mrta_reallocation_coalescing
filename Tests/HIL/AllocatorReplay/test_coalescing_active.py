@@ -33,6 +33,9 @@ from allocator_replay.coalescing.preflight import (  # noqa: E402
     verify_preflight,
 )
 from allocator_replay.coalescing.runtime import PersistentEpochSession  # noqa: E402
+from allocator_replay.causal.session import (  # noqa: E402
+    DEVICE_ALLOCATOR_TIMER_SCOPE,
+)
 from allocator_replay.coalescing.schedule import campaign_root  # noqa: E402
 from allocator_replay.host import discovery  # noqa: E402
 from allocator_replay.device.native.collaborative import (  # noqa: E402
@@ -215,12 +218,15 @@ class NativeUnrestrictedTests(unittest.TestCase):
                 restored.choose_goal()
                 self.assertEqual(len(restored.state.active_slots()), 4)
                 before, after = restored.candidate_counts()
-                self.assertEqual((before, after), (4, 4))
+                self.assertEqual(before, after)
+                if restored.state.filter_invocations:
+                    self.assertEqual((before, after), (4, 4))
+                self.assertIsNone(restored.state.max_candidate_cells)
                 self.assertEqual(
                     restored.call_class(), "full_allocation_solve"
                 )
 
-    def test_cbaa_visible_set_growth_forces_exactly_one_real_resolve(self) -> None:
+    def test_cbaa_admission_retains_head_until_completion(self) -> None:
         all_tasks = [[9, 9], [1, 0]]
         config = {
             "mission": "collaborative",
@@ -275,13 +281,14 @@ class NativeUnrestrictedTests(unittest.TestCase):
                 ],
             }
         )
-        self.assertEqual(runtime.choose_goal().goal, (1, 0))
-        self.assertEqual(runtime.candidate_counts(), (2, 2))
+        self.assertEqual(runtime.choose_goal().goal, (9, 9))
+        before, after = runtime.candidate_counts()
+        self.assertEqual(before, after)
         self.assertEqual(runtime.call_class(), "full_allocation_solve")
         self.assertEqual(runtime.state.allocation_epoch_hook_count, 2)
 
         # A duplicate delivery remains idempotent after a host-side context
-        # switch.  It cannot clear the newly solved path or inflate the
+        # switch.  It cannot recall the retained path or inflate the
         # persisted hook count, and the call index stays monotonic.
         snapshot = runtime.snapshot_minimal()
         restored = create_persistent_runtime(config)
@@ -311,10 +318,29 @@ class NativeUnrestrictedTests(unittest.TestCase):
             }
         )
         decision = restored.choose_goal()
-        self.assertEqual(decision.goal, (1, 0))
+        self.assertEqual(decision.goal, (9, 9))
         self.assertEqual(decision.debug["call_index"], 2)
         self.assertEqual(restored.call_class(), "cached_or_maintenance")
         self.assertEqual(restored.state.allocation_epoch_hook_count, 2)
+
+        # Once the retained task is actually completed, the already admitted
+        # pool is available to the normal CBAA solve without another release.
+        restored.apply_delta(
+            {
+                "events": [
+                    {
+                        "kind": "allocator_task_completed",
+                        "payload": {
+                            "cell": all_tasks[0],
+                            "reason": "local_service",
+                            "local": True,
+                        },
+                    }
+                ]
+            }
+        )
+        self.assertEqual(restored.choose_goal().goal, (1, 0))
+        self.assertEqual(restored.candidate_counts(), (1, 1))
 
 
 class PersistentProtocolTests(unittest.TestCase):
@@ -344,6 +370,14 @@ class PersistentProtocolTests(unittest.TestCase):
                 self.assertGreaterEqual(metrics["host_setup_transport_us"], 0)
                 self.assertGreaterEqual(metrics["host_nonallocator_overhead_us"], 0)
                 self.assertEqual(metrics["candidate_count_before"], metrics["candidate_count_after"])
+                self.assertEqual(
+                    metrics["resident_active_task_count"],
+                    metrics["host_active_task_count"],
+                )
+                self.assertEqual(
+                    metrics["device_allocator_timer_scope"],
+                    DEVICE_ALLOCATOR_TIMER_SCOPE,
+                )
         finally:
             try:
                 session.close()
@@ -417,6 +451,15 @@ class HardwareIdentityHardeningTests(unittest.TestCase):
                             grown["candidate_count_before"],
                             grown["candidate_count_after"],
                         )
+                        self.assertEqual(
+                            grown["resident_active_task_count"],
+                            probe["grown_visible_count"],
+                        )
+                        if grown["candidate_filter_calls"]:
+                            self.assertEqual(
+                                grown["candidate_count_after"],
+                                probe["grown_visible_count"],
+                            )
                         self.assertFalse(
                             duplicate["allocation_epoch_hook_invoked"]
                         )
@@ -485,12 +528,18 @@ class HardwareIdentityHardeningTests(unittest.TestCase):
             )
             self.assertEqual(grown.metrics["epoch_admitted_task_ids"], [online[0]])
             self.assertEqual(
-                grown.metrics["candidate_count_before"], len(initial) + 1
-            )
-            self.assertEqual(
                 grown.metrics["candidate_count_before"],
                 grown.metrics["candidate_count_after"],
             )
+            self.assertEqual(
+                grown.metrics["resident_active_task_count"],
+                len(initial) + 1,
+            )
+            if grown.metrics["candidate_filter_calls"]:
+                self.assertEqual(
+                    grown.metrics["candidate_count_after"],
+                    len(initial) + 1,
+                )
         finally:
             try:
                 session.close()

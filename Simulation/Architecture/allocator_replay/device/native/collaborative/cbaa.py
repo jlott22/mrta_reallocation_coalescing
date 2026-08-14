@@ -6,6 +6,64 @@ from .base import NativeAllocatorBase
 class CBAAAllocator(NativeAllocatorBase):
     name = "CBAA"
 
+    def recover_stalled_allocation(self, payload=None):
+        """Expire only the best locally blocking remote claim."""
+
+        del payload
+        state = self.state
+        self.clean_path(require_ownership=True)
+        if self.path:
+            return True
+        blocked_slot = None
+        blocked_bid = self.NO_VALUE
+        for slot in self.candidates():
+            bid = self.score_from(state.position, slot)
+            if self.owner_wins(slot, bid, higher_is_better=True):
+                return True
+            if state.claim_owner[slot] < 0:
+                continue
+            if (
+                blocked_slot is None
+                or bid > blocked_bid + self.EPS
+                or (
+                    abs(bid - blocked_bid) <= self.EPS
+                    and self._cell_precedes(slot, blocked_slot)
+                )
+            ):
+                blocked_slot = slot
+                blocked_bid = bid
+        if blocked_slot is None:
+            return False
+        # A local lease expiry is not an observed peer release, so it creates
+        # no outbound message on the remote owner's behalf.
+        state.clear_claim(blocked_slot)
+        self.last_call_path = "stalled_peer_claim_expired"
+        return True
+
+    def on_task_completed(self, cell, reason="", local=False):
+        """Remove the completed single task without clearing other claims."""
+
+        del reason, local
+        state = self.state
+        slot = state.slot_for_cell(cell)
+        if slot is None:
+            return False
+        invalidated_goal = state.current_goal == int(state.targets[slot])
+        previous_owner = int(state.claim_owner[slot])
+        previous_value = float(state.claim_value[slot])
+        if slot in self.path:
+            self.path = [item for item in self.path if item != slot]
+        if previous_owner >= 0:
+            state.clear_claim(slot)
+            released = self.claim_message(
+                "cbaa_entry", slot, -1, self.NO_VALUE, True
+            )
+            released["released_winner"] = state.owner_id(previous_owner)
+            released["released_bid"] = previous_value
+            state.queue_message(released)
+        self.last_call_path = "task_completion_repair"
+        return invalidated_goal
+
     def choose(self):
         state = self.state
         # Desktop CBAA purges every invalid table entry, including peer claims
@@ -25,20 +83,9 @@ class CBAAAllocator(NativeAllocatorBase):
             state.queue_message(released)
         self.clean_path(require_ownership=True)
         if self.path:
-            # The desktop CBAA refreshes the retained claim after every
-            # movement.  Distance, and therefore the bid, can change even
-            # though the selected cell does not.  Publish that logical table
-            # delta outside the timed call just as the desktop implementation
-            # does; otherwise peers see different consensus traffic.
-            slot = self.path[0]
-            bid = self.score_from(state.position, slot)
-            if abs(float(state.claim_value[slot]) - bid) > self.EPS:
-                state.set_claim(slot, state.robot_index, bid)
-                state.queue_message(
-                    self.claim_message(
-                        "cbaa_entry", slot, state.robot_index, bid
-                    )
-                )
+            # Preserve the auction-time winning bid while executing the
+            # retained task.  Movement is not a new auction and must not
+            # create a same-winner bid-revision feedback loop.
             self.last_call_path = "cached_goal"
             return self.goal_cell()
 

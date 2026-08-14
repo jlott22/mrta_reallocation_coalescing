@@ -1,5 +1,11 @@
 # MRTA reallocation-coalescing architecture clarification
 
+> **Archived pre-correction audit.** This file explains the August 14 dataset,
+> including the behavior that motivated the redesign. Its piggyback admission,
+> final-release flush, destructive epoch-reset, polling, and old timer claims
+> are intentionally preserved as historical evidence and do not describe the
+> current code. Use `docs/SIMULATION_ARCHITECTURE.md` for new runs.
+
 This is a read-only audit of the committed simulator and the completed August 14 publication bundle. The publication matrix is exactly 4 algorithms x 3 loads x 5 policies x 50 traces for each of the causal and zero-compute arms; the builder rejects any other coverage (`scripts/agx_build_final_publication.py:940-953`). The retained bundle reports 3,000 causal trials (2,968 completed), 3,000 zero-compute trials (2,999 completed), and 104/104 hardware-backed causal parity passes (`publication/aug14_final_v1/RESULTS.md:10-18`). Because the causal inputs have only AGX-proxy and hardware providers, the split is exactly 104 RP2040-hardware and 2,896 AGX-host-proxy rows (`scripts/agx_build_final_publication.py:921-928`).
 
 An important evidence limitation applies throughout. The publication builder deliberately excludes raw campaign trees and retains compact rows plus checksums (`scripts/agx_build_final_publication.py:1031-1033`; `publication/aug14_final_v1/publication_manifest.json:109-110`). Those campaign trees are not present in this checkout. Consequently, facts available only in `allocator_calls.csv`, `reallocation_events.csv`/`allocation_epochs.csv`, `movement_events.csv`, or per-task state histories are marked **UNKNOWN** below rather than inferred from summary rows. The builder's original source locations are documented at `scripts/agx_build_final_publication.py:918-935`.

@@ -13,7 +13,9 @@ class PIAllocator(AllocatorBase):
 
     name = "PI"
 
-    BUNDLE_SIZE = 3
+    # Compatibility metadata only. PI now considers the complete locally
+    # admitted task pool instead of imposing a fixed path capacity.
+    BUNDLE_SIZE = None
     REWARD_FACTOR = 5.0
     NO_OWNER = None
     EPS = 1.0e-9
@@ -46,7 +48,7 @@ class PIAllocator(AllocatorBase):
                 "pi_claims_known": self._count_known_claims(robot),
                 "pi_pending_snapshot": bool(getattr(robot, "pi_pending_snapshot", False)),
                 "pi_route_cost": self._route_cost(robot, self._get_path(robot)),
-                "pi_bundle_size": self._planning_horizon(robot, self.BUNDLE_SIZE),
+                "pi_bundle_size": None,
                 "pi_candidate_count_before_filter": int(getattr(robot, "candidate_count_before_filter", 0)),
                 "pi_candidate_count_after_filter": int(getattr(robot, "candidate_count_after_filter", 0)),
                 "pi_max_candidate_cells": getattr(robot, "max_candidate_cells", None),
@@ -69,8 +71,8 @@ class PIAllocator(AllocatorBase):
 
         self._repair_path_after_consensus(robot)
 
-        # PI task inclusion: refill path up to BUNDLE_SIZE using marginal
-        # insertion cost and lower-significance consensus.
+        # Refill over the complete admitted pool using marginal insertion cost
+        # and lower-significance consensus.
         self._build_bundle(robot)
 
         path = self._get_path(robot)
@@ -79,17 +81,98 @@ class PIAllocator(AllocatorBase):
 
         return path[0]
 
+    def on_task_completed(
+        self,
+        robot: Any,
+        cell: Cell,
+        reason: str = "",
+        local: bool = False,
+    ) -> bool:
+        """Remove just the completed item and preserve PI's remaining path."""
+
+        del reason, local
+        self._ensure_pi_state(robot)
+        try:
+            completed = (int(cell[0]), int(cell[1]))
+        except Exception:
+            return False
+
+        invalidated_goal = self._current_goal(robot) == completed
+        path = self._get_path(robot)
+        if completed in path:
+            kept = [item for item in path if item != completed]
+            setattr(robot, "pi_path", kept)
+            setattr(robot, "pi_bundle", list(kept))
+            self._clear_removed_local_entries(robot, [completed])
+            self._refresh_local_path_entries(robot)
+            setattr(robot, "pi_pending_snapshot", True)
+        else:
+            owner_by_cell, significance_by_cell = self._consensus_maps(robot)
+            time_by_cell = self._time_map(robot)
+            if completed in owner_by_cell:
+                owner_by_cell[completed] = self.NO_OWNER
+                significance_by_cell[completed] = self.INF_SIGNIFICANCE
+                time_by_cell[completed] = self.NO_TIME
+                setattr(robot, "pi_pending_snapshot", True)
+        return invalidated_goal
+
+    def recover_stalled_allocation(self, robot: Any) -> bool:
+        """Expire one locally blocking owner while retaining valid PI items."""
+
+        self._ensure_pi_state(robot)
+        self._clear_invalid_or_completed_cells(robot)
+        self._repair_path_after_consensus(robot)
+        path = self._get_path(robot)
+        if path:
+            return True
+
+        owner_by_cell, significance_by_cell = self._consensus_maps(robot)
+        time_by_cell = self._time_map(robot)
+        blocked: Optional[Tuple[Cell, int, float, float]] = None
+        for candidate_cell in self._candidate_cells(robot):
+            insertion_index, marginal_cost = self._best_insertion(
+                robot, path, candidate_cell
+            )
+            if insertion_index is None:
+                continue
+            owner = owner_by_cell.get(candidate_cell, self.NO_OWNER)
+            known = float(
+                significance_by_cell.get(candidate_cell, self.INF_SIGNIFICANCE)
+            )
+            if self._can_include(robot, owner, known, marginal_cost):
+                return True
+            if owner is self.NO_OWNER or self._same_robot_id(owner, robot.rid):
+                continue
+            candidate = (
+                candidate_cell,
+                insertion_index,
+                marginal_cost,
+                self._pi_improvement(known, marginal_cost),
+            )
+            if self._better_candidate(robot, candidate, blocked):
+                blocked = candidate
+
+        if blocked is None:
+            return False
+        expired = blocked[0]
+        # This is a local expiry. The next ordinary inclusion publishes new
+        # ownership instead of forging a release by the previous owner.
+        owner_by_cell[expired] = self.NO_OWNER
+        significance_by_cell[expired] = self.INF_SIGNIFICANCE
+        time_by_cell[expired] = self.NO_TIME
+        return True
+
     def _build_bundle(self, robot: Any) -> None:
-        """Insert tasks until path length reaches BUNDLE_SIZE or no task is useful."""
+        """Insert tasks until no locally useful admitted task remains."""
 
         self._ensure_pi_state(robot)
         self._drop_local_owner_entries_not_in_path(robot)
 
         changed = False
 
-        bundle_size = self._planning_horizon(robot, self.BUNDLE_SIZE)
-        while len(self._get_path(robot)) < bundle_size:
-            candidate = self._best_inclusion_candidate(robot)
+        candidates = self._candidate_cells(robot)
+        while True:
+            candidate = self._best_inclusion_candidate(robot, candidates)
             if candidate is None:
                 break
 
@@ -100,12 +183,15 @@ class PIAllocator(AllocatorBase):
         if changed:
             setattr(robot, "pi_pending_snapshot", True)
 
-    def _best_inclusion_candidate(self, robot: Any) -> Optional[Tuple[Cell, int, float]]:
+    def _best_inclusion_candidate(
+        self, robot: Any, candidates: Optional[List[Cell]] = None
+    ) -> Optional[Tuple[Cell, int, float]]:
         """Return the best PI insertion candidate as (cell, index, marginal_cost)."""
 
         owner_by_cell, significance_by_cell = self._consensus_maps(robot)
         path = self._get_path(robot)
-        candidates = self._candidate_cells(robot)
+        if candidates is None:
+            candidates = self._candidate_cells(robot)
 
         best: Optional[Tuple[Cell, int, float, float]] = None
         # Tuple layout: (cell, insertion_index, marginal_cost, improvement)
@@ -148,7 +234,7 @@ class PIAllocator(AllocatorBase):
                 cell = (x, y)
                 if self._valid_task_cell(robot, cell):
                     cells.append(cell)
-        return self._filter_candidate_cells(robot, cells)
+        return self._unrestricted_candidate_cells(robot, cells)
 
     def _can_include(
         self,
@@ -328,11 +414,8 @@ class PIAllocator(AllocatorBase):
         owner_by_cell, significance_by_cell = self._consensus_maps(robot)
         time_by_cell = self._time_map(robot)
 
-        full_cost = self._route_cost(robot, path)
         for idx, cell in enumerate(path):
-            without_cell = path[:idx] + path[idx + 1:]
-            without_cost = self._route_cost(robot, without_cell)
-            significance = self._finite_nonnegative(full_cost - without_cost, 0.0)
+            significance = self._removal_significance(robot, path, idx)
 
             old_owner = owner_by_cell.get(cell, self.NO_OWNER)
             old_sig = float(significance_by_cell.get(cell, self.INF_SIGNIFICANCE))
@@ -345,6 +428,26 @@ class PIAllocator(AllocatorBase):
             elif cell not in time_by_cell or time_by_cell.get(cell, self.NO_TIME) == self.NO_TIME:
                 # Keep an existing timestamp if the value did not change.
                 time_by_cell[cell] = self._next_time(robot)
+
+    def _removal_significance(
+        self, robot: Any, path: List[Cell], index: int
+    ) -> float:
+        """Exact O(1) open-route cost decrease from removing one path item."""
+
+        if index < 0 or index >= len(path):
+            return 0.0
+        cell = path[index]
+        previous = self._robot_pos(robot) if index == 0 else path[index - 1]
+        service_cost = self._finite_nonnegative(
+            getattr(self, "TASK_SERVICE_COST", 0.0), 0.0
+        )
+        removed = self._effective_move_cost(robot, previous, cell) + service_cost
+        if index + 1 >= len(path):
+            return self._finite_nonnegative(removed, 0.0)
+        following = path[index + 1]
+        removed += self._effective_move_cost(robot, cell, following)
+        bridged = self._effective_move_cost(robot, previous, following)
+        return self._finite_nonnegative(removed - bridged, 0.0)
 
     # ------------------------------------------------------------------
     # Route-cost helpers
@@ -381,26 +484,7 @@ class PIAllocator(AllocatorBase):
     def _refresh_probability_normalizer(self, robot: Any) -> None:
         """Cache the max target probability used to normalize target_p to [0, 1]."""
 
-        try:
-            grid_size = self._grid_size(robot)
-        except Exception:
-            setattr(robot, "pi_probability_normalizer", 1.0)
-            return
-
-        max_p = 0.0
-        for y in range(grid_size):
-            for x in range(grid_size):
-                try:
-                    p = float(self._target_probability(robot, (x, y)))
-                except Exception:
-                    continue
-
-                if isfinite(p) and p > max_p:
-                    max_p = p
-
-        if max_p <= self.EPS or not isfinite(max_p):
-            max_p = 1.0
-
+        max_p = self._refresh_allocation_probability_normalizer(robot)
         setattr(robot, "pi_probability_normalizer", float(max_p))
 
     def _normalized_target_probability(self, robot: Any, cell: Cell) -> float:
@@ -427,13 +511,21 @@ class PIAllocator(AllocatorBase):
         if cell in path:
             return None, self.INF_SIGNIFICANCE
 
-        base_cost = self._route_cost(robot, path)
         best_index: Optional[int] = None
         best_delta = self.INF_SIGNIFICANCE
 
-        for index in range(len(path) + 1):
-            candidate_path = path[:index] + [cell] + path[index:]
-            delta = self._finite_nonnegative(self._route_cost(robot, candidate_path) - base_cost, self.INF_SIGNIFICANCE)
+        first_index = 0
+        current = self._current_goal(robot)
+        if (
+            self._is_admission_allocation(robot)
+            and path
+            and current == path[0]
+            and self._valid_task_cell(robot, current)
+        ):
+            first_index = 1
+
+        for index in range(first_index, len(path) + 1):
+            delta = self._insertion_delta(robot, path, cell, index)
 
             if delta < best_delta - self.EPS:
                 best_delta = delta
@@ -443,6 +535,26 @@ class PIAllocator(AllocatorBase):
                     best_index = index
 
         return best_index, best_delta
+
+    def _insertion_delta(
+        self, robot: Any, path: List[Cell], cell: Cell, index: int
+    ) -> float:
+        """Exact O(1) open-route cost increase for one insertion position."""
+
+        index = max(0, min(int(index), len(path)))
+        previous = self._robot_pos(robot) if index == 0 else path[index - 1]
+        service_cost = self._finite_nonnegative(
+            getattr(self, "TASK_SERVICE_COST", 0.0), 0.0
+        )
+        added = self._effective_move_cost(robot, previous, cell) + service_cost
+        if index >= len(path):
+            return self._finite_nonnegative(added, self.INF_SIGNIFICANCE)
+        following = path[index]
+        added += self._effective_move_cost(robot, cell, following)
+        removed = self._effective_move_cost(robot, previous, following)
+        return self._finite_nonnegative(
+            added - removed, self.INF_SIGNIFICANCE
+        )
 
     # ------------------------------------------------------------------
     # PI communication hooks
@@ -857,7 +969,12 @@ class PIAllocator(AllocatorBase):
     def _sync_current_goal_after_message(self, robot: Any) -> None:
         previous_goal = self._current_goal(robot)
         path = self._get_path(robot)
-        if previous_goal is not None and not path and hasattr(robot, "current_goal"):
+        next_goal = path[0] if path else None
+        if (
+            previous_goal is not None
+            and previous_goal != next_goal
+            and hasattr(robot, "current_goal")
+        ):
             setattr(robot, "current_goal", None)
 
     def _next_time(self, robot: Any) -> float:

@@ -1,5 +1,11 @@
 # Native validation checklist
 
+> **Corrected-rerun checklist.** Any older filled copy of this checklist is
+> pre-correction evidence. New validation must additionally demonstrate strict
+> non-piggyback admission, dynamic admitted-only target registration,
+> non-destructive state retention, and the inclusive allocator-transaction
+> timer described below.
+
 Campaign/version: ____________________  Date: ____________________
 
 Operator: ____________________________  AGX Git commit: ____________________
@@ -66,10 +72,12 @@ Overall environment gate: [ ] PASS  [ ] FAIL
     Evidence: ____________________________________________________________
 15. [ ] PASS  [ ] FAIL — Response/attempt IDs cannot cross workers or trials;
     stale responses are rejected. Evidence: ______________________________
-16. [ ] PASS  [ ] FAIL — Device allocator time equals goal-selection time plus
-    the policy-induced allocation-epoch-reset callback time. USB, generic
-    PSETUP state/message synchronization, explicit pre-call GC, and result
-    serialization are excluded; timing schema 2 splits are present.
+16. [ ] PASS  [ ] FAIL — Device allocator time covers ordered allocator input
+    application, admission/completion hooks, targeted recovery when requested,
+    and goal selection as one transaction. USB, wire decoding, generic PSETUP
+    state synchronization, explicit pre-call GC, outbound extraction, and
+    result serialization are excluded. The legacy epoch-reset component is
+    zero.
     Evidence: ____________________________________________________________
 17. [ ] PASS  [ ] FAIL — Disconnect causes fail-closed active-trial termination
     and no duration is accepted. Evidence: ________________________________
@@ -101,8 +109,19 @@ Overall preflight gate: [ ] PASS  [ ] FAIL
 - [ ] PASS  [ ] FAIL — Serial round trip equals PSETUP transaction plus PTIME/
   result transaction wall times and is excluded from causal compute.
   Evidence: _____________________________________________________________
-- [ ] PASS  [ ] FAIL — Explicit pre-call GC is outside the component timers;
-  natural GC inside goal selection or epoch reset remains included.
+- [ ] PASS  [ ] FAIL — Explicit pre-call GC is outside the allocator timer;
+  natural GC during allocator input handling, recovery, or goal selection
+  remains included.
+  Evidence: _____________________________________________________________
+- [ ] PASS  [ ] FAIL — Trial setup contains no future-task universe; each
+  resident context registers a new task only from its delivered admission
+  event. Evidence: ______________________________________________________
+- [ ] PASS  [ ] FAIL — Admission preserves current goal/claims/path, CBAA sees
+  the full admitted pool, and ACBBA/PI/HIPC have no bundle cap.
+  Evidence: _____________________________________________________________
+- [ ] PASS  [ ] FAIL — A retained CBAA claim keeps its auction-time bid after
+  position/movement deltas; desktop/native parity shows no movement-only bid
+  refresh or outbound rebroadcast.
   Evidence: _____________________________________________________________
 
 ## D. Causal smoke

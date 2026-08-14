@@ -19,6 +19,13 @@ except ImportError:  # CPython
 
 
 _CONSENSUS_ALGORITHMS = ("CBAA", "ACBBA", "PI", "HIPC")
+DEVICE_ALLOCATOR_TIMER_SCOPE = (
+    "allocator input integration, consensus message handling, "
+    "allocator-local recovery, and choose_goal; excludes transport, "
+    "message decoding, generic PSETUP synchronization, outbound extraction, "
+    "serialization, and explicit pre-call GC; GC triggered naturally inside "
+    "the allocator transaction remains included"
+)
 
 
 def _platform_heap_free():
@@ -49,8 +56,8 @@ class PhysicalAllocatorAdapter:
 
     ``runtime_factory`` must be the same complete factory deployed for HIL.
     The adapter does not translate allocator state or recreate an allocator
-    between calls.  Setup and message draining are deliberately separate from
-    the timed ``choose_goal`` call.
+    between calls.  Transport decoding/enqueueing and outbound draining are
+    separate from the timed allocator transaction in ``choose_goal``.
     """
 
     def __init__(
@@ -151,7 +158,7 @@ class PhysicalAllocatorAdapter:
         self.apply_delta(update)
 
     def receive_message(self, payload, receiver=None):
-        """Deliver one radio-decoded allocator message outside timing."""
+        """Enqueue one radio-decoded message for the next timed transaction."""
 
         event = {
             "kind": "allocator_message",
@@ -161,8 +168,43 @@ class PhysicalAllocatorAdapter:
             event["receiver"] = receiver
         self.apply_physical_update(events=(event,))
 
+    def admit_tasks(self, cells, epoch_index, trigger_reason):
+        """Enqueue a decoded task announcement without choosing a goal."""
+
+        event = {
+            "kind": "allocation_epoch",
+            "payload": {
+                "epoch_index": int(epoch_index),
+                "trigger_reason": str(trigger_reason),
+                "admitted_cells": list(cells or ()),
+            },
+        }
+        self.apply_physical_update(events=(event,))
+
+    def notify_task_completed(self, cell, reason, local=False):
+        """Enqueue allocator-specific completion repair for the next call."""
+
+        event = {
+            "kind": "allocator_task_completed",
+            "payload": {
+                "cell": cell,
+                "reason": str(reason),
+                "local": bool(local),
+            },
+        }
+        self.apply_physical_update(events=(event,))
+
+    def request_recovery(self, reason="stalled_recovery"):
+        """Enqueue, but never centrally prescribe, allocator-local recovery."""
+
+        event = {
+            "kind": "allocator_recovery",
+            "payload": {"reason": str(reason)},
+        }
+        self.apply_physical_update(events=(event,))
+
     def choose_goal(self):
-        """Run only the resident runtime's allocator and retain timing metrics.
+        """Run the resident allocator transaction and retain timing metrics.
 
         The allocator's decision is returned unchanged.  Read
         ``timing_metrics`` afterward, or use ``allocate`` to also drain
@@ -208,6 +250,12 @@ class PhysicalAllocatorAdapter:
                 "status": "ok" if error is None else "allocator_error",
                 "allocator_time_us": int(allocator_us),
                 "total_allocator_time_us": int(allocator_us),
+                "device_allocator_time_us": int(allocator_us),
+                "device_choose_goal_us": int(allocator_us),
+                "algorithm_epoch_reset_us": 0,
+                "device_allocator_timer_scope": (
+                    DEVICE_ALLOCATOR_TIMER_SCOPE
+                ),
                 "candidate_filter_time_us": int(filter_us),
                 "filter_time_us": int(filter_us),
                 "allocator_exclusive_time_us": max(

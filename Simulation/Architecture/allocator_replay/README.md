@@ -1,35 +1,47 @@
 # RP2040/Pololu reallocation-coalescing HIL
 
 This subsystem is the motor-free embedded-compute companion to the online
-Collaborative Visit simulation. The active command surface supports only the
-six collaborative allocators (CBAA, ACBBA, PI, HIPC, DMCHBA, and DGA) with
-unrestricted candidates. Bayesian/Top-K modules are not included in a device
-bundle, and the deployed worker rejects its legacy one-shot allocator path;
-they cannot be selected through `python -m allocator_replay`.
+Collaborative Visit simulation. The corrected experiment selects CBAA, ACBBA,
+PI, and HIPC with unrestricted locally known candidates. The runtime retains
+legacy DMCHBA/DGA support for old fixtures, but those algorithms are outside the
+current comparison and must not enter a rerun configuration. Bayesian/Top-K
+modules are not included in a device bundle, and the deployed worker rejects
+its legacy one-shot allocator path.
 
 ## What the replay measures
 
-For every paired release trace, the host reconstructs the arrival-admission
-epochs implied by Eager, Count, or Bounded `B`/`W` policy settings. The same
-complete 50-task universe is resident for a trial while only admitted tasks
-are marked active. One MicroPython VM remains alive for the trial and restores
-the four logical robot contexts outside the timed region.
-Each admission epoch carries its index, trigger reason, task IDs, and admitted
-cells through the persistent protocol. The native runtime records that event
-idempotently and invalidates visible-set-dependent allocator caches exactly
-once per robot (on round zero), so later consensus rounds do not repeat the
-reset.
+For a causal trial, the host keeps one persistent MicroPython VM and four
+logical robot contexts. Trial setup does not reveal a complete 50-task
+universe. The resident target registry starts with only delivered admissions
+and appends a coordinate when its reliable environment announcement reaches
+that logical robot.
 
-The RP2040 timer encloses only `choose_goal()`. State setup, context restore,
-USB transport, result serialization, and journaling are separately recorded
-as host overhead. Every accepted call verifies
-`candidate_count_before == candidate_count_after`.
+The host stages already decoded allocator events in causal order. Admission
+hooks, peer-consensus messages, allocator-native task-completion repair, and a
+robot-requested recovery action execute as the first part of the next timed
+allocator call. The same timer then covers goal selection, bundle/path repair,
+and bidding. State/context setup, USB transport, wire decoding, snapshots,
+outbound extraction, result serialization, journaling, and explicit pre-call
+garbage collection remain outside the allocator timer.
 
-This is a **motionless arrival-epoch allocator replay**. It validates embedded
-allocator computation; it does not substitute for the simulator's movement,
-task completion, or mandatory robot-idle/completion allocation epochs. Join
-HIL results to simulation results through `paired_manifest_id` and
-`paired_manifest_sha256`.
+Admission is idempotent and non-destructive: it cannot clear a valid goal,
+claim, bundle, or path. The legacy epoch-reset timing component is zero. CBAA
+bids over every locally known active task while retaining one current task;
+ACBBA, PI, and HIPC have no bundle-size cap. Every accepted physical call still
+verifies candidate counts, result/message/mechanism parity, and post-state
+parity against the authoritative host call.
+
+CBAA retains the auction-time value of a valid current claim while the robot
+moves. Neither the host nor native runtime may recompute or rebroadcast that
+value solely because position changed. A new bid requires a real claim
+lifecycle event such as outbid, completion, invalidation, targeted recovery
+release, or selection of another task.
+
+The standalone release-trace HIL commands below are retained for protocol and
+historical motionless replay. They do not contain the full causal stream of
+peer/completion/recovery events and therefore are not, by themselves, the
+hardware arm of the corrected experiment. Hardware timings for the rerun must
+come from the causal simulation provider and fresh output roots.
 
 ## Software validation
 
@@ -64,7 +76,8 @@ exact `--ports COM12 ...` list is the operator allow-list when a board does not
 enumerate with one of those known IDs. Preflight re-runs live `HELLO` and
 `CHECK`, hashes the deployed module set against the selected build, binds the
 firmware identity, and exercises initial visibility, later online admission,
-and duplicate-epoch idempotence for all six allocators.
+and duplicate-epoch idempotence. Current-study evidence must cover the four
+primary allocators.
 
 ## Pilot and selected campaign
 
@@ -97,9 +110,7 @@ Reports are written under `results/hil_reallocation_coalescing/<campaign>/`:
 - `reports/trial_metrics.csv`;
 - `reports/condition_metrics.csv` and `reports/summary.json`.
 
-The supplied pilot is intentionally small (one medium-load paired trace,
-Eager/Count-4/Bounded-4-5s, and the four core allocators). The selected HIL
-campaign uses five paired traces, calibrated low/medium/high arrival rates of
-0.075/0.3/1.2 tasks/s, B=1/2/4/8 plus bounded B=4, W=5s, and the four core
-allocators. DMCHBA and DGA remain selectable by adding their names to a new
-config; no source edit is required.
+The supplied pilot and selected standalone HIL campaign are archived
+pre-correction configurations. DMCHBA and DGA remain technically selectable,
+which is precisely why a fresh current-study configuration must explicitly
+allow only CBAA, ACBBA, PI, and HIPC.

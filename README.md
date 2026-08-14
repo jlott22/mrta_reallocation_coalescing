@@ -1,25 +1,67 @@
 # MRTA Reallocation Coalescing
 
-## Final experiment results
+## Current rerun architecture
+
+New experiments use one architecture, not a selectable compatibility mode.
+The simulator enforces only the release/admission boundary: Eager admits one
+task, Count admits exact `B`-task batches, and Bounded admits at `B` or its
+configured age timeout. Completion, invalid-goal, and idle events never
+piggyback pending tasks. A final sub-`B` residual is admitted only after the
+last release and after every previously admitted task is physically complete.
+
+Robots learn tasks only through timestamped admission messages and learn peer
+state/completion only through messages. New admissions do not recall a current
+goal or reset allocator state. ACBBA, PI, and HIPC use uncapped bundles over all
+locally known admitted tasks; CBAA stays a single-current-task auction but bids
+over that same full pool. Idle robots do not poll. A robot with known unfinished
+work and no goal may invoke its allocator's targeted, non-destructive recovery
+only at its own liveness deadline.
+
+One allocator timing sample includes queued allocator input handling,
+allocator-native completion/admission hooks, targeted recovery, and goal
+selection. Communication transport/decoding, setup, snapshots, outbound-message
+construction, and serialization remain outside the timer. See
+[`docs/SIMULATION_ARCHITECTURE.md`](docs/SIMULATION_ARCHITECTURE.md) for the
+complete contract.
+
+The replacement pilot selected **0.075, 0.30, and 0.60 tasks/s** and the five
+policies **Eager, Count B2/B4/B8, and Bounded B4/W10**. See
+[`PILOT_REPORT.md`](PILOT_REPORT.md). These values supersede every calibrated
+value in the archived sections below.
+
+The authoritative launch package for the corrected rerun is
+[`AGX_CORRECTED_EXPERIMENT_HANDOFF/`](AGX_CORRECTED_EXPERIMENT_HANDOFF/README.md).
+It fixes the matrix, CPU ownership, two-round sequence, brief preflight, analysis
+hierarchy, and replacement-data procedure for a fresh AGX clone.
+
+CBAA now treats its winning value as an auction-time claim: movement toward a
+retained task does not recompute or rebroadcast the bid. It bids again only
+after the retained claim is genuinely lost or released, preventing delayed
+old/new bid messages from creating a movement-driven consensus loop. The same
+rule is implemented in the desktop and native runtimes.
+
+## Archived pre-correction results
 
 The completed n=50 primary evaluation, hardware timing validation, verification
 matrix, figures, and compact checksummed exports are available in
 [`publication/aug14_final_v1/`](publication/aug14_final_v1/RESULTS.md). The
-current system structure and data path are documented in
-[`docs/SIMULATION_ARCHITECTURE.md`](docs/SIMULATION_ARCHITECTURE.md).
+bundle is retained for provenance only: its admission and allocator-lifecycle
+semantics predate the current design and its results are not valid inputs to the
+rerun.
 
-> **Current study path: causal native campaign.** The calibrated noncausal
+> **Historical execution path.** The calibrated noncausal
 > simulation/HIL workflow described later in this file is retained as historical
-> evidence and is superseded for the paper experiment by
+> evidence. The listed causal campaign also predates the strict-bound correction
+> and must not be resumed into a new dataset. It was described by
 > `CAUSAL_IMPLEMENTATION_REPORT.md`, `EXPERIMENTAL_PLAN.md`, and
-> `AGX_NATIVE_RUNBOOK.md`. The current design uses exactly three AGX workers and
+> `AGX_NATIVE_RUNBOOK.md`. That design used exactly three AGX workers and
 > three RP2040 timing boards, feeds device allocator durations (`choose_goal()`
 > plus any policy-induced allocation-epoch reset callback) into a causal
-> four-logical-processor mission, and requires fresh native calibration plus an
-> explicit design freeze. Do not launch the old `run_agx_full_campaign.sh` path
-> for the causal paper.
+> four-logical-processor mission. Do not launch or resume either old campaign
+> path for the corrected experiment; create fresh manifests and output roots
+> after validation and a new design freeze.
 
-The native causal entry sequence is:
+The archived native causal entry sequence was:
 
 ```bash
 bash scripts/agx_prepare_rp2040_boards.sh PORT_A,PORT_B,PORT_C
@@ -35,9 +77,8 @@ bash scripts/agx_run_zero_compute_counterfactuals.sh
 bash scripts/agx_analyze_full_causal_campaign.sh
 ```
 
-Several stages deliberately require review environment variables and the first
-environment check deliberately records a FAIL before acknowledgment. Follow
-`AGX_NATIVE_RUNBOOK.md` rather than copying this list without its gate steps.
+These commands are preserved only to interpret the archived campaign. They are
+not a launch recipe for the corrected rerun.
 
 ## Historical first-generation overview
 
@@ -51,7 +92,7 @@ ACBBA, PI, and HIPC on paired 19x19, four-robot, 50-task traces. DMCHBA and DGA
 remain operational and have full-size smoke coverage. Candidate enumeration is
 unrestricted; this is neither a Top-K study nor task/route bundling.
 
-## Calibrated design
+## Archived calibrated design
 
 - Eight tasks are visible at time zero; 42 arrive online.
 - Low/medium/high arrival rates are 0.075, 0.30, and 1.20 tasks per simulated
@@ -90,14 +131,15 @@ non-overwriting. A full run refuses a dirty source tree. Output goes under
 failures, trial-level paired deltas, condition summaries, and three clean
 paper-figure CSVs. See `study/README.md` for schemas and recovery behavior.
 
-## RP2040/Pololu HIL
+## RP2040/Pololu replay
 
-The HIL path is a motor-free, persistent MicroPython replay of selected
-arrival/admission epochs. It times allocator goal selection and the
-policy-induced allocation-epoch reset separately on the device, then reports
-host/serial overhead separately. It does not reproduce robot motion or the
-simulator's task-completion/idle epochs, so it validates embedded allocation
-compute rather than physical mission elapsed time.
+The RP2040 path is motor-free and keeps persistent native contexts. In a causal
+mission it receives only task coordinates already delivered to the logical
+robot, plus ordered allocator messages, completion hooks, and recovery requests.
+The device timer covers processing those allocator inputs and `choose_goal` as
+one transaction. Host/serial setup, transport, and result extraction are
+reported separately. Without connected boards, loopback/native tests establish
+software semantics and protocol parity but do not provide hardware timing.
 
 On the Windows HIL host:
 
@@ -129,10 +171,10 @@ python -m unittest discover -s study/tests -v
 python -m unittest discover -s Tests/HIL/AllocatorReplay -v
 ```
 
-The generated manifests and raw campaign/HIL results are intentionally separate:
-sealed final manifests are versioned in Git, while large machine-specific raw
-outputs are ignored. Never infer statistical significance from task-level rows;
-the paired trial is the experimental replicate.
+Generated manifests and raw campaign/HIL results are intentionally separate.
+Do not append corrected runs to the archived manifests or output roots. Never
+infer statistical significance from task-level rows; the paired trial is the
+experimental replicate.
 
 ## Repository map
 

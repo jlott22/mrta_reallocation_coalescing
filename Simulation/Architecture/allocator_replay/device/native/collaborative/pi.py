@@ -15,24 +15,98 @@ class PIAllocator(NativeAllocatorBase):
         # snapshot even when the retained path itself is unchanged.
         self.snapshot_requested = False
 
+    def recover_stalled_allocation(self, payload=None):
+        """Expire at most one locally blocking peer significance entry.
+
+        Recovery is deliberately a lease decision local to this allocator. It
+        neither clears the retained PI path nor fabricates a release message
+        from the peer whose stale entry is expired.  The ordinary inclusion
+        pass that follows will publish this robot's new claim if it wins.
+        """
+
+        del payload
+        state = self.state
+        if self.path:
+            return True
+
+        blocked = None
+        for slot in self.candidates():
+            insertion_index, marginal = self.best_insertion([], slot)
+            owner = int(state.claim_owner[slot])
+            known = (
+                self.INF
+                if owner < 0
+                else max(0.0, float(state.claim_value[slot]))
+            )
+            if self.owner_wins(slot, marginal, higher_is_better=False):
+                return True
+            if owner < 0 or owner == state.robot_index:
+                continue
+            candidate = (
+                slot,
+                insertion_index,
+                marginal,
+                known - marginal,
+                False,
+            )
+            if self._better(candidate, blocked):
+                blocked = candidate
+
+        if blocked is None:
+            return False
+        state.clear_claim(blocked[0])
+        self.last_call_path = "stalled_peer_claim_expired"
+        return True
+
     def _next_time(self):
         self.time_counter += 1
         return self.time_counter
 
-    def on_allocation_epoch(self, reason, admitted_cells, epoch_index=None):
-        reset = NativeAllocatorBase.on_allocation_epoch(
-            self, reason, admitted_cells, epoch_index
-        )
-        if admitted_cells:
-            self.time_counter = 0
-        return reset
+    def on_task_completed(self, cell, reason="", local=False):
+        """Remove only the completed PI item and retain the remaining path."""
+
+        del reason, local
+        state = self.state
+        slot = state.slot_for_cell(cell)
+        if slot is None:
+            return False
+        invalidated_goal = state.current_goal == int(state.targets[slot])
+        if slot in self.path:
+            self.path = [item for item in self.path if item != slot]
+            if state.claim_owner[slot] == state.robot_index:
+                state.clear_claim(slot)
+            self._refresh_local_significance()
+            self.snapshot_requested = True
+        elif state.claim_owner[slot] >= 0:
+            state.clear_claim(slot)
+            self.snapshot_requested = True
+        self.last_call_path = "task_completion_repair"
+        return invalidated_goal
 
     def _refresh_local_significance(self):
         state = self.state
-        full_cost = self.route_cost(self.path)
         for index, slot in enumerate(self.path):
-            without = self.path[:index] + self.path[index + 1 :]
-            significance = max(0.0, full_cost - self.route_cost(without))
+            previous = (
+                state.position
+                if index == 0
+                else state.targets[self.path[index - 1]]
+            )
+            significance = state.adjusted_cost(
+                state.distance(previous, state.targets[slot]), slot
+            )
+            if index + 1 < len(self.path):
+                following = self.path[index + 1]
+                significance += state.adjusted_cost(
+                    state.distance(
+                        state.targets[slot], state.targets[following]
+                    ),
+                    following,
+                )
+                significance -= state.adjusted_cost(
+                    state.distance(previous, state.targets[following]),
+                    following,
+                )
+            significance = max(0.0, significance)
             owner = int(state.claim_owner[slot])
             previous = float(state.claim_value[slot])
             epoch = int(state.claim_epoch[slot])
@@ -129,14 +203,24 @@ class PIAllocator(NativeAllocatorBase):
             self.snapshot_requested = True
 
         changed = False
-        horizon = state.commitment_horizon
-        while len(self.path) < horizon:
+        while True:
             candidates = self.candidates()
             best = None
             for slot in candidates:
                 if slot in self.path:
                     continue
-                insertion_index, marginal = self.best_insertion(self.path, slot)
+                first_index = 0
+                if (
+                    state.is_admission_allocation()
+                    and self.path
+                    and state.current_goal
+                    == int(state.targets[self.path[0]])
+                    and state.is_candidate(self.path[0])
+                ):
+                    first_index = 1
+                insertion_index, marginal = self.best_insertion(
+                    self.path, slot, first_index
+                )
                 owner = int(state.claim_owner[slot])
                 known = (
                     self.INF
@@ -221,11 +305,55 @@ class PIAllocator(NativeAllocatorBase):
         )
 
     def handle_message(self, message):
-        return self.parse_claim_message(
+        if not isinstance(message, dict):
+            return False
+        message_type = message.get("type")
+        if message_type not in (
+            "pi_entry",
+            "pi_clear_path",
+            "acbba_entry",
+            "cbaa_entry",
+        ):
+            return False
+        state = self.state
+        sender = state.owner_index(message.get("sender"))
+        if sender < 0 or sender == state.robot_index:
+            return False
+
+        changed = False
+        path_cells = message.get("path_cells")
+        if isinstance(path_cells, list):
+            included = set()
+            for item in path_cells:
+                try:
+                    cell = (
+                        (item["x"], item["y"])
+                        if isinstance(item, dict)
+                        else item
+                    )
+                    slot = state.slot_for_cell(cell)
+                    if slot is not None:
+                        included.add(slot)
+                except (KeyError, TypeError, ValueError):
+                    continue
+            for slot in range(len(state.targets)):
+                if state.claim_owner[slot] == sender and slot not in included:
+                    state.clear_claim(slot)
+                    changed = True
+
+        if message_type == "pi_clear_path":
+            if changed:
+                self.last_call_path = "message_updated_consensus"
+            return changed
+
+        changed = self.parse_claim_message(
             message,
             ("pi_entry", "acbba_entry", "cbaa_entry"),
             lower_is_better=True,
-        )
+        ) or changed
+        if changed:
+            self.last_call_path = "message_updated_consensus"
+        return changed
 
     def export_resume(self):
         result = NativeAllocatorBase.export_resume(self)

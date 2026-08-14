@@ -1,5 +1,17 @@
 # Implementation test report
 
+> **Archived pre-correction test record.** These counts validate an earlier
+> architecture that allowed piggyback/final-release admission and a narrower
+> allocator timer. They are not test evidence for the corrected rerun.
+
+**Corrected-rerun addendum (2026-08-14):** the current simulator, campaign,
+and native/HIL suites pass 68/68, 54/54, and 102/102 tests respectively
+(224/224 total). Dedicated desktop, native-runtime, and causal-device tests
+verify that CBAA movement preserves the retained auction-time bid and emits no
+movement-only rebid. The corrected pilot then completed a previously
+pathological 50-task CBAA trace after the same desktop/native change. These
+current counts supersede the archived counts below for rerun readiness.
+
 Date prepared: 2026-08-09 (America/Los_Angeles)
 
 ## Status

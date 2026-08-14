@@ -1,5 +1,13 @@
 # AGX Orin + three-RP2040 native runbook
 
+> **Archived pre-correction runbook.** Do not run or resume the named campaign
+> stages into a corrected dataset. The RP2040 transport, persistent-context,
+> safety, and attestation procedures remain relevant, but fresh manifests,
+> output roots, smoke gates, and a new design freeze are required after the
+> strict-bound architecture in `docs/SIMULATION_ARCHITECTURE.md` is validated.
+> In particular, device work is now the inclusive allocator transaction, not
+> `choose_goal` plus a destructive epoch-reset component.
+
 ## Purpose and stop rule
 
 Follow this order from a clean clone on the AGX Orin. Do not skip, manually edit

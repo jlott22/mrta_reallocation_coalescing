@@ -247,6 +247,10 @@ class CausalComputeTests(unittest.TestCase):
         self.assertEqual(
             stagnant.algorithmic_failure_type, "stagnation_horizon"
         )
+        self.assertIsNotNone(
+            next(iter(stagnant.robots.values()))._last_recovery_attempt_s,
+            "stagnation diagnosis must not pre-empt the robot-owned recovery timer",
+        )
 
     def test_same_time_group_has_independent_completions_not_serial_sum(self) -> None:
         durations = {"00": 0.40, "01": 0.55, "02": 0.37, "03": 0.61}
@@ -540,7 +544,7 @@ class CausalComputeTests(unittest.TestCase):
                         BadSplitProvider(choose_goal_us, epoch_reset_us),
                     )
 
-    def test_agx_epoch_callback_is_timed_and_composed_with_choose_goal(self) -> None:
+    def test_admission_hook_is_inside_single_allocator_transaction_timer(self) -> None:
         ticks = itertools.count(start=0, step=2_000)
         with patch(
             "known_visit_sim.core.robot.perf_counter_ns",
@@ -561,23 +565,25 @@ class CausalComputeTests(unittest.TestCase):
         epoch_calls = [
             call
             for call in state.reallocation_scheduler.allocator_calls
-            if call.agx_algorithm_epoch_reset_duration_ns > 0
+            if call.trigger_reason == "task_arrival_eager"
         ]
         self.assertEqual(len(epoch_calls), 1)
         call = epoch_calls[0]
         self.assertEqual(call.agx_choose_goal_duration_ns, 2_000)
-        self.assertEqual(call.agx_algorithm_epoch_reset_duration_ns, 2_000)
-        self.assertEqual(call.agx_allocator_duration_ns, 4_000)
+        self.assertEqual(call.agx_algorithm_epoch_reset_duration_ns, 0)
+        self.assertEqual(call.agx_allocator_duration_ns, 2_000)
+        self.assertGreaterEqual(call.allocator_input_event_count, 1)
         self.assertEqual(
             call.agx_allocator_duration_ns,
             call.agx_choose_goal_duration_ns
             + call.agx_algorithm_epoch_reset_duration_ns,
         )
-        # The host proxy consumes the same frozen decomposition, proving the
-        # authoritative call boundary includes both allocator operations.
-        self.assertEqual(call.device_allocator_duration_ns, 4_000)
+        # The admission hook, decoded consensus inputs, recovery, and goal
+        # selection share one indivisible allocator transaction timer.  The
+        # former destructive epoch-reset component is permanently zero.
+        self.assertEqual(call.device_allocator_duration_ns, 2_000)
         self.assertEqual(call.device_choose_goal_duration_ns, 2_000)
-        self.assertEqual(call.algorithm_epoch_reset_duration_ns, 2_000)
+        self.assertEqual(call.algorithm_epoch_reset_duration_ns, 0)
         metrics = state.online_metrics()
         self.assertAlmostEqual(
             metrics["rp2040_allocator_processor_work_s"],
@@ -589,12 +595,8 @@ class CausalComputeTests(unittest.TestCase):
             metrics["agx_choose_goal_processor_work_s"]
             + metrics["agx_epoch_reset_processor_work_s"],
         )
-        self.assertAlmostEqual(
-            metrics["rp2040_epoch_reset_processor_work_s"], 0.000002
-        )
-        self.assertAlmostEqual(
-            metrics["agx_epoch_reset_processor_work_s"], 0.000002
-        )
+        self.assertEqual(metrics["rp2040_epoch_reset_processor_work_s"], 0.0)
+        self.assertEqual(metrics["agx_epoch_reset_processor_work_s"], 0.0)
 
 
 class CausalMovementAndMetricTests(unittest.TestCase):
@@ -831,7 +833,17 @@ class CausalRawOutputTests(unittest.TestCase):
                 calls = list(csv.DictReader(handle))
             self.assertEqual(len(calls), summary["allocator_call_count"])
             self.assertGreaterEqual(len(calls), 4)
-            self.assertTrue(all(float(row["rp2040_device_duration_s"]) == 0.0 for row in calls))
+            self.assertTrue(all(row["rp2040_device_duration_s"] == "" for row in calls))
+            self.assertTrue(
+                all(float(row["allocator_processor_duration_s"]) == 0.0 for row in calls)
+            )
+            self.assertTrue(
+                all(
+                    row["allocator_processor_timing_source"]
+                    == "zero_compute_counterfactual"
+                    for row in calls
+                )
+            )
             self.assertTrue(all(row["virtual_compute_start_s"] == row["virtual_compute_completion_s"] for row in calls))
             self.assertTrue(
                 all(
@@ -955,7 +967,10 @@ class CausalRawOutputTests(unittest.TestCase):
                 all(
                     int(row["device_choose_goal_us"])
                     + int(row["algorithm_epoch_reset_us"])
-                    == round(float(row["rp2040_device_duration_s"]) * 1_000_000)
+                    == round(
+                        float(row["allocator_processor_duration_s"])
+                        * 1_000_000
+                    )
                     for row in causal_calls
                 )
             )
@@ -965,7 +980,10 @@ class CausalRawOutputTests(unittest.TestCase):
             )
             self.assertTrue(causal_validation["valid"])
             self.assertGreater(
-                causal_validation["rp2040_allocator_processor_work_s"], 0.0
+                causal_validation["allocator_processor_work_s"], 0.0
+            )
+            self.assertIsNone(
+                causal_validation["rp2040_allocator_processor_work_s"]
             )
 
 

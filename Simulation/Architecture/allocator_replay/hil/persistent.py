@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from allocator_replay.capture.codec import canonical_json_bytes
+from allocator_replay.host.transport import compact_causal_events
 
 
 STATE_SECTIONS = (
@@ -47,7 +48,9 @@ def event_batches(
     batches: list[list[dict[str, Any]]] = []
     for event in events:
         batch = [event]
-        encoded_size = len(canonical_json_bytes(batch))
+        encoded_size = len(
+            canonical_json_bytes(compact_causal_events(batch))
+        )
         if encoded_size > max_bytes:
             raise ValueError(
                 "persistent callback event exceeds bounded setup payload: "

@@ -6,7 +6,20 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 cd "${REPO_ROOT}"
-exec "${PYTHON_BIN}" -m study.campaign \
+"${PYTHON_BIN}" -m study.campaign \
   --repo-root "${REPO_ROOT}" \
   --config "${REPO_ROOT}/configs/agx_pilot.json" \
   "$@"
+"${PYTHON_BIN}" -m study.campaign \
+  --repo-root "${REPO_ROOT}" \
+  --config "${REPO_ROOT}/configs/agx_pilot_rate_confirmation.json" \
+  "$@"
+"${PYTHON_BIN}" -m study.campaign \
+  --repo-root "${REPO_ROOT}" \
+  --config "${REPO_ROOT}/configs/agx_pilot_policy_sweep.json" \
+  "$@"
+"${PYTHON_BIN}" -m study.campaign \
+  --repo-root "${REPO_ROOT}" \
+  --config "${REPO_ROOT}/configs/agx_pilot_zero_diagnostic.json" \
+  "$@"
+exec "${PYTHON_BIN}" "${REPO_ROOT}/scripts/analyze_corrected_pilot.py"

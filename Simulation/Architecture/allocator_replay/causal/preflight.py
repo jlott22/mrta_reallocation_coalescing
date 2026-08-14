@@ -61,6 +61,30 @@ def _native_implementation(value: str) -> bool:
     )
 
 
+def _resident_active_task_count(post_state: Mapping[str, Any]) -> int | None:
+    """Read the admitted-task registry from a collaborative native snapshot.
+
+    Candidate-filter counters describe work performed by a particular choose
+    path, not resident knowledge.  A non-destructive CBAA admission can retain
+    its valid cached goal without running that filter, so online-growth
+    preflight must inspect the allocator's active registry itself.
+    """
+
+    try:
+        resume = post_state["allocator_attrs"]["native_collaborative_resume"]
+        active = resume["state"]["active"]
+    except (KeyError, TypeError):
+        try:
+            active = post_state["views"]["active_tasks"]
+        except (KeyError, TypeError):
+            return None
+    if isinstance(active, Sequence) and not isinstance(
+        active, (str, bytes, bytearray)
+    ):
+        return len(active)
+    return None
+
+
 def _canonical_bytes(value: Any) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -709,8 +733,11 @@ def run_native_preflight(
                         active_count=3,
                     )
                     online = session.measure_group((online_call,))[0]
+                    row["online_active_task_count"] = (
+                        _resident_active_task_count(online.device_post_state)
+                    )
                     row["online_growth"] = (
-                        online.candidate_count_after == 3
+                        row["online_active_task_count"] == 3
                         and online.device.call_class == "full_allocation_solve"
                     )
                     row["persistent"] = session.context_call_count["robot_0"] == 2

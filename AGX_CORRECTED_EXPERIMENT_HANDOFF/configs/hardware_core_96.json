@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "manifest": {
+    "manifest_set_id": "collaborative_visit_g19_t50_n50_corrected_v1",
+    "root": "study/generated/manifests",
+    "master_seed": 2026081406,
+    "trace_count": 50,
+    "grid_size": 19,
+    "robot_count": 4,
+    "task_count": 50,
+    "initial_task_count": 8,
+    "arrival_loads": {"low": 0.075, "medium": 0.3, "high": 0.6},
+    "arrival_rate_units": "tasks_per_mission_second",
+    "design_status": "corrected_four_trace_three_board_subset"
+  },
+  "campaign": {
+    "campaign_id": "corrected_hardware_core_96_v1",
+    "stage": "publication_core",
+    "output_root": "study/output/corrected_hardware_core_96_v1",
+    "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
+    "loads": ["low", "medium", "high"],
+    "policies": [
+      {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1},
+      {"policy_id": "count_b4", "mode": "count", "batch_size": 4}
+    ],
+    "trace_limit": 4,
+    "schedule_seed": 2026081415,
+    "max_technical_retries": 1,
+    "runner_factory": "study.causal.worker:run_causal_job",
+    "required_gate_paths": [
+      "study/native_gates/environment/native_environment_report.json",
+      "study/native_gates/preflight/native_preflight_report.json",
+      "study/native_gates/smoke/causal_smoke_report.json"
+    ],
+    "require_clean_source": true,
+    "notes": "Fixed 96-mission RP2040 subset: four algorithms, three loads, Eager/B4, four paired traces, three boards."
+  },
+  "hardware": {
+    "bindings_file": "configs/local/agx_board_bindings.json",
+    "development_override": false,
+    "provider_factory": "study.causal.worker:create_timing_provider"
+  }
+}
