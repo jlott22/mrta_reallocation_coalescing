@@ -14,9 +14,9 @@
     "design_status": "corrected_four_trace_four_board_subset"
   },
   "campaign": {
-    "campaign_id": "corrected_rp2040_smoke_8_v2",
+    "campaign_id": "corrected_rp2040_smoke_8_v3",
     "stage": "smoke",
-    "output_root": "study/output/corrected_rp2040_smoke_8_v2",
+    "output_root": "study/output/corrected_rp2040_smoke_8_v3",
     "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
     "loads": ["medium"],
     "policies": [
@@ -32,7 +32,7 @@
       "study/native_gates/preflight/native_preflight_report.json"
     ],
     "require_clean_source": true,
-    "notes": "Engineering-only, non-inferential RP2040 smoke: 4 allocators x Eager/B4 x medium x trace 0000 = 8 missions. The v2 restart has a separate result identity, produces the fresh smoke gate required by hardware_core_96, and must neither resume nor be pooled with aborted v1 output or with the 96-mission subset."
+    "notes": "Engineering-only, non-inferential RP2040 smoke: 4 allocators x Eager/B4 x medium x trace 0000 = 8 missions. The v3 restart has a separate result identity, produces the fresh smoke gate required by hardware_core_96, and must neither resume nor be pooled with aborted v1/v2 output or with the 96-mission subset."
   },
   "hardware": {
     "bindings_file": "configs/local/agx_board_bindings.json",

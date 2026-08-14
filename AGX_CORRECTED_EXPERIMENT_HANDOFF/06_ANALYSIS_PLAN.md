@@ -3,9 +3,9 @@
 The replicate is the mission trace, not a task, call, message, or epoch. Use
 paired trace-level contrasts against Eager within `(allocator, load, trace)`.
 
-Analyze only the `_v2` campaign roots from this restart. The retained `_v1`
-trees are aborted technical evidence and are excluded from every denominator,
-table, model, and pooled dataset.
+Analyze only the `_v3` campaign roots from this restart. The retained `_v1`
+and `_v2` trees are aborted technical evidence and are excluded from every
+denominator, table, model, and pooled dataset.
 
 Primary hierarchy:
 

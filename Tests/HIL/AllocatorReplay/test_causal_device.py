@@ -848,6 +848,107 @@ class NativeFourContextSlotTests(unittest.TestCase):
         # unadmitted suffix.  An unchanged retained prefix is not rebroadcast.
         self.assertEqual(messages, [])
 
+    def test_hipc_repairs_before_later_peer_entry(self) -> None:
+        """Later queued HIPC entries must not see a stale self-owned suffix."""
+
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "HIPC", ROBOT_IDS[0]
+        )
+        first = (1, 1)
+        second = (3, 3)
+        pre_state["robot_attrs"].update(
+            {
+                "hipc_path": [first, second],
+                "hipc_bundle": [first, second],
+                "hipc_winner_by_cell": {
+                    first: ROBOT_IDS[0],
+                    second: ROBOT_IDS[0],
+                },
+                "hipc_winning_bid_by_cell": {
+                    first: -3.0,
+                    second: -1.0,
+                },
+                "hipc_bid_time_by_cell": {
+                    first: 2.0,
+                    second: 3.0,
+                },
+                "hipc_bid_counter": 3,
+            }
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, pre_state)
+        first_slot = runtime.state.slot_for_cell(first)
+        second_slot = runtime.state.slot_for_cell(second)
+        self.assertIsNotNone(first_slot)
+        self.assertIsNotNone(second_slot)
+        runtime.state.current_goal = runtime.state.targets[first_slot]
+
+        observations = []
+        original_handle = runtime.allocator.handle_message
+
+        def observe(message):
+            changed = original_handle(message)
+            observations.append(
+                {
+                    "sender": message["sender"],
+                    "path": list(runtime.allocator.path),
+                    "second_owner": int(
+                        runtime.state.claim_owner[second_slot]
+                    ),
+                    "current_goal": runtime.state.current_goal,
+                }
+            )
+            return changed
+
+        runtime.allocator.handle_message = observe
+        runtime.apply_delta(
+            {
+                "events": [
+                    {
+                        "kind": "allocator_message",
+                        "payload": {
+                            "type": "hipc_entry",
+                            "sender": ROBOT_IDS[1],
+                            "x": first[0],
+                            "y": first[1],
+                            "winner": ROBOT_IDS[1],
+                            "bid": -1.0,
+                            "timestamp": 4,
+                            "order": 0,
+                            "bundle_cells": [{"x": first[0], "y": first[1]}],
+                            "bundle_size": 1,
+                        },
+                    },
+                    {
+                        "kind": "allocator_message",
+                        "payload": {
+                            "type": "hipc_entry",
+                            "sender": ROBOT_IDS[2],
+                            "x": second[0],
+                            "y": second[1],
+                            # This bid loses to the stale local claim, but it
+                            # must be accepted after the first callback drops
+                            # the dependent local suffix.
+                            "winner": ROBOT_IDS[2],
+                            "bid": -100.0,
+                            "timestamp": 5,
+                            "order": 0,
+                            "bundle_cells": [{"x": second[0], "y": second[1]}],
+                            "bundle_size": 1,
+                        },
+                    },
+                ]
+            }
+        )
+
+        runtime.choose_goal()
+
+        self.assertEqual(len(observations), 2)
+        self.assertEqual(observations[0]["path"], [])
+        self.assertEqual(observations[0]["second_owner"], -1)
+        self.assertIsNone(observations[0]["current_goal"])
+        self.assertEqual(observations[1]["second_owner"], 2)
+
     def test_pi_equal_cost_inclusion_uses_desktop_xy_tie_break(self) -> None:
         config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
             "PI", ROBOT_IDS[0]

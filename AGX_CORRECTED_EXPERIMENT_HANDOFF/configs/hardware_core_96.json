@@ -14,9 +14,9 @@
     "design_status": "corrected_four_trace_four_board_subset"
   },
   "campaign": {
-    "campaign_id": "corrected_hardware_core_96_v2",
+    "campaign_id": "corrected_hardware_core_96_v3",
     "stage": "publication_core",
-    "output_root": "study/output/corrected_hardware_core_96_v2",
+    "output_root": "study/output/corrected_hardware_core_96_v3",
     "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
     "loads": ["low", "medium", "high"],
     "policies": [
@@ -33,7 +33,7 @@
       "study/native_gates/smoke/causal_smoke_report.json"
     ],
     "require_clean_source": true,
-    "notes": "Fixed 96-mission RP2040 subset: four algorithms, three loads, Eager/B4, four paired traces, four boards. This v2 restart is inferentially separate from the engineering-only 8-mission smoke and must not resume or pool aborted v1 output."
+    "notes": "Fixed 96-mission RP2040 subset: four algorithms, three loads, Eager/B4, four paired traces, four boards. This v3 restart is inferentially separate from the engineering-only 8-mission smoke and must not resume or pool aborted v1/v2 output."
   },
   "hardware": {
     "bindings_file": "configs/local/agx_board_bindings.json",

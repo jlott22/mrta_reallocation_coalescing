@@ -13,8 +13,8 @@
     "design_status": "corrected_strict_bound_message_only_n50"
   },
   "campaign": {
-    "campaign_id": "corrected_round2_causal_v2",
-    "output_root": "study/output/corrected_round2_causal_v2",
+    "campaign_id": "corrected_round2_causal_v3",
+    "output_root": "study/output/corrected_round2_causal_v3",
     "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
     "loads": ["low", "medium", "high"],
     "policies": [
@@ -38,6 +38,6 @@
     "allow_dirty": false,
     "required_outputs": ["trial_summary.json", "task_events.csv", "allocation_epochs.csv"],
     "runner": {"module": "known_visit_sim.run_online_trials", "extra_args": ["--timing-mode", "agx_host_proxy"]},
-    "notes": "Unrestricted Round 2 causal matrix on new traces 25-49; no result-derived allowlist. This v2 restart must not resume or pool the aborted v1 result tree."
+    "notes": "Unrestricted Round 2 causal matrix on new traces 25-49; no result-derived allowlist. This v3 restart must not resume or pool the aborted v1/v2 result trees."
   }
 }

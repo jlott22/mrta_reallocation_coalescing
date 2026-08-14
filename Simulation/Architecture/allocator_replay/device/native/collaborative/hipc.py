@@ -156,6 +156,23 @@ class HIPCAllocator(NativeAllocatorBase):
         self.path = self.path[:first_bad]
         return True
 
+    def _repair_bundle_after_consensus(self):
+        """Repair a lost local bundle before the next inbound HIPC entry.
+
+        Desktop HIPC performs its suffix repair in the receive handler.  The
+        native runtime drains a burst of peer callbacks before ``choose()``,
+        so deferring this work until ``choose`` lets a later callback inspect
+        stale self-owned cells and preserve old bid timestamps.
+        """
+
+        return self._truncate_invalid_suffix()
+
+    def _sync_current_goal_after_message(self):
+        """Mirror the desktop handler's conservative invalid-goal repair."""
+
+        if self.state.current_goal is not None and not self.path:
+            self.state.current_goal = None
+
     def choose(self):
         state = self.state
         for slot in range(len(state.targets)):
@@ -258,6 +275,7 @@ class HIPCAllocator(NativeAllocatorBase):
 
         self._update_prediction_quality(message, sender)
         changed = False
+        repaired = False
         bundle = message.get("bundle_cells")
         if isinstance(bundle, list):
             included = set()
@@ -277,11 +295,15 @@ class HIPCAllocator(NativeAllocatorBase):
                 if state.claim_owner[slot] == sender and slot not in included:
                     state.clear_claim(slot)
                     changed = True
+            # A bundle declaration can invalidate this robot's dependent
+            # suffix before the entry in the same message is reconciled.
+            repaired = self._repair_bundle_after_consensus()
 
         if message.get("type") == "hipc_clear_bundle":
-            if changed:
+            self._sync_current_goal_after_message()
+            if changed or repaired:
                 self.last_call_path = "message_updated_consensus"
-            return changed
+            return changed or repaired
 
         try:
             slot = state.slot_for_cell((message["x"], message["y"]))
@@ -295,9 +317,22 @@ class HIPCAllocator(NativeAllocatorBase):
                 float(message.get("timestamp", message.get("bid_time", 0)))
             )
         except (KeyError, TypeError, ValueError):
-            return changed
-        if slot is None or not state.is_candidate(slot):
-            return changed
+            self._sync_current_goal_after_message()
+            return changed or repaired
+        if slot is None:
+            self._sync_current_goal_after_message()
+            return changed or repaired
+        if not state.is_candidate(slot):
+            # The desktop receiver clears an entry that has become invalid or
+            # completed, then repairs any local suffix that depended on it.
+            if state.claim_owner[slot] >= 0:
+                state.clear_claim(slot)
+                changed = True
+            repaired = self._repair_bundle_after_consensus() or repaired
+            self._sync_current_goal_after_message()
+            if changed or repaired:
+                self.last_call_path = "message_updated_consensus"
+            return changed or repaired
 
         local_owner = int(state.claim_owner[slot])
         local_bid = float(state.claim_value[slot])
@@ -319,9 +354,13 @@ class HIPCAllocator(NativeAllocatorBase):
                     slot, incoming_owner, incoming_bid, incoming_time
                 )
             changed = True
-        if changed:
+        # Match the desktop receive path: later queued callbacks must observe
+        # the repaired bundle rather than a stale self-owned suffix.
+        repaired = self._repair_bundle_after_consensus() or repaired
+        self._sync_current_goal_after_message()
+        if changed or repaired:
             self.last_call_path = "message_updated_consensus"
-        return changed
+        return changed or repaired
 
     def _update_prediction_quality(self, message, sender):
         state = self.state

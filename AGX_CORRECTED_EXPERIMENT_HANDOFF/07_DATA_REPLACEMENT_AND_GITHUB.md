@@ -8,11 +8,11 @@ AGX disk, resolve and inspect the exact obsolete checkout/output paths before
 deleting them; never run a broad recursive delete against a home directory or
 workspace root.
 
-The existing `_v1` campaign roots are aborted execution evidence. Preserve
-them in place for audit; do not delete, rename, resume, or copy them into a v2
-campaign root. Only the `_v2` campaign roots named by this handoff are eligible
-as new experimental data. Preflight logs may be kept separately as engineering
-evidence but must not be pooled with the matrix.
+The existing `_v1` and `_v2` campaign roots are aborted execution evidence.
+Preserve them in place for audit; do not delete, rename, resume, or copy them
+into a v3 campaign root. Only the `_v3` campaign roots named by this handoff
+are eligible as new experimental data. Preflight logs may be kept separately as
+engineering evidence but must not be pooled with the matrix.
 
 ## After collection
 
@@ -23,7 +23,7 @@ evidence but must not be pooled with the matrix.
 3. Replace the tracked pre-correction result/publication data on GitHub `main`
    with the corrected compact data and reports in one intentional commit.
 4. Do not retain both datasets in the active publication path and do not merge
-   aborted v1 rows into v2 tables. Git history is the recovery record.
+   aborted v1/v2 rows into v3 tables. Git history is the recovery record.
 5. Push only after the corrected output manifest and checksums validate.
 
 The AI agent may commit/push completed phases incrementally if this reduces
