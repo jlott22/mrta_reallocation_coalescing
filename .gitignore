@@ -41,6 +41,9 @@ Thumbs.db
 *.svg
 *.eps
 
+# Device backups are retained locally only.
+/artifacts/pololu_backup_*/
+
 # Transient study execution state (preserve combined CSV/JSON and manifests)
 /study/output/
 /study/native_gates/
