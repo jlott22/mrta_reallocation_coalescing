@@ -7,3 +7,6 @@
 /results/**/artifacts/** -text
 /results/analysis/archive/** -text
 /study/generated/manifests/** -text
+
+# Keep the canonical Paper-V2 summary in Git LFS (it exceeds GitHub's 100 MB limit).
+/paper_v2_data_bundle/core/call_epoch_trial_summary.csv filter=lfs diff=lfs merge=lfs -text

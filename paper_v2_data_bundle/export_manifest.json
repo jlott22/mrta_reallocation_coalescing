@@ -1,0 +1,230 @@
+{
+  "exporter_command": "/usr/bin/python /home/agxorin/mrta_reallocation_coalescing/build_paper_v2_data_bundle.py --repository-root /home/agxorin/mrta_reallocation_coalescing --raw-campaign-root /home/agxorin/mrta_reallocation_coalescing --publication-bundle /home/agxorin/mrta_reallocation_coalescing/publication/aug14_final_v1 --output-dir /home/agxorin/mrta_reallocation_coalescing/paper_v2_data_bundle",
+  "files": {
+    "README.md": {
+      "byte_size": 3870,
+      "column_count": null,
+      "row_count": null,
+      "sha256": "5f932ae3d63acbe746343f320fca73700b07bc199c73db86011e2dc306230261"
+    },
+    "UPLOAD_PRIORITY.md": {
+      "byte_size": 1139,
+      "column_count": null,
+      "row_count": null,
+      "sha256": "22cbb58c0a4abd199fa94ca28e98e7faf1e8edd2257d49bee3591fa7025bdef7"
+    },
+    "build_paper_v2_data_bundle.py": {
+      "byte_size": 202521,
+      "column_count": null,
+      "row_count": null,
+      "sha256": "f2866251a78710269a7c4a878600f084dcfc5fdcb1a2aa64c523819c7a0b1af2"
+    },
+    "core/call_epoch_trial_summary.csv": {
+      "byte_size": 119132914,
+      "column_count": 43,
+      "row_count": 240816,
+      "sha256": "40526cd05926791cfa8c6ea2a1e1a42c8d39845869c03b9e2bc1202d99bbc9ec"
+    },
+    "core/causal_zero_pairs_extended.csv": {
+      "byte_size": 2840030,
+      "column_count": 90,
+      "row_count": 3000,
+      "sha256": "311bef1e05fe6c519620c4a741829ba3472b2591bf6209b6d46cc9e6e74ffaa2"
+    },
+    "core/cbaa_divergence_summary.csv": {
+      "byte_size": 39223,
+      "column_count": 24,
+      "row_count": 56,
+      "sha256": "6c1c5580c9129a2e1804820da25973c236ed9d0b466cde580baf12bf4a4571b3"
+    },
+    "core/cbaa_liveness_summary.csv": {
+      "byte_size": 1185629,
+      "column_count": 43,
+      "row_count": 1500,
+      "sha256": "493624b67ad6ef05a923bb052727b8b56951305690309fe6362da571f16f873d"
+    },
+    "core/hardware_call_complexity_summary.csv": {
+      "byte_size": 540459,
+      "column_count": 28,
+      "row_count": 1494,
+      "sha256": "686a100eb2dffa39f0847bb0260ac7154c09673de3e89fa979ed77e26b1c0be1"
+    },
+    "core/hardware_environment.csv": {
+      "byte_size": 3096,
+      "column_count": 25,
+      "row_count": 4,
+      "sha256": "cf5cc8ab348105f1e0ac99eab9a8d37b5d3f3071626b27e98d60ccfe5dc91cc0"
+    },
+    "core/matrix_coverage.csv": {
+      "byte_size": 21140,
+      "column_count": 20,
+      "row_count": 200,
+      "sha256": "41c3221f8973f17e80f1c9c75227bbe2bf975216254ce4cf687d9cd447043421"
+    },
+    "core/policy_pairwise_same_provider_extended.csv": {
+      "byte_size": 21154264,
+      "column_count": 150,
+      "row_count": 11712,
+      "sha256": "e456d67020273b2df9803efd7f524d6ac32b40ec4c28239aec8b30d9099f0a3e"
+    },
+    "core/policy_vs_eager_all_pairs_audit.csv": {
+      "byte_size": 9974326,
+      "column_count": 175,
+      "row_count": 4800,
+      "sha256": "117fa0579937ddbb5abc4bd88d769e727733028b980004dff61b0ab02dd68bc7"
+    },
+    "core/policy_vs_eager_same_provider_extended.csv": {
+      "byte_size": 9659789,
+      "column_count": 175,
+      "row_count": 4664,
+      "sha256": "2d8c2e7b7dc851104015c9f8081dc9ba282514b0c046a802dbc9b19f7f039207"
+    },
+    "core/raw_artifact_index.csv": {
+      "byte_size": 15263184,
+      "column_count": 47,
+      "row_count": 6144,
+      "sha256": "3f66cd7e20e48df9e215167189edb0ca5eae36417e56040d8c4a99fb8475b7af"
+    },
+    "core/task_admission_reason_summary.csv": {
+      "byte_size": 20154763,
+      "column_count": 52,
+      "row_count": 23860,
+      "sha256": "57a09e6be01e3be7a17c3ab7c8810a22fbe36d3a536ca776aae008a4a7019c2b"
+    },
+    "core/trial_mechanism_summary.csv": {
+      "byte_size": 36610913,
+      "column_count": 471,
+      "row_count": 6000,
+      "sha256": "8ef32ec8f3466845086fa74196e915d2ab45192fd0eb3d0d242853a4128ce4f9"
+    },
+    "core/verification_trial_mechanism_summary.csv": {
+      "byte_size": 942401,
+      "column_count": 478,
+      "row_count": 144,
+      "sha256": "7eaf5efbc8e19fa9a3812074e9f5c5245d92d37bac34d7d5ee015cc8fb58d22a"
+    },
+    "data_dictionary.csv": {
+      "byte_size": 1698273,
+      "column_count": 12,
+      "row_count": 2363,
+      "sha256": "ec18cd1f89c7773758bb2014af4dfb6439038bbcdd1b46742d9ebe9e46489deb"
+    },
+    "detail/cbaa_divergence_events.csv.gz": {
+      "byte_size": 113349,
+      "column_count": 20,
+      "row_count": 5808,
+      "sha256": "030a498fb0f901612c3ca96cd467c4c0f8decc7993b9d616e0adff7c0e4c73fc"
+    },
+    "detail/epoch_level_causal_part01.csv.gz": {
+      "byte_size": 36545641,
+      "column_count": 65,
+      "row_count": 667500,
+      "sha256": "52bbd9db61728ef04b1917f07ea87e237fde08747471e65a37b7bbe76167a199"
+    },
+    "detail/epoch_level_verification.csv.gz": {
+      "byte_size": 1961499,
+      "column_count": 65,
+      "row_count": 38374,
+      "sha256": "7b95dde9746364b0d1e95dfc22c17c493b148c2d26ce5efd6be92dd5d23a8acf"
+    },
+    "detail/epoch_level_zero_part01.csv.gz": {
+      "byte_size": 20109180,
+      "column_count": 65,
+      "row_count": 229707,
+      "sha256": "b73c6da24e392b947e580376ee73d98f38ec36b0a5e3d8db4771f17919fcb632"
+    },
+    "detail/hardware_call_level.csv.gz": {
+      "byte_size": 11574172,
+      "column_count": 60,
+      "row_count": 97814,
+      "sha256": "0b038531407c64d889e4d7d7b54570952cf3db60c33edae390fb991eb272c3fc"
+    },
+    "detail/representative_case_events.csv.gz": {
+      "byte_size": 1794375,
+      "column_count": 44,
+      "row_count": 47311,
+      "sha256": "81fe71d7720be6d944ceccee9a0499dedb34b4a8b2b3b5a57926666f37104dd9"
+    },
+    "detail/task_timing_decomposition_causal.csv.gz": {
+      "byte_size": 15491713,
+      "column_count": 67,
+      "row_count": 150000,
+      "sha256": "17dce29ce70a559a251009986f583f7913ab936954d4e97e87f2cbc2de028001"
+    },
+    "detail/task_timing_decomposition_zero.csv.gz": {
+      "byte_size": 13865593,
+      "column_count": 67,
+      "row_count": 150000,
+      "sha256": "cb86c3095e8bcd8133a73449afdcdf1446d22fac05973f9d8317c220e4063dcf"
+    },
+    "detail/task_vs_eager_same_provider.csv.gz": {
+      "byte_size": 15997408,
+      "column_count": 43,
+      "row_count": 233200,
+      "sha256": "adf58dc2a5edd5c656bd8a0084be3721b66e6b15fab5f54558b93ca9a5c5ae67"
+    },
+    "requirements.txt": {
+      "byte_size": 39,
+      "column_count": null,
+      "row_count": null,
+      "sha256": "97eaf3d412973f57ab270e1dbf3ba9ea92cfe6fc9af330a511a02d6fb4db80d5"
+    },
+    "validation/BUILD_REPORT.md": {
+      "byte_size": 6899,
+      "column_count": null,
+      "row_count": null,
+      "sha256": "d1fff26410e36e2bb8ff53af50baa88ac29976ebd3672a8171f51581bc5f6beb"
+    },
+    "validation/missing_data_audit.csv": {
+      "byte_size": 3872,
+      "column_count": 8,
+      "row_count": 12,
+      "sha256": "d46df1cc384fcfacd9bf3f8fb063cd6e94693c7f211a2d8b0b550938503e9cbc"
+    },
+    "validation/publication_reconciliation.csv": {
+      "byte_size": 1731,
+      "column_count": 8,
+      "row_count": 27,
+      "sha256": "c240f37a51b64c9cd830b05a687c3b18dcb2202c20fa1f0d8a7dc13be39bc3bd"
+    },
+    "validation/reconciliation_mismatches.csv": {
+      "byte_size": 126,
+      "column_count": 12,
+      "row_count": 0,
+      "sha256": "068118f1ea25c22c8889c5fe3a81a926b92722394c175f0e3a5f352775aa570c"
+    },
+    "validation/validation_checks.csv": {
+      "byte_size": 1880,
+      "column_count": 6,
+      "row_count": 35,
+      "sha256": "e4604b77d7edd8dfbc9983fab265447532f04d375be1c8fca66670bd96237ed3"
+    }
+  },
+  "generated_at": "2026-08-14T02:39:19.110515Z",
+  "git_commit": "bb751db5062a41abee4f2e1e87512fe6520554d2",
+  "manifest_self_hash": null,
+  "manifest_self_hash_note": "omitted because a file cannot contain its own stable SHA-256",
+  "matrix": {
+    "all_provider_eager_pairs": 4800,
+    "causal_trials": 3000,
+    "hardware_backed_causal_trials": 104,
+    "primary_task_rows": 300000,
+    "same_provider_eager_pairs": 4664,
+    "verification_trials": 144,
+    "zero_compute_trials": 3000
+  },
+  "numerical_tolerance_s": 1e-09,
+  "optional_full_call_export_created": false,
+  "output_directory": "/home/agxorin/mrta_reallocation_coalescing/paper_v2_data_bundle",
+  "publication_bundle": "/home/agxorin/mrta_reallocation_coalescing/publication/aug14_final_v1",
+  "quantile_definition": "Type-7 linear interpolation",
+  "raw_campaign_root": "/home/agxorin/mrta_reallocation_coalescing",
+  "reconciliation_mismatch_count": 0,
+  "report_kind": "paper_v2_latency_mechanism_data_bundle",
+  "repository_root": "/home/agxorin/mrta_reallocation_coalescing",
+  "schema_version": 2,
+  "validation": {
+    "failed": 0,
+    "passed": 35
+  }
+}
