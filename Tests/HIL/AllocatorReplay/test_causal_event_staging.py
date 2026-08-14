@@ -303,6 +303,182 @@ class CausalPersistentStageTests(unittest.TestCase):
         self.assertEqual(metrics["psetup_transaction_us"], 1_000)
 
 
+class InboundConsensusRepairTests(unittest.TestCase):
+    """Regressions for ordered peer messages drained inside W_alloc.
+
+    CausalBoardSession stages every inbound allocator message before the
+    authoritative checkpoint, then the resident runtime drains that FIFO at
+    the start of ``choose_goal``.  The desktop algorithms repair their local
+    retained path after *each* changed peer message.  These tests observe that
+    same boundary directly, before the later allocator solve can mask an
+    invalid path by repairing or refilling it.
+    """
+
+    @staticmethod
+    def _runtime(algorithm: str):
+        cells = ((1, 1), (2, 1), (3, 1))
+        config = {
+            "mission": "collaborative",
+            "algorithm": algorithm,
+            "robot_id": ROBOT_IDS[0],
+            "robot_ids": list(ROBOT_IDS),
+            "grid_size": 19,
+            "all_tasks": [list(cell) for cell in cells],
+            "active_tasks": [list(cell) for cell in cells],
+            "commitment_horizon": 3,
+            "seed": 73,
+        }
+        initial = {
+            "robot_id": ROBOT_IDS[0],
+            "robot_ids": list(ROBOT_IDS),
+            "pos": [0, 0],
+            "all_tasks": [list(cell) for cell in cells],
+            "active_tasks": [list(cell) for cell in cells],
+            "peer_positions": {
+                ROBOT_IDS[1]: [0, 6],
+                ROBOT_IDS[2]: [0, 12],
+                ROBOT_IDS[3]: [0, 18],
+            },
+            "target_p": [1.0] * len(cells),
+        }
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, initial)
+        slots = [runtime.state.slot_for_cell(cell) for cell in cells]
+        return runtime, cells, slots
+
+    @staticmethod
+    def _observe_after_each_inbound_message(runtime, slots, events):
+        """Capture state immediately after each W_alloc message callback."""
+
+        observed = []
+        handle_message = runtime.allocator.handle_message
+
+        def record(message):
+            changed = handle_message(message)
+            observed.append(
+                {
+                    "path": list(runtime.allocator.path),
+                    "owners": [
+                        int(runtime.state.claim_owner[slot])
+                        for slot in slots
+                    ],
+                }
+            )
+            return changed
+
+        runtime.allocator.handle_message = record
+        try:
+            runtime.begin_call_setup()
+            runtime.apply_delta({"events": copy.deepcopy(events)})
+            # This invokes the staged FIFO inside the same W_alloc transaction
+            # used by a causal board call.  Assertions below intentionally use
+            # ``observed`` rather than the post-solve state.
+            runtime.choose_goal()
+        finally:
+            runtime.allocator.handle_message = handle_message
+        return observed
+
+    def test_acbba_releases_lost_bundle_suffix_before_next_peer_message(self) -> None:
+        runtime, cells, slots = self._runtime("ACBBA")
+        runtime.allocator.path = list(slots)
+        for index, slot in enumerate(slots, start=1):
+            runtime.state.set_claim(slot, runtime.state.robot_index, -10.0 - index, index)
+
+        # First, peer 01 wins the head of our retained bundle.  Before the
+        # next relay is processed, ACBBA must release the entire dependent
+        # suffix; otherwise Table-1 evaluates the relay against stale local
+        # ownership.  This is the minimal form of the smoke failure's ordered
+        # peer bundle burst.
+        events = [
+            {
+                "kind": "allocator_message",
+                "payload": {
+                    "type": "acbba_entry",
+                    "sender": ROBOT_IDS[1],
+                    "x": cells[0][0],
+                    "y": cells[0][1],
+                    "winner": ROBOT_IDS[1],
+                    "bid": 0.0,
+                    "timestamp": 10,
+                    "order": 0,
+                    "bundle_cells": [list(cells[0])],
+                    "bundle_size": 1,
+                },
+            },
+            {
+                "kind": "allocator_message",
+                "payload": {
+                    "type": "acbba_entry",
+                    "sender": ROBOT_IDS[1],
+                    "x": cells[1][0],
+                    "y": cells[1][1],
+                    "winner": ROBOT_IDS[0],
+                    "bid": -12.0,
+                    "timestamp": 2,
+                    "order": 1,
+                    "bundle_cells": [list(cells[0])],
+                    "bundle_size": 1,
+                },
+            },
+        ]
+
+        observed = self._observe_after_each_inbound_message(
+            runtime, slots, events
+        )
+
+        self.assertEqual(observed[0]["path"], [])
+        self.assertEqual(observed[0]["owners"], [1, -1, -1])
+        self.assertEqual(observed[1]["path"], [])
+        self.assertEqual(observed[1]["owners"], [1, -1, -1])
+
+    def test_pi_repairs_lost_path_item_before_next_peer_clear(self) -> None:
+        runtime, cells, slots = self._runtime("PI")
+        runtime.allocator.path = list(slots)
+        for index, slot in enumerate(slots, start=1):
+            runtime.state.set_claim(slot, runtime.state.robot_index, float(index), index)
+
+        # PI differs from ACBBA: a lost path item is removed while its valid
+        # suffix remains.  The following clear is intentionally a second FIFO
+        # event, so it detects a regression that postpones the repair until
+        # the final allocator solve.
+        events = [
+            {
+                "kind": "allocator_message",
+                "payload": {
+                    "type": "pi_entry",
+                    "sender": ROBOT_IDS[1],
+                    "x": cells[0][0],
+                    "y": cells[0][1],
+                    "owner": ROBOT_IDS[1],
+                    "significance": 0.0,
+                    "timestamp": 10,
+                    "order": 0,
+                    "path_cells": [list(cells[0])],
+                    "path_size": 1,
+                },
+            },
+            {
+                "kind": "allocator_message",
+                "payload": {
+                    "type": "pi_clear_path",
+                    "sender": ROBOT_IDS[1],
+                    "timestamp": 11,
+                    "path_cells": [],
+                    "path_size": 0,
+                },
+            },
+        ]
+
+        observed = self._observe_after_each_inbound_message(
+            runtime, slots, events
+        )
+
+        self.assertEqual(observed[0]["path"], slots[1:])
+        self.assertEqual(observed[0]["owners"], [1, 0, 0])
+        self.assertEqual(observed[1]["path"], slots[1:])
+        self.assertEqual(observed[1]["owners"], [-1, 0, 0])
+
+
 class StagedEpochTimingTests(unittest.TestCase):
     def test_admission_is_non_destructive_and_compatibility_timing_is_zero(self) -> None:
         config = {

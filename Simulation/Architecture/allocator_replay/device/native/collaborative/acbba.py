@@ -108,6 +108,41 @@ class ACBBAAllocator(NativeAllocatorBase):
             int(state.claim_epoch[slot]),
         )
 
+    def _repair_bundle_after_consensus(self):
+        """Apply CBBA's suffix rule immediately after a peer update.
+
+        ACBBA bids depend on every earlier bundle item.  The desktop handler
+        therefore releases a lost item and its suffix before it processes the
+        next inbound entry.  Keeping the repair in ``choose`` makes a burst of
+        peer entries observe an invalid local bundle and permits re-bidding of
+        cells already won by that peer.
+        """
+
+        state = self.state
+        first_bad = None
+        for index, slot in enumerate(self.path):
+            if (
+                not state.is_candidate(slot)
+                or state.claim_owner[slot] != state.robot_index
+            ):
+                first_bad = index
+                break
+        if first_bad is None:
+            return False
+
+        for slot in self.path[first_bad:]:
+            if state.claim_owner[slot] == state.robot_index:
+                state.clear_claim(slot)
+                self._queue_claim(slot, -1, self.NO_VALUE, 0)
+        self.path = self.path[:first_bad]
+        return True
+
+    def _sync_current_goal_after_message(self):
+        """Match the desktop handler's conservative goal invalidation."""
+
+        if self.state.current_goal is not None and not self.path:
+            self.state.current_goal = None
+
     def choose(self):
         state = self.state
         for slot in range(len(state.targets)):
@@ -121,22 +156,7 @@ class ACBBAAllocator(NativeAllocatorBase):
         else:
             trigger = None
 
-        # CBBA suffix rule: losing one item invalidates it and all later bids.
-        first_bad = None
-        for index, slot in enumerate(self.path):
-            if (
-                not state.is_candidate(slot)
-                or state.claim_owner[slot] != state.robot_index
-            ):
-                first_bad = index
-                break
-        if first_bad is not None:
-            suffix = self.path[first_bad:]
-            for slot in suffix:
-                if state.claim_owner[slot] == state.robot_index:
-                    state.clear_claim(slot)
-                    self._queue_claim(slot, -1, self.NO_VALUE, 0)
-            self.path = self.path[:first_bad]
+        if self._repair_bundle_after_consensus():
             trigger = trigger or "consensus_suffix_release"
 
         candidates = self.candidates()
@@ -225,6 +245,7 @@ class ACBBAAllocator(NativeAllocatorBase):
         sender = state.owner_index(message.get("sender"))
         if sender < 0 or sender == state.robot_index:
             return False
+        changed = False
         try:
             slot = state.slot_for_cell((message["x"], message["y"]))
             incoming_owner = state.owner_index(
@@ -238,10 +259,11 @@ class ACBBAAllocator(NativeAllocatorBase):
             )
         except (KeyError, TypeError, ValueError):
             return False
-        if slot is None or not state.is_candidate(slot):
+        if slot is None:
+            return False
+        if not state.is_candidate(slot):
             return False
 
-        changed = False
         bundle = message.get("bundle_cells")
         if isinstance(bundle, list) and incoming_owner == sender:
             included = set()
@@ -378,8 +400,9 @@ class ACBBAAllocator(NativeAllocatorBase):
             else:
                 changed = leave(True) or changed
         if changed:
-            # Repair occurs at the next authoritative allocator call.
+            self._repair_bundle_after_consensus()
             self.last_call_path = "message_updated_consensus"
+        self._sync_current_goal_after_message()
         return changed
 
     def export_resume(self):

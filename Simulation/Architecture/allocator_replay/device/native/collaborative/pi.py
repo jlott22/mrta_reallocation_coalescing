@@ -120,6 +120,51 @@ class PIAllocator(NativeAllocatorBase):
                 slot, state.robot_index, significance, epoch
             )
 
+    def _repair_path_after_consensus(self):
+        """Remove peer-won items before the next inbound PI entry.
+
+        PI keeps unaffected suffix items, but their marginal significances
+        depend on the retained prefix.  The desktop receiver performs this
+        repair for every accepted peer update; doing it only in ``choose``
+        leaves subsequent queued entries to inspect stale local ownership.
+        """
+
+        state = self.state
+        kept = []
+        removed = []
+        for slot in self.path:
+            if (
+                state.is_candidate(slot)
+                and state.claim_owner[slot] == state.robot_index
+            ):
+                kept.append(slot)
+            else:
+                removed.append(slot)
+        if not removed:
+            return False
+
+        for slot in removed:
+            if state.claim_owner[slot] == state.robot_index:
+                state.clear_claim(slot)
+        self.path = kept
+        self._refresh_local_significance()
+        # ``drain_messages`` emits the matching full-path snapshot after this
+        # authoritative call, outside W_alloc serialization.
+        self.snapshot_requested = True
+        return True
+
+    def _sync_current_goal_after_message(self):
+        """Mirror the desktop PI handler's invalidation rule."""
+
+        state = self.state
+        next_goal = (
+            None
+            if not self.path
+            else int(state.targets[self.path[0]])
+        )
+        if state.current_goal is not None and state.current_goal != next_goal:
+            state.current_goal = None
+
     def choose(self):
         state = self.state
         # Desktop PI clears every invalid/completed table entry before path
@@ -143,49 +188,8 @@ class PIAllocator(NativeAllocatorBase):
         else:
             trigger = None
 
-        kept = []
-        removed = []
-        for slot in self.path:
-            if (
-                state.is_candidate(slot)
-                and state.claim_owner[slot] == state.robot_index
-            ):
-                kept.append(slot)
-            else:
-                removed.append(slot)
-        if removed:
-            for slot in removed:
-                if state.claim_owner[slot] == state.robot_index:
-                    state.clear_claim(slot)
-            # PI removes only the lost item; unlike CBBA it does not discard
-            # the dependent suffix.
-            self.path = kept
-            self._refresh_local_significance()
+        if self._repair_path_after_consensus():
             trigger = trigger or "consensus_path_repair"
-            # Desktop PI marks a full path snapshot pending whenever message
-            # consensus repairs its retained path.  Re-emit the surviving
-            # prefix (or an explicit clear) so the native output has the same
-            # communication effect even when no new candidate is inserted.
-            if self.path:
-                for slot in self.path:
-                    state.queue_message(
-                        self.claim_message(
-                            "pi_entry",
-                            slot,
-                            state.robot_index,
-                            state.claim_value[slot],
-                        )
-                    )
-            else:
-                state.queue_message(
-                    {
-                        "type": "pi_clear_path",
-                        "sender": state.robot_id,
-                        "timestamp": int(state.event_counter),
-                        "path_cells": [],
-                        "path_size": 0,
-                    }
-                )
 
         # Desktop PI treats its path as the complete set of local ownership
         # claims.  Clear any valid but stale self-owned table entry outside
@@ -343,7 +347,9 @@ class PIAllocator(NativeAllocatorBase):
 
         if message_type == "pi_clear_path":
             if changed:
+                self._repair_path_after_consensus()
                 self.last_call_path = "message_updated_consensus"
+            self._sync_current_goal_after_message()
             return changed
 
         changed = self.parse_claim_message(
@@ -352,7 +358,9 @@ class PIAllocator(NativeAllocatorBase):
             lower_is_better=True,
         ) or changed
         if changed:
+            self._repair_path_after_consensus()
             self.last_call_path = "message_updated_consensus"
+        self._sync_current_goal_after_message()
         return changed
 
     def export_resume(self):

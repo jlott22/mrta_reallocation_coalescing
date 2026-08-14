@@ -13,8 +13,8 @@
     "design_status": "corrected_strict_bound_message_only_n50"
   },
   "campaign": {
-    "campaign_id": "corrected_agx_smoke_8_v1",
-    "output_root": "study/output/corrected_agx_smoke_8_v1",
+    "campaign_id": "corrected_agx_smoke_8_v2",
+    "output_root": "study/output/corrected_agx_smoke_8_v2",
     "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
     "loads": ["medium"],
     "policies": [
@@ -27,6 +27,6 @@
     "allow_dirty": false,
     "required_outputs": ["trial_summary.json", "task_events.csv", "allocation_epochs.csv"],
     "runner": {"module": "known_visit_sim.run_online_trials", "extra_args": ["--timing-mode", "agx_host_proxy"]},
-    "notes": "Engineering-only, non-inferential AGX smoke: 4 allocators x Eager/B4 x medium x trace 0000 = 8 jobs. It must not be pooled with the 6,000-job AGX matrix."
+    "notes": "Engineering-only, non-inferential AGX smoke: 4 allocators x Eager/B4 x medium x trace 0000 = 8 jobs. The v2 restart has a separate result identity and must neither resume nor be pooled with aborted v1 output or with the 6,000-job AGX matrix."
   }
 }

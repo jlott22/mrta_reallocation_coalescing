@@ -4,6 +4,14 @@ This folder is the launch authority for the corrected MRTA reallocation-
 coalescing experiment. Do not resume a pre-correction campaign or reuse its
 manifests/output roots.
 
+## Current execution identity
+
+The active restart is **v2**. Its campaign IDs and output roots end in `_v2`;
+the retained `_v1` output trees are aborted evidence from before the native
+consensus repair. Preserve those trees for audit, but never delete, rename,
+resume, analyze with, or pool them into v2 results. V2 deliberately reuses the
+immutable scenario manifest set, not v1 completion state or analysis products.
+
 ## Fixed design
 
 - Algorithms: CBAA, ACBBA, PI, HIPC.
@@ -22,6 +30,8 @@ manifests/output roots.
 ## Execution order
 
 1. Clone `main` into a fresh AGX directory; do not copy old `study/output`.
+   If this approved restart shares the prior disk, leave the aborted `_v1`
+   roots in place and launch only the `_v2` configs in this handoff.
 2. Read `01_ARCHITECTURE_AND_CHANGES.md` through `07_DATA_REPLACEMENT_AND_GITHUB.md`.
 3. Run the brief software/native preflight in `05_PREFLIGHT_AND_QA.md`.
 4. Start the background supervisors with `scripts/start_background.sh`. The
