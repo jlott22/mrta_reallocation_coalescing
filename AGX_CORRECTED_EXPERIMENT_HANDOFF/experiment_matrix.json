@@ -28,14 +28,19 @@
     "trials_per_condition_per_round": 25,
     "jobs_per_round_per_treatment": 1500,
     "total_jobs": 6000,
-    "simulation_cores": [3, 4, 5, 6, 7, 8],
+    "simulation_cores": [4, 5, 6, 7, 8],
     "round_2_result_based_restrictions": false
   },
   "rp2040": {
     "policies": ["eager_b1", "count_b4"],
     "trace_ids": [0, 1, 2, 3],
     "total_missions": 96,
-    "worker_cores": [0, 1, 2]
+    "worker_cores": [0, 1, 2, 3]
+  },
+  "engineering_smoke": {
+    "agx_jobs": 8,
+    "rp2040_missions": 8,
+    "inferential": false
   },
   "support_cores": {
     "supervisor": 9,

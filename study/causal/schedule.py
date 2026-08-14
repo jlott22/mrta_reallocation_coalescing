@@ -1,4 +1,4 @@
-"""Deterministic paired-block scheduling across three stable boards."""
+"""Deterministic paired-block scheduling across stable board cohorts."""
 
 from __future__ import annotations
 

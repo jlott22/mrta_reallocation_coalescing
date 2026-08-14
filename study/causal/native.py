@@ -261,7 +261,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     binding = sub.add_parser("discover-bindings")
     binding.add_argument("--ports", default="auto")
     binding.add_argument("--build-root", type=Path, required=True)
-    binding.add_argument("--core-affinities", default="0,1,2")
+    binding.add_argument("--core-affinities", default="0,1,2,3")
     binding.add_argument("--output", type=Path, required=True)
     preflight = sub.add_parser("preflight")
     preflight.add_argument("--config", type=Path, required=True)

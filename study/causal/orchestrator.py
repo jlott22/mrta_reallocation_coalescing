@@ -1,4 +1,4 @@
-"""Exactly-three-worker native causal campaign orchestrator."""
+"""Fixed-cohort native causal campaign orchestrator."""
 
 from __future__ import annotations
 

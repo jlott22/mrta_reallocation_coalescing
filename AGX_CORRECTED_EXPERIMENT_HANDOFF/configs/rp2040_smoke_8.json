@@ -14,26 +14,25 @@
     "design_status": "corrected_four_trace_four_board_subset"
   },
   "campaign": {
-    "campaign_id": "corrected_hardware_core_96_v1",
-    "stage": "publication_core",
-    "output_root": "study/output/corrected_hardware_core_96_v1",
+    "campaign_id": "corrected_rp2040_smoke_8_v1",
+    "stage": "smoke",
+    "output_root": "study/output/corrected_rp2040_smoke_8_v1",
     "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
-    "loads": ["low", "medium", "high"],
+    "loads": ["medium"],
     "policies": [
       {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1},
       {"policy_id": "count_b4", "mode": "count", "batch_size": 4}
     ],
-    "trace_limit": 4,
-    "schedule_seed": 2026081415,
+    "trace_limit": 1,
+    "schedule_seed": 2026081416,
     "max_technical_retries": 1,
     "runner_factory": "study.causal.worker:run_causal_job",
     "required_gate_paths": [
       "study/native_gates/environment/native_environment_report.json",
-      "study/native_gates/preflight/native_preflight_report.json",
-      "study/native_gates/smoke/causal_smoke_report.json"
+      "study/native_gates/preflight/native_preflight_report.json"
     ],
     "require_clean_source": true,
-    "notes": "Fixed 96-mission RP2040 subset: four algorithms, three loads, Eager/B4, four paired traces, four boards. This is inferentially separate from the engineering-only 8-mission smoke."
+    "notes": "Engineering-only, non-inferential RP2040 smoke: 4 allocators x Eager/B4 x medium x trace 0000 = 8 missions. It produces the fresh smoke gate required by hardware_core_96 and must not be pooled with the 96-mission subset."
   },
   "hardware": {
     "bindings_file": "configs/local/agx_board_bindings.json",

@@ -16,7 +16,7 @@ from typing import Any, Mapping, Sequence
 from .errors import BoardBindingError, BoardLeaseError
 
 
-REQUIRED_HARDWARE_WORKERS = 3
+REQUIRED_HARDWARE_WORKERS = 4
 MAX_DEVELOPMENT_WORKERS = 4
 _PROCESS_LEASES: set[str] = set()
 _PROCESS_LEASE_LOCK = threading.Lock()

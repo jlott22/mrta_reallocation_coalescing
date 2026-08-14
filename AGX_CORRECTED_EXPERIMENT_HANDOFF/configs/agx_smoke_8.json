@@ -13,23 +13,20 @@
     "design_status": "corrected_strict_bound_message_only_n50"
   },
   "campaign": {
-    "campaign_id": "corrected_round1_zero_v1",
-    "output_root": "study/output/corrected_round1_zero_v1",
+    "campaign_id": "corrected_agx_smoke_8_v1",
+    "output_root": "study/output/corrected_agx_smoke_8_v1",
     "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
-    "loads": ["low", "medium", "high"],
+    "loads": ["medium"],
     "policies": [
       {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1},
-      {"policy_id": "count_b2", "mode": "count", "batch_size": 2},
-      {"policy_id": "count_b4", "mode": "count", "batch_size": 4},
-      {"policy_id": "count_b8", "mode": "count", "batch_size": 8},
-      {"policy_id": "bounded_b4_w10", "mode": "bounded", "batch_size": 4, "max_pending_age_s": 10.0}
+      {"policy_id": "count_b4", "mode": "count", "batch_size": 4}
     ],
-    "trace_limit": 25,
+    "trace_limit": 1,
     "max_workers": 5,
-    "schedule_seed": 2026081412,
+    "schedule_seed": 2026081410,
     "allow_dirty": false,
     "required_outputs": ["trial_summary.json", "task_events.csv", "allocation_epochs.csv"],
-    "runner": {"module": "known_visit_sim.run_online_trials", "extra_args": ["--timing-mode", "zero_compute"]},
-    "notes": "Round 1 zero-time counterpart on the same paired traces 0-24."
+    "runner": {"module": "known_visit_sim.run_online_trials", "extra_args": ["--timing-mode", "agx_host_proxy"]},
+    "notes": "Engineering-only, non-inferential AGX smoke: 4 allocators x Eager/B4 x medium x trace 0000 = 8 jobs. It must not be pooled with the 6,000-job AGX matrix."
   }
 }

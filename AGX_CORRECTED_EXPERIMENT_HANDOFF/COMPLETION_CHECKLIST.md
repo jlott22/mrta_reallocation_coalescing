@@ -2,8 +2,10 @@
 
 - [ ] Fresh clean clone and corrected commit recorded
 - [ ] Software tests and compilation pass
-- [ ] Three-board preflight passes or hardware is explicitly pending
+- [ ] Four-board preflight passes or hardware is explicitly pending
 - [ ] Fresh 50-trace manifests generated and shared by all treatments
+- [ ] Engineering-only AGX smoke: 8 jobs accounted for
+- [ ] Engineering-only RP2040 smoke: 8 missions accounted for, or hardware is explicitly pending
 - [ ] Round 1 causal: 1,500 technically valid jobs accounted for
 - [ ] Round 1 zero-time: 1,500 technically valid jobs accounted for
 - [ ] Informational checkpoint QA recorded

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "note": "Example only. Generate configs/local/agx_board_bindings.json with the native discovery/preflight command; do not cite these placeholders as hardware identity.",
-  "core_affinities": [0, 1, 2],
+  "core_affinities": [0, 1, 2, 3],
   "boards": [
     {
       "board_id": "rp2040_a",
@@ -23,6 +23,14 @@
       "board_id": "rp2040_c",
       "serial_device": "/dev/serial/by-id/REPLACE_BOARD_C",
       "expected_device_uid": "REPLACE_UID_C",
+      "expected_build_id": "REPLACE_BUILD_ID",
+      "expected_firmware_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_module_set_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "board_id": "rp2040_d",
+      "serial_device": "/dev/serial/by-id/REPLACE_BOARD_D",
+      "expected_device_uid": "REPLACE_UID_D",
       "expected_build_id": "REPLACE_BUILD_ID",
       "expected_firmware_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "expected_module_set_sha256": "0000000000000000000000000000000000000000000000000000000000000000"

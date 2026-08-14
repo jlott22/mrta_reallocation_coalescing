@@ -26,16 +26,21 @@ The hardware policies are Eager and Count B4. The RP subset remains four
 traces; it is not expanded to 25 or 50. A tiny preflight/stress probe is
 engineering evidence and is not part of the inferential matrix.
 
+The separate engineering-only RP2040 smoke has eight missions: four
+allocators x Eager/B4 x medium load x trace 0000. It is not counted in the 96
+publication missions.
+
 ## AGX cores
 
 | Cores | Owner |
 |---|---|
-| 0-2 | Three RP2040 workers/boards, one worker per core |
-| 3-8 | Six rolling simulation workers |
+| 0-3 | Four RP2040 workers/boards, one worker per core |
+| 4-8 | Five rolling simulation workers |
 | 9 | Background supervisor/tracker |
 | 10 | Checkpoint QA/analysis when needed |
 | 11 | OS and operational reserve |
 
-Do not add simulation workers to cores 0-2 or 9-11. The simulation scheduler
-balances conditions across the six-worker pool; cores are not permanently tied
-to algorithms.
+The nine compute cores are exactly 0-8: four RP2040 workers on 0-3 and five
+AGX-only simulation workers on 4-8. Do not add simulation workers to cores
+9-11. The simulation scheduler balances conditions across the five-worker pool;
+cores are not permanently tied to algorithms.

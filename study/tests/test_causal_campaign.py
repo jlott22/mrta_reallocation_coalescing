@@ -15,7 +15,7 @@ from study.causal.calibration import (
     summarize_variance_pilot,
 )
 from study.causal.gates import GateError, validate_gate
-from study.causal.model import load_causal_config
+from study.causal.model import PUBLICATION_WORKER_COUNT, load_causal_config
 from study.causal.orchestrator import _claim_board_lock, _release_board_lock
 from study.causal.schedule import plan_paired_blocks, validate_schedule
 from study.manifests import canonical_json_bytes, generate_manifest_set
@@ -49,7 +49,7 @@ class CausalStudyTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def _boards(self, count: int = 4) -> list[dict]:
+    def _boards(self, count: int = PUBLICATION_WORKER_COUNT) -> list[dict]:
         return [
             {
                 "board_id": f"board_{index}",
@@ -84,7 +84,7 @@ class CausalStudyTests(unittest.TestCase):
             },
             "hardware": {
                 "boards": self._boards(),
-                "core_affinities": [0, 1, 2, 3],
+                "core_affinities": list(range(PUBLICATION_WORKER_COUNT)),
                 "development_override": True,
                 "provider_factory": "study.causal.worker:create_timing_provider",
             },
@@ -143,10 +143,14 @@ class CausalStudyTests(unittest.TestCase):
     def test_native_config_fails_closed_on_board_and_path_errors(self) -> None:
         bad = self._config()
         bad["hardware"]["development_override"] = False
-        bad["hardware"]["boards"] = self._boards(2)
-        bad["hardware"]["core_affinities"] = [0, 1]
+        bad["hardware"]["boards"] = self._boards(PUBLICATION_WORKER_COUNT - 1)
+        bad["hardware"]["core_affinities"] = list(
+            range(PUBLICATION_WORKER_COUNT - 1)
+        )
         self.config_path.write_bytes(canonical_json_bytes(bad))
-        with self.assertRaisesRegex(ValueError, "exactly 3"):
+        with self.assertRaisesRegex(
+            ValueError, f"exactly {PUBLICATION_WORKER_COUNT}"
+        ):
             load_causal_config(self.config_path, self.root)
         bad = self._config()
         bad["campaign"]["output_root"] = "../donor"
@@ -179,8 +183,8 @@ class CausalStudyTests(unittest.TestCase):
     def test_inline_frozen_config_preserves_sealed_binding_identity(self) -> None:
         config = self._config()
         config["hardware"]["development_override"] = False
-        config["hardware"]["boards"] = config["hardware"]["boards"][:3]
-        config["hardware"]["core_affinities"] = [0, 1, 2]
+        config["hardware"]["boards"] = config["hardware"]["boards"][:PUBLICATION_WORKER_COUNT]
+        config["hardware"]["core_affinities"] = list(range(PUBLICATION_WORKER_COUNT))
         config["hardware"]["bindings_file_sha256"] = SHA_A
         self.config_path.write_bytes(canonical_json_bytes(config))
         loaded = load_causal_config(self.config_path, self.root)
@@ -232,7 +236,7 @@ class CausalStudyTests(unittest.TestCase):
                         board_index = (
                             ("CBAA", "ACBBA", "PI", "HIPC").index(algorithm)
                             + load_index + trace
-                        ) % 3
+                        ) % PUBLICATION_WORKER_COUNT
                         rows.append({
                             "algorithm": algorithm,
                             "arrival_load": load,

@@ -33,7 +33,7 @@
       "trace_0020", "trace_0021", "trace_0022", "trace_0023", "trace_0024"
     ]}],
     "expected_excluded_job_count": 1500,
-    "max_workers": 6,
+    "max_workers": 5,
     "schedule_seed": 2026081413,
     "allow_dirty": false,
     "required_outputs": ["trial_summary.json", "task_events.csv", "allocation_epochs.csv"],

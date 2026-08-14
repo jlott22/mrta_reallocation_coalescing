@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/_agx_causal_common.sh"
 
 if [[ $# -ne 1 ]]; then
-  echo "Usage: bash scripts/agx_prepare_rp2040_boards.sh PORT_A,PORT_B,PORT_C" >&2
+  echo "Usage: bash scripts/agx_prepare_rp2040_boards.sh PORT_A,PORT_B,PORT_C,PORT_D" >&2
   echo "Use stable /dev/serial/by-id paths where available." >&2
   exit 2
 fi
@@ -24,7 +24,7 @@ BUILD_ROOT="$(${PYTHON_BIN} -c 'import json,sys; print(json.load(open(sys.argv[1
   discover-bindings \
   --ports "${PORTS}" \
   --build-root "${BUILD_ROOT}" \
-  --core-affinities "${CAUSAL_CORE_AFFINITIES:-0,1,2}" \
+  --core-affinities "${CAUSAL_CORE_AFFINITIES:-0,1,2,3}" \
   --output configs/local/agx_board_bindings.json
 
 echo "Created sealed local binding: configs/local/agx_board_bindings.json"

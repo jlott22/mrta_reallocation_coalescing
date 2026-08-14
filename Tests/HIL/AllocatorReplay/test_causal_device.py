@@ -34,6 +34,7 @@ from allocator_replay.causal import (  # noqa: E402
     FrozenCall,
     MissionBinding,
     ParityFailure,
+    REQUIRED_HARDWARE_WORKERS,
     SessionStateError,
     SimulatedDurationProvider,
     StaleReplyError,
@@ -347,28 +348,48 @@ class CausalSessionTests(unittest.TestCase):
 
 
 class BoardBindingAndLeaseTests(unittest.TestCase):
-    def test_production_binding_requires_exactly_three_and_stable_ids(self) -> None:
-        devices = [DeterministicVirtualDevice(f"board-{index}") for index in range(3)]
+    def test_production_binding_requires_exactly_four_and_stable_ids(self) -> None:
+        devices = [
+            DeterministicVirtualDevice(f"board-{index}")
+            for index in range(REQUIRED_HARDWARE_WORKERS)
+        ]
         try:
             bindings = bind_hardware_workers(devices)
-            self.assertEqual([item.worker_index for item in bindings], [0, 1, 2])
+            self.assertEqual(
+                [item.worker_index for item in bindings],
+                list(range(REQUIRED_HARDWARE_WORKERS)),
+            )
             self.assertEqual([item.board_id for item in bindings], sorted(item.board_id for item in bindings))
-            with self.assertRaisesRegex(BoardBindingError, "exactly 3"):
+            with self.assertRaisesRegex(
+                BoardBindingError, f"exactly {REQUIRED_HARDWARE_WORKERS}"
+            ):
                 bind_hardware_workers(devices[:2])
             duplicate = DeterministicVirtualDevice("board-0")
             with self.assertRaisesRegex(BoardBindingError, "duplicate"):
-                bind_hardware_workers(devices[:2] + [duplicate])
+                bind_hardware_workers(devices[:-1] + [duplicate])
             duplicate.close()
         finally:
             for item in devices:
                 item.close()
 
     def test_explicit_mapping_is_by_identity_not_serial_order(self) -> None:
-        devices = [DeterministicVirtualDevice(f"id-{index}") for index in range(3)]
+        devices = [
+            DeterministicVirtualDevice(f"id-{index}")
+            for index in range(REQUIRED_HARDWARE_WORKERS)
+        ]
         try:
-            mapping = {0: "id-2", 1: "id-1", 2: "id-0"}
+            mapping = {
+                index: f"id-{REQUIRED_HARDWARE_WORKERS - 1 - index}"
+                for index in range(REQUIRED_HARDWARE_WORKERS)
+            }
             bindings = bind_hardware_workers(devices, explicit_mapping=mapping)
-            self.assertEqual([item.board_id for item in bindings], ["id-2", "id-1", "id-0"])
+            self.assertEqual(
+                [item.board_id for item in bindings],
+                [
+                    f"id-{REQUIRED_HARDWARE_WORKERS - 1 - index}"
+                    for index in range(REQUIRED_HARDWARE_WORKERS)
+                ],
+            )
         finally:
             for item in devices:
                 item.close()
@@ -414,7 +435,7 @@ class BoardBindingAndLeaseTests(unittest.TestCase):
             DeterministicVirtualDevice(
                 f"firmware-{index}", firmware_sha256="actual-firmware"
             )
-            for index in range(3)
+            for index in range(REQUIRED_HARDWARE_WORKERS)
         ]
         try:
             with self.assertRaisesRegex(BoardBindingError, "firmware hash mismatch"):
@@ -1459,7 +1480,7 @@ class CausalLoopbackProtocolTests(unittest.TestCase):
         )
         devices = [
             LoopbackReplayDevice(f"preflight-{index}", build_root=self.build_root)
-            for index in range(3)
+            for index in range(REQUIRED_HARDWARE_WORKERS)
         ]
         try:
             with tempfile.TemporaryDirectory() as temporary:
@@ -1963,7 +1984,7 @@ class PreflightReportTests(unittest.TestCase):
                 timer_monotonic=True,
                 timer_wraparound_safe=True,
             )
-            for index in range(3)
+            for index in range(REQUIRED_HARDWARE_WORKERS)
         ]
 
     def test_zero_timer_resolution_cannot_be_hardware_valid(self) -> None:
@@ -2015,7 +2036,10 @@ class PreflightReportTests(unittest.TestCase):
 
     def test_pending_or_virtual_evidence_can_never_be_hardware_valid(self) -> None:
         recorder = CausalPreflightRecorder(native_hardware=False)
-        devices = [DeterministicVirtualDevice(f"virtual-{index}") for index in range(3)]
+        devices = [
+            DeterministicVirtualDevice(f"virtual-{index}")
+            for index in range(REQUIRED_HARDWARE_WORKERS)
+        ]
         try:
             recorder.bind_boards(devices)
             report = recorder.report()

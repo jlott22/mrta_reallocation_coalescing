@@ -15,7 +15,7 @@ from study.manifests import canonical_json_bytes, sha256_file, validate_manifest
 
 
 SCHEMA_VERSION = 1
-PUBLICATION_WORKER_COUNT = 3
+PUBLICATION_WORKER_COUNT = 4
 PRIMARY_ALGORITHMS = ("CBAA", "ACBBA", "PI", "HIPC")
 POLICY_MODES = frozenset({"eager", "count", "bounded"})
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
