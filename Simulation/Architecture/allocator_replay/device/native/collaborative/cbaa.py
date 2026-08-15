@@ -130,36 +130,125 @@ class CBAAAllocator(NativeAllocatorBase):
         )
 
     def handle_message(self, message):
-        if not isinstance(message, dict):
+        if (
+            not isinstance(message, dict)
+            or message.get("type") != "cbaa_entry"
+        ):
+            return False
+        state = self.state
+        sender = message.get("sender")
+        if sender is None or str(sender) == state.robot_id:
             return False
         try:
-            slot = self.state.slot_for_cell((message["x"], message["y"]))
+            slot = state.slot_for_cell((message["x"], message["y"]))
+            incoming_owner = state.owner_index(message.get("winner"))
+            incoming_value = float(message.get("bid", self.NO_VALUE))
         except (KeyError, TypeError, ValueError):
             return False
         if slot is None:
             return False
-        previous_owner = int(self.state.claim_owner[slot])
-        previous_value = float(self.state.claim_value[slot])
-        changed = self.parse_claim_message(message, ("cbaa_entry",))
-        if changed:
-            self.clean_path(require_ownership=True)
-            # CBAA is a delta-known-table protocol: an accepted peer update is
-            # retransmitted by this robot with the peer winner retained and
-            # this robot as sender.  This is a real observable output, not
-            # bookkeeping, and is required for message parity.
-            owner = int(self.state.claim_owner[slot])
-            value = float(self.state.claim_value[slot])
-            if owner < 0:
-                forwarded = self.claim_message(
-                    "cbaa_entry", slot, -1, self.NO_VALUE, True
+
+        # Desktop CBAA clears a locally invalid entry even when the incoming
+        # payload itself cannot be used.  The following choose() call performs
+        # the ordinary current-task repair.
+        if not state.is_candidate(slot):
+            return self._set_and_forward(slot, -1, self.NO_VALUE)
+
+        local_owner = int(state.claim_owner[slot])
+        local_value = float(state.claim_value[slot])
+        changed = False
+
+        if incoming_owner < 0:
+            released_owner = state.owner_index(
+                message.get("released_winner", sender)
+            )
+            try:
+                released_value = float(
+                    message.get("released_bid", self.NO_VALUE)
                 )
-                forwarded["released_winner"] = self.state.owner_id(
-                    previous_owner
+            except (TypeError, ValueError):
+                released_value = self.NO_VALUE
+            if (
+                local_owner == released_owner
+                and (
+                    released_value == self.NO_VALUE
+                    or local_value <= released_value + self.EPS
                 )
-                forwarded["released_bid"] = previous_value
-            else:
-                forwarded = self.claim_message(
-                    "cbaa_entry", slot, owner, value
+            ):
+                changed = self._set_and_forward(
+                    slot, -1, self.NO_VALUE
                 )
-            self.state.queue_message(forwarded)
+        else:
+            # A valid CBAA entry asserts that its winner has moved to this
+            # cell.  Desktop CBAA removes every older claim by that winner
+            # *before* comparing this entry with the target cell's incumbent.
+            # Deferring this step lets a losing relay leave our own old task
+            # cached, which changes both the timed call mechanism and the
+            # transient goal state even when the final table looks identical.
+            for old_slot in range(len(state.targets)):
+                if (
+                    old_slot != slot
+                    and int(state.claim_owner[old_slot]) == incoming_owner
+                ):
+                    changed = (
+                        self._set_and_forward(
+                            old_slot, -1, self.NO_VALUE
+                        )
+                        or changed
+                    )
+
+            accept = local_owner == incoming_owner
+            if not accept and incoming_value > local_value + self.EPS:
+                accept = True
+            if (
+                not accept
+                and abs(incoming_value - local_value) <= self.EPS
+                and (local_owner < 0 or incoming_owner < local_owner)
+            ):
+                accept = True
+            if accept:
+                changed = (
+                    self._set_and_forward(
+                        slot, incoming_owner, incoming_value
+                    )
+                    or changed
+                )
+
+        self.clean_path(require_ownership=True)
+        if not self.path:
+            state.current_goal = None
         return changed
+
+    def _set_and_forward(self, slot, owner, value):
+        """Apply one desktop CBAA table delta and queue its relay."""
+
+        state = self.state
+        slot = int(slot)
+        owner = int(owner)
+        value = self.NO_VALUE if owner < 0 else float(value)
+        previous_owner = int(state.claim_owner[slot])
+        previous_value = float(state.claim_value[slot])
+        if (
+            previous_owner == owner
+            and (
+                owner < 0
+                or abs(previous_value - value) <= self.EPS
+            )
+        ):
+            return False
+        if owner < 0:
+            state.clear_claim(slot)
+            forwarded = self.claim_message(
+                "cbaa_entry", slot, -1, self.NO_VALUE, True
+            )
+            forwarded["released_winner"] = state.owner_id(previous_owner)
+            forwarded["released_bid"] = previous_value
+        else:
+            # CBAA does not expose a protocol timestamp; keep its internal
+            # claim epoch neutral just as the decoded desktop table does.
+            state.set_claim(slot, owner, value, 0)
+            forwarded = self.claim_message(
+                "cbaa_entry", slot, owner, value
+            )
+        state.queue_message(forwarded)
+        return True

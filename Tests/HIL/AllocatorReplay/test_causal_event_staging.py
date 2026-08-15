@@ -438,6 +438,55 @@ class InboundConsensusRepairTests(unittest.TestCase):
         self.assertEqual(observed[1]["path"], [])
         self.assertEqual(observed[1]["owners"], [1, -1, -1])
 
+    def test_cbaa_losing_relay_moves_winner_before_bid_comparison(self) -> None:
+        runtime, cells, slots = self._runtime("CBAA")
+        runtime.allocator.path = [slots[0]]
+        runtime.state.current_goal = runtime.state.targets[slots[0]]
+        runtime.state.set_claim(
+            slots[0], runtime.state.robot_index, -2.0, 0
+        )
+        runtime.state.set_claim(slots[1], 1, -1.0, 0)
+
+        # Peer 02 relays a weaker claim naming us as the winner of peer 01's
+        # cell.  Desktop CBAA first removes our old claim, then rejects the
+        # weak relay and re-auctions our old cell during choose().  The final
+        # table is unchanged, but this is observably a candidate-filter call,
+        # not cached maintenance (the physical v5 call-13 regression).
+        observed = self._observe_after_each_inbound_message(
+            runtime,
+            slots,
+            [
+                {
+                    "kind": "allocator_message",
+                    "payload": {
+                        "type": "cbaa_entry",
+                        "sender": ROBOT_IDS[2],
+                        "x": cells[1][0],
+                        "y": cells[1][1],
+                        "winner": ROBOT_IDS[0],
+                        "bid": -5.0,
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual(observed[0]["path"], [])
+        self.assertEqual(observed[0]["owners"], [-1, 1, -1])
+        self.assertEqual(runtime.allocator.path, [slots[0]])
+        self.assertEqual(runtime.state.filter_invocations, 1)
+        self.assertEqual(runtime.call_class(), "candidate_filter_only")
+
+    def test_cbaa_repeated_clear_keeps_float32_sentinel_idempotent(self) -> None:
+        runtime, _, slots = self._runtime("CBAA")
+        runtime.state.clear_claim(slots[0])
+
+        changed = runtime.allocator._set_and_forward(
+            slots[0], -1, runtime.allocator.NO_VALUE
+        )
+
+        self.assertFalse(changed)
+        self.assertEqual(runtime.state.drain_messages(), [])
+
     def test_acbba_invalid_head_is_cleared_before_later_peer_bid(self) -> None:
         runtime, cells, slots = self._runtime("ACBBA")
         runtime.allocator.path = list(slots)

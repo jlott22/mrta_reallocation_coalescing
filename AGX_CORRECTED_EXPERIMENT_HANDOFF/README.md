@@ -6,11 +6,11 @@ manifests/output roots.
 
 ## Current execution identity
 
-The active restart is **v5**. Its campaign IDs and output roots end in `_v5`;
-the retained `_v1`, `_v2`, `_v3`, and `_v4` output trees are aborted evidence
-from before the current complete call-reason and consensus-parity repair.
+The active restart is **v6**. Its campaign IDs and output roots end in `_v6`;
+the retained `_v1`, `_v2`, `_v3`, `_v4`, and `_v5` output trees are aborted
+evidence from before the current complete CBAA consensus-transition repair.
 Preserve those trees for audit, but never delete, rename, resume, analyze with,
-or pool them into v5 results. V5 deliberately reuses the immutable scenario manifest set, not prior
+or pool them into v6 results. V6 deliberately reuses the immutable scenario manifest set, not prior
 completion state or analysis products.
 
 ## Fixed design
@@ -32,7 +32,7 @@ completion state or analysis products.
 
 1. Clone `main` into a fresh AGX directory; do not copy old `study/output`.
    If this approved restart shares the prior disk, leave the aborted `_v1`,
-   `_v2`, `_v3`, and `_v4` roots in place and launch only the `_v5` configs in this
+   `_v2`, `_v3`, `_v4`, and `_v5` roots in place and launch only the `_v6` configs in this
    handoff.
 2. Read `01_ARCHITECTURE_AND_CHANGES.md` through `07_DATA_REPLACEMENT_AND_GITHUB.md`.
 3. Run the brief software/native preflight in `05_PREFLIGHT_AND_QA.md`.

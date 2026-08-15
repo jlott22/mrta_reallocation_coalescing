@@ -13,8 +13,8 @@
     "design_status": "corrected_strict_bound_message_only_n50"
   },
   "campaign": {
-    "campaign_id": "corrected_round1_causal_v5",
-    "output_root": "study/output/corrected_round1_causal_v5",
+    "campaign_id": "corrected_round1_causal_v6",
+    "output_root": "study/output/corrected_round1_causal_v6",
     "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
     "loads": ["low", "medium", "high"],
     "policies": [
@@ -30,6 +30,6 @@
     "allow_dirty": false,
     "required_outputs": ["trial_summary.json", "task_events.csv", "allocation_epochs.csv"],
     "runner": {"module": "known_visit_sim.run_online_trials", "extra_args": ["--timing-mode", "agx_host_proxy"]},
-    "notes": "Round 1 causal: complete 60-condition matrix on paired traces 0-24. This v5 restart must not resume or pool the aborted v1/v2/v3/v4 result trees."
+    "notes": "Round 1 causal: complete 60-condition matrix on paired traces 0-24. This v6 restart must not resume or pool the aborted v1/v2/v3/v4/v5 result trees."
   }
 }
