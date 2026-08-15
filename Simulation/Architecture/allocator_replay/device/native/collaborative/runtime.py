@@ -1,5 +1,7 @@
 """Shared persistent facade for collaborative HIL and physical wrappers."""
 
+from array import array
+
 from .acbba import ACBBAAllocator
 from .cbaa import CBAAAllocator
 from .dga import DGAAllocator
@@ -437,10 +439,18 @@ class PersistentCollaborativeRuntime:
             admitted = state._normalize_cell_collection(
                 flattened["last_allocation_epoch_admitted"]
             )
-            del state.last_allocation_epoch_admitted[:]
-            for encoded in admitted:
-                if encoded in state.slot_by_cell:
-                    state.last_allocation_epoch_admitted.append(encoded)
+            # MicroPython's ``array`` does not implement slice deletion even
+            # though CPython's does.  Replace the compact field atomically so
+            # mature checkpoint restoration follows the same path on both
+            # runtimes.
+            state.last_allocation_epoch_admitted = array(
+                "H",
+                [
+                    encoded
+                    for encoded in admitted
+                    if encoded in state.slot_by_cell
+                ],
+            )
         if "last_event" in flattened:
             state.last_event = str(flattened["last_event"])
         if "current_goal" in flattened:
