@@ -669,12 +669,14 @@ class OnlineReallocationScheduler:
         robot_id: str,
         epoch_id: int,
         trigger_reason: Optional[str] = None,
+        delivered_at_s: Optional[float] = None,
     ) -> bool:
         """Compatibility name used by ``RobotShell`` at message receipt."""
 
         rid = str(robot_id)
-        robot = self.robots.get(rid)
-        delivered_at_s = getattr(robot, "_now", None)
+        if delivered_at_s is None:
+            robot = self.robots.get(rid)
+            delivered_at_s = getattr(robot, "_now", None)
         return self.register_admission_delivery(
             rid,
             epoch_id,

@@ -398,6 +398,19 @@ class CausalComputeTests(unittest.TestCase):
         self.assertEqual(
             next_call.authoritative.call_class, "full_allocation_solve"
         )
+        epoch = state.reallocation_scheduler.epoch_by_id(
+            future.admission_epoch_id
+        )
+        self.assertIsNotNone(epoch)
+        expected_receipt_s = 0.5 + state.cfg.comm_delay_s
+        self.assertEqual(
+            future.knowledge_receipt_time_s_by_robot,
+            {"00": expected_receipt_s},
+        )
+        self.assertEqual(
+            epoch.announcement_delivery_time_s_by_robot,
+            future.knowledge_receipt_time_s_by_robot,
+        )
         self.assertEqual(future.first_eligible_allocator_start_time_s, 1.0)
         self.assertGreaterEqual(future.first_assignment_time_s, 1.0)
 

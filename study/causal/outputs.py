@@ -8,6 +8,7 @@ import json
 import math
 import re
 import statistics
+import sys
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -45,6 +46,28 @@ LEGACY_DEVICE_ALLOCATOR_TIMER_SCOPE = (
 
 class CausalOutputError(ValueError):
     pass
+
+
+def _enable_native_parity_hash(config: CausalConfig) -> None:
+    """Make physical attestation hashing independent of import order.
+
+    Hardware workers load ``allocator_replay`` while constructing their timing
+    provider, but resume validation and the final descriptive analyzer run in
+    the parent process without constructing a provider.  Put the repository's
+    sealed native package on the import path before ``parity_sha256`` is used so
+    every validation context applies the same cross-runtime fingerprint.
+    """
+
+    if config.development_override:
+        return
+    architecture = config.repo_root / "Simulation" / "Architecture"
+    if not architecture.is_dir():
+        raise CausalOutputError(
+            "native allocator-replay package is missing for hardware validation"
+        )
+    architecture_path = str(architecture)
+    if architecture_path not in sys.path:
+        sys.path.insert(0, architecture_path)
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -148,6 +171,8 @@ def _manifest(job: CausalJob) -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def validate_causal_outputs(config: CausalConfig, job: CausalJob, directory: Path) -> dict[str, Any]:
+    if not job.zero_compute:
+        _enable_native_parity_hash(config)
     missing = [name for name in REQUIRED_OUTPUTS if not (directory / name).is_file()]
     if missing:
         raise CausalOutputError(f"missing required outputs: {', '.join(missing)}")

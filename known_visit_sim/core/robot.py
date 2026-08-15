@@ -277,7 +277,12 @@ class RobotShell:
         scheduler = self._reallocation_scheduler
         note_received = getattr(scheduler, "note_admission_received", None)
         if callable(note_received):
-            note_received(self.rid, int(epoch_id), str(trigger_reason))
+            note_received(
+                self.rid,
+                int(epoch_id),
+                str(trigger_reason),
+                delivered_at_s=receipt_s,
+            )
         # The new batch requests a safe-boundary allocator transaction, but
         # admission itself never recalls the executing goal or clears motion.
         self._next_allocation_reason = trigger_reason
