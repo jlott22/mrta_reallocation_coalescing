@@ -479,6 +479,51 @@ class BoardBindingAndLeaseTests(unittest.TestCase):
 
 
 class NativeFourContextSlotTests(unittest.TestCase):
+    def test_authoritative_checkpoint_replaces_stale_current_goal(self) -> None:
+        """A resident context must not carry its previous goal into a new call."""
+
+        desired = (3, 3)
+        stale = (5, 5)
+        algorithm_state = {
+            "ACBBA": {
+                "acbba_path": [desired],
+                "acbba_winner_by_cell": {desired: ROBOT_IDS[0]},
+                "acbba_winning_bid_by_cell": {desired: -1.0},
+                "acbba_bid_time_by_cell": {desired: 7},
+                "acbba_bid_counter": 7,
+            },
+            "PI": {
+                "pi_path": [desired],
+                "pi_owner_by_cell": {desired: ROBOT_IDS[0]},
+                "pi_significance_by_cell": {desired: 1.0},
+                "pi_time_by_cell": {desired: 7},
+                "pi_time_counter": 7,
+            },
+            "HIPC": {
+                "hipc_path": [desired],
+                "hipc_winner_by_cell": {desired: ROBOT_IDS[0]},
+                "hipc_winning_bid_by_cell": {desired: -1.0},
+                "hipc_bid_time_by_cell": {desired: 7},
+                "hipc_bid_counter": 7,
+            },
+        }
+        for algorithm, checkpoint in algorithm_state.items():
+            with self.subTest(algorithm=algorithm):
+                config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+                    algorithm, ROBOT_IDS[0]
+                )
+                runtime = create_persistent_runtime(config)
+                runtime.reset_trial(config, copy.deepcopy(pre_state))
+                runtime.state.current_goal = runtime.state.encode_cell(stale)
+
+                checkpoint = dict(checkpoint, current_goal=desired)
+                self.assertTrue(runtime._synchronize_authoritative_state(checkpoint))
+
+                self.assertEqual(
+                    runtime.state.current_goal,
+                    runtime.state.encode_cell(desired),
+                )
+
     def test_four_native_runtime_objects_reside_and_reset_independently(self) -> None:
         config = {
             "mission": "collaborative",

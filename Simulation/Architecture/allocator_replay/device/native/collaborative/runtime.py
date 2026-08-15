@@ -397,6 +397,13 @@ class PersistentCollaborativeRuntime:
         values = _mapping(flattened.get(value_name))
         times = _mapping(flattened.get(time_name)) if time_name else {}
         state = self.state
+        if "current_goal" in flattened:
+            raw_goal = _decoded(flattened.get("current_goal"), None)
+            state.current_goal = (
+                None
+                if raw_goal is None
+                else state.encode_cell(raw_goal)
+            )
         for slot in range(len(state.targets)):
             state.clear_claim(slot)
         for raw_cell, raw_owner in owners.items():

@@ -13,8 +13,8 @@
     "design_status": "corrected_strict_bound_message_only_n50"
   },
   "campaign": {
-    "campaign_id": "corrected_round1_zero_v3",
-    "output_root": "study/output/corrected_round1_zero_v3",
+    "campaign_id": "corrected_round1_zero_v4",
+    "output_root": "study/output/corrected_round1_zero_v4",
     "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
     "loads": ["low", "medium", "high"],
     "policies": [
@@ -30,6 +30,6 @@
     "allow_dirty": false,
     "required_outputs": ["trial_summary.json", "task_events.csv", "allocation_epochs.csv"],
     "runner": {"module": "known_visit_sim.run_online_trials", "extra_args": ["--timing-mode", "zero_compute"]},
-    "notes": "Round 1 zero-time counterpart on the same paired traces 0-24. This v3 restart must not resume or pool the aborted v1/v2 result trees."
+    "notes": "Round 1 zero-time counterpart on the same paired traces 0-24. This v4 restart must not resume or pool the aborted v1/v2/v3 result trees."
   }
 }
