@@ -332,6 +332,13 @@ class CollaborativeState:
     def update_peer_positions(self, values):
         if not isinstance(values, dict):
             return
+        # ``peer_positions`` is a frozen local-view snapshot, not a stream of
+        # incremental sightings.  A peer omitted by the authoritative AGX
+        # view is currently unobserved and must not remain eligible in HIPC's
+        # local team plan because it happened to be visible on an earlier
+        # call.
+        for index in range(len(self.peer_position_valid)):
+            self.peer_position_valid[index] = 0
         for rid, cell in values.items():
             index = self.robot_index_by_id.get(normalized_robot_id(rid))
             if index is None:

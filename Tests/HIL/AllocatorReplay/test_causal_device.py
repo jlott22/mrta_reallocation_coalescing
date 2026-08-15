@@ -479,6 +479,21 @@ class BoardBindingAndLeaseTests(unittest.TestCase):
 
 
 class NativeFourContextSlotTests(unittest.TestCase):
+    def test_authoritative_peer_view_replaces_stale_visibility(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "HIPC", ROBOT_IDS[0]
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, copy.deepcopy(pre_state))
+        self.assertIsNotNone(runtime.state.position_for_robot(2))
+        self.assertIsNotNone(runtime.state.position_for_robot(3))
+
+        runtime.state.update_peer_positions({ROBOT_IDS[1]: [2, 4]})
+
+        self.assertIsNotNone(runtime.state.position_for_robot(1))
+        self.assertIsNone(runtime.state.position_for_robot(2))
+        self.assertIsNone(runtime.state.position_for_robot(3))
+
     def test_authoritative_checkpoint_replaces_stale_current_goal(self) -> None:
         """A resident context must not carry its previous goal into a new call."""
 

@@ -9,7 +9,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from allocator_replay.capture.codec import canonical_json_bytes, decode_value
+from allocator_replay.capture.codec import (
+    canonical_json_bytes,
+    decode_value,
+    encode_value,
+)
 from allocator_replay.host.transport import compact_causal_events
 
 from .binding import BoardFingerprint, BoardLease, StableBoardBinding
@@ -705,7 +709,7 @@ class CausalBoardSession:
         }
         mismatches = diagnostics["mismatches"]
         projection_fields = {"message_sha256", "post_state_sha256"}
-        if mismatches and set(mismatches).issubset(projection_fields):
+        if mismatches and set(mismatches).intersection(projection_fields):
             authoritative_messages = call.metadata.get("authoritative_messages")
             authoritative_post_state = call.metadata.get(
                 "authoritative_post_state"
@@ -752,6 +756,29 @@ class CausalBoardSession:
                     )
                     diagnostics["projection"] = projection
         if diagnostics["mismatches"]:
+            # A strict parity failure is rare and invalidates the complete
+            # mission.  Retain its exact logical boundary so a deterministic
+            # late-trace defect can be reproduced offline without consuming
+            # another hour-long RP2040 attempt merely to recover inputs that
+            # were already present on the host.
+            diagnostics.update(
+                {
+                    "frozen_pre_state": encode_value(
+                        setup.get("pre_state", {})
+                    ),
+                    "frozen_events": encode_value(
+                        setup.get("events", [])
+                    ),
+                    "authoritative_messages": encode_value(
+                        call.metadata.get("authoritative_messages", [])
+                    ),
+                    "authoritative_post_state": encode_value(
+                        call.metadata.get("authoritative_post_state", {})
+                    ),
+                    "device_messages": encode_value(messages),
+                    "device_post_state": encode_value(post_state),
+                }
+            )
             diagnostics.update(
                 {
                     "board_id": self.board_id,
