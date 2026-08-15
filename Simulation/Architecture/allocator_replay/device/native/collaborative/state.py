@@ -357,11 +357,18 @@ class CollaborativeState:
         self.last_event = "collision_updated"
 
     def is_admission_allocation(self):
-        # This transient is set only while an ordered allocation-epoch input
-        # is being integrated and cleared before the transaction returns.
-        # Treat every nonempty reason as admission so a newly introduced
-        # trigger spelling cannot accidentally permit head recall.
-        return bool(self.active_allocation_reason)
+        # Keep this set identical to AllocatorBase's desktop contract.  The
+        # frozen call reason is present for every transaction; treating an
+        # ordinary allocator-message or peer-state update as admission would
+        # incorrectly pin the executing head and change path insertion/order.
+        return str(self.active_allocation_reason) in (
+            "initial_allocation",
+            "task_admission",
+            "task_arrival_eager",
+            "batch_threshold",
+            "age_timeout",
+            "terminal_residual",
+        )
 
     def apply_allocation_epoch(
         self, epoch_index, trigger_reason, admitted_cells

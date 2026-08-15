@@ -262,7 +262,20 @@ class ACBBAAllocator(NativeAllocatorBase):
         if slot is None:
             return False
         if not state.is_candidate(slot):
-            return False
+            # Desktop ACBBA clears an invalid/completed table entry before it
+            # processes the next queued peer callback.  Returning here leaves
+            # a stale local head and dependent suffix in place; a later weak
+            # peer bid then advances the local protocol counter even though
+            # the authoritative handler had already released that suffix.
+            changed = self._set_claim(
+                slot, -1, self.NO_VALUE, 0
+            )
+            if changed:
+                self._queue_claim(slot, -1, self.NO_VALUE, 0)
+                self._repair_bundle_after_consensus()
+                self.last_call_path = "message_updated_consensus"
+            self._sync_current_goal_after_message()
+            return changed
 
         bundle = message.get("bundle_cells")
         if isinstance(bundle, list) and incoming_owner == sender:

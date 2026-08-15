@@ -362,6 +362,13 @@ class InboundConsensusRepairTests(unittest.TestCase):
                         int(runtime.state.claim_owner[slot])
                         for slot in slots
                     ],
+                    "protocol_counter": int(
+                        getattr(
+                            runtime.allocator,
+                            "time_counter",
+                            getattr(runtime.allocator, "bid_counter", 0),
+                        )
+                    ),
                 }
             )
             return changed
@@ -430,6 +437,100 @@ class InboundConsensusRepairTests(unittest.TestCase):
         self.assertEqual(observed[0]["owners"], [1, -1, -1])
         self.assertEqual(observed[1]["path"], [])
         self.assertEqual(observed[1]["owners"], [1, -1, -1])
+
+    def test_acbba_invalid_head_is_cleared_before_later_peer_bid(self) -> None:
+        runtime, cells, slots = self._runtime("ACBBA")
+        runtime.allocator.path = list(slots)
+        runtime.allocator.bid_counter = 35
+        for index, slot in enumerate(slots, start=1):
+            runtime.state.set_claim(
+                slot, runtime.state.robot_index, -float(index), 30 + index
+            )
+        # The first cell remains in the registry and retained path but has
+        # just become unavailable, matching a completion callback burst.
+        runtime.state.unavailable[slots[0]] = 1
+
+        events = [
+            {
+                "kind": "allocator_message",
+                "payload": {
+                    "type": "acbba_entry",
+                    "sender": ROBOT_IDS[1],
+                    "x": cells[0][0],
+                    "y": cells[0][1],
+                    "winner": ROBOT_IDS[1],
+                    "bid": -5.0,
+                    "timestamp": 20,
+                },
+            },
+            {
+                "kind": "allocator_message",
+                "payload": {
+                    "type": "acbba_entry",
+                    "sender": ROBOT_IDS[1],
+                    "x": cells[1][0],
+                    "y": cells[1][1],
+                    "winner": ROBOT_IDS[1],
+                    "bid": -9.0,
+                    "timestamp": 21,
+                },
+            },
+        ]
+
+        observed = self._observe_after_each_inbound_message(
+            runtime, slots, events
+        )
+
+        self.assertEqual(observed[0]["path"], [])
+        self.assertEqual(observed[0]["owners"], [-1, -1, -1])
+        self.assertEqual(observed[0]["protocol_counter"], 35)
+        self.assertEqual(observed[1]["protocol_counter"], 35)
+
+    def test_admission_call_reason_preserves_hipc_executing_head(self) -> None:
+        runtime, cells, slots = self._runtime("HIPC")
+        # From this position HIPC's unconstrained team solve prefers cells[1]
+        # first.  During an admission-triggered transaction the desktop
+        # allocator retains the still-valid executing cells[0] head.
+        runtime.state.update_position((3, 1))
+        runtime.allocator.path = [slots[0], slots[1]]
+        runtime.state.current_goal = runtime.state.targets[slots[0]]
+        for index, slot in enumerate(runtime.allocator.path, start=1):
+            runtime.state.set_claim(
+                slot, runtime.state.robot_index, -float(index), index
+            )
+
+        runtime.begin_call_setup()
+        runtime.apply_delta(
+            {
+                "events": [
+                    {
+                        "kind": "allocator_call_reason",
+                        "payload": {"trigger_reason": "task_arrival_eager"},
+                    }
+                ]
+            }
+        )
+        decision = runtime.choose_goal()
+
+        self.assertEqual(decision.goal, cells[0])
+        self.assertEqual(runtime.allocator.path[0], slots[0])
+
+    def test_only_desktop_admission_reasons_enable_head_retention(self) -> None:
+        runtime, _, _ = self._runtime("HIPC")
+        admitted = {
+            "initial_allocation",
+            "task_admission",
+            "task_arrival_eager",
+            "batch_threshold",
+            "age_timeout",
+            "terminal_residual",
+        }
+        for reason in admitted:
+            runtime.state.active_allocation_reason = reason
+            self.assertTrue(runtime.state.is_admission_allocation(), reason)
+        for reason in ("", "allocator_message", "peer_state_update"):
+            runtime.state.active_allocation_reason = reason
+            self.assertFalse(runtime.state.is_admission_allocation(), reason)
 
     def test_pi_repairs_lost_path_item_before_next_peer_clear(self) -> None:
         runtime, cells, slots = self._runtime("PI")

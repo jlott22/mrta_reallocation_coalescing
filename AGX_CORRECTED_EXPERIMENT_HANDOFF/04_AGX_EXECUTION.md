@@ -26,9 +26,9 @@ invariant violations but does not create an allowlist or stop the complete
 Round 2 matrix. Technical corruption must be repaired/resumed; algorithmic
 noncompletion remains data.
 
-Monitor `study/output/corrected_experiment_supervisor_v4/` and each v4
-campaign's analysis directory. The v4 supervisor has its own locks, logs, PID
+Monitor `study/output/corrected_experiment_supervisor_v5/` and each v5
+campaign's analysis directory. The v5 supervisor has its own locks, logs, PID
 files, and completion marker, so it cannot inherit stale supervisor state from
-the aborted v1/v2/v3 executions. A lost terminal or disconnected AI session must
+the aborted v1/v2/v3/v4 executions. A lost terminal or disconnected AI session must
 not stop the background process. Use the PID files to prove whether a
 supervisor is alive before starting another one.

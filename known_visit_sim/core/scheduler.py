@@ -678,12 +678,25 @@ class AsyncTrialRunner:
                 # at the instant they are actually applied.  Draining that
                 # unified log preserves their exact relative order, including
                 # admissions buffered during an in-flight compute interval.
+                # The desktop allocator sees this frozen reason for the whole
+                # timed transaction, even when no admission callback happens
+                # to be queued in the same call.  Carry it as the first
+                # ordered allocator input so the native PI/HIPC admission
+                # guard makes the identical keep-the-executing-head choice.
                 device_events: List[Dict[str, Any]] = [
+                    {
+                        "kind": "allocator_call_reason",
+                        "payload": replay_encode_value(
+                            {"trigger_reason": item.prepared.trigger_reason}
+                        ),
+                    },
+                    *[
                     {
                         "kind": str(event["kind"]),
                         "payload": replay_encode_value(event.get("payload", {})),
                     }
                     for event in item.prepared.device_events
+                    ],
                 ]
                 device_setup = {
                     "schema": 1,

@@ -358,7 +358,7 @@ class CausalComputeTests(unittest.TestCase):
         self.assertEqual(next_robot_zero_call.virtual_start_s, 1.0)
         self.assertEqual(
             [event["kind"] for event in next_robot_zero_call.device_setup["events"]],
-            ["allocator_message", "allocation_epoch"],
+            ["allocator_call_reason", "allocator_message", "allocation_epoch"],
         )
 
     def test_other_robot_moves_while_peer_is_compute_blocked(self) -> None:
@@ -393,7 +393,7 @@ class CausalComputeTests(unittest.TestCase):
         next_call = provider.groups[1][0]
         self.assertEqual(
             [event["kind"] for event in next_call.device_setup["events"]],
-            ["allocation_epoch"],
+            ["allocator_call_reason", "allocation_epoch"],
         )
         self.assertEqual(
             next_call.authoritative.call_class, "full_allocation_solve"

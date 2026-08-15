@@ -3,7 +3,7 @@ set -euo pipefail
 
 HANDOFF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd -- "${HANDOFF_DIR}/.." && pwd)"
-RUN_ROOT="${REPO_ROOT}/study/output/corrected_experiment_supervisor_v4"
+RUN_ROOT="${REPO_ROOT}/study/output/corrected_experiment_supervisor_v5"
 START_HARDWARE="${START_HARDWARE:-NO}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 

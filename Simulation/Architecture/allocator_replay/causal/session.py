@@ -502,6 +502,7 @@ class CausalBoardSession:
             "group_id": call.group_id,
             "trial_id": call.trial_id,
             "logical_robot_id": call.logical_robot_id,
+            "trigger_reason": str(call.metadata.get("trigger_reason", "")),
             "authoritative": authoritative.as_dict(),
             "device": device_signature.as_dict(),
             "mismatches": mismatches,

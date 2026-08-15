@@ -957,7 +957,16 @@ class PersistentCollaborativeRuntime:
         for kind, payload, event_counter in events:
             state.event_counter = int(event_counter)
             try:
-                if kind == "allocator_message":
+                if kind == "allocator_call_reason":
+                    if not isinstance(payload, dict):
+                        raise TypeError(
+                            "allocator call reason payload must be a mapping"
+                        )
+                    allocation_reason = str(
+                        payload.get("trigger_reason", "")
+                    )
+                    state.active_allocation_reason = allocation_reason
+                elif kind == "allocator_message":
                     self.allocator.handle_message(payload)
                 elif kind in ("allocation_epoch", "__allocator_admission__"):
                     epoch_index = int(payload.get("epoch_index", -1))
