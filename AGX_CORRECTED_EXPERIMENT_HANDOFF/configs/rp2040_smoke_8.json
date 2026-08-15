@@ -32,7 +32,7 @@
       "study/native_gates/preflight/native_preflight_report.json"
     ],
     "require_clean_source": true,
-    "notes": "Engineering-only, non-inferential RP2040 smoke: 4 allocators x Eager/B4 x medium x trace 0000 = 8 missions. The v7 restart has a separate result identity, produces the fresh smoke gate required by hardware_core_96, and must neither resume nor be pooled with aborted v1/v2/v3/v4/v5/v6 output or with the 96-mission subset."
+    "notes": "RETIRED AUDIT-ONLY v7 engineering smoke. Do not launch or resume. Hardware v8 uses brief gates followed directly by the priority-ordered 96-mission publication core so every successful long physical mission is retained."
   },
   "hardware": {
     "bindings_file": "configs/local/agx_board_bindings.json",

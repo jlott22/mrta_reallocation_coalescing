@@ -7,6 +7,8 @@ context creation, selection, and environmental delta application remain
 outside the allocator timing boundary.
 """
 
+import gc
+
 from replay_codec import decode_value, encode_value
 from replay_random import Random
 from replay_robot import (
@@ -576,6 +578,7 @@ class PersistentRuntimeSlot:
         self.context_id = None
         self.contexts = {}
         self.context_capacity = 1
+        self.context_residency_limit = 1
         self.allowed_context_ids = None
 
     def begin_trial(self, config):
@@ -587,6 +590,15 @@ class PersistentRuntimeSlot:
                 "persistent logical_context_count must be one or four"
             )
         self.context_capacity = requested
+        residency_limit = int(
+            config.get("logical_context_residency_limit", requested) or requested
+        )
+        if residency_limit < 1 or residency_limit > requested:
+            raise ValueError(
+                "logical context residency limit must be between one and "
+                + str(requested)
+            )
+        self.context_residency_limit = residency_limit
         raw_ids = config.get("robot_ids", ())
         if requested == 4:
             ids = [str(item) for item in raw_ids]
@@ -647,8 +659,7 @@ class PersistentRuntimeSlot:
             )
         return state
 
-    @staticmethod
-    def _native_state(state, resume):
+    def _native_state(self, state, resume):
         # Compact native snapshots are overlaid first; fresh simulator
         # environment wins for position, tasks, clues, and peer data.
         flattened = dict(resume or {})
@@ -656,6 +667,40 @@ class PersistentRuntimeSlot:
             flattened.update(state.get(section, {}))
         if state.get("allocator_attrs"):
             flattened["allocator_attrs"] = state["allocator_attrs"]
+
+        # A checkpointed context must reconstruct the exact task registry
+        # learned so far, including completed/inactive cells still present in
+        # the allocator's consensus table.  ``all_tasks`` is intentionally
+        # excluded because it can contain future arrivals.  Each desktop
+        # primary allocator's authoritative table is the learned registry.
+        algorithm = str(
+            (self.trial_config or {}).get("algorithm", "")
+        ).upper()
+        registry_field = {
+            "CBAA": "cbaa_winner_by_cell",
+            "ACBBA": "acbba_winner_by_cell",
+            "PI": "pi_owner_by_cell",
+            "HIPC": "hipc_winner_by_cell",
+        }.get(algorithm)
+        path_field = {
+            "CBAA": "cbaa_current_task",
+            "ACBBA": "acbba_path",
+            "PI": "pi_path",
+            "HIPC": "hipc_path",
+        }.get(algorithm)
+        registry = list(flattened.get("active_tasks", ()) or ())
+        registry.extend(
+            flattened.get("last_allocation_epoch_admitted", ()) or ()
+        )
+        table = flattened.get(registry_field) if registry_field else None
+        if isinstance(table, dict):
+            registry.extend(table.keys())
+        path = flattened.get(path_field) if path_field else None
+        if algorithm == "CBAA" and path is not None:
+            registry.append(path)
+        elif isinstance(path, (list, tuple, set)):
+            registry.extend(path)
+        flattened["admitted_task_registry"] = registry
         return flattened
 
     @staticmethod
@@ -738,10 +783,36 @@ class PersistentRuntimeSlot:
             ):
                 raise RuntimeError("unknown causal logical context")
             state = self._apply_state_aliases(state, aliases)
+            if (
+                begin_call_setup
+                and str(
+                    (self.trial_config or {}).get(
+                        "logical_context_execution", ""
+                    )
+                )
+                == "checkpointed_time_multiplexing"
+                and context_id in self.contexts
+            ):
+                # Each call is a complete authoritative checkpoint. Rebuild
+                # even when the same robot happens to be measured twice in a
+                # row; otherwise a newly admitted active task is validated
+                # against the preceding call's smaller learned registry before
+                # its queued admission event is staged.
+                self.runtime = None
+                self.context_id = None
+                self.contexts = {}
+                gc.collect()
             runtime = self.contexts.get(context_id)
             if runtime is None:
-                if len(self.contexts) >= self.context_capacity:
-                    raise RuntimeError("causal context capacity exceeded")
+                if len(self.contexts) >= self.context_residency_limit:
+                    # The host supplies the complete frozen checkpoint on
+                    # every causal call. Evicting the previous runtime here
+                    # changes neither logical state nor W_alloc; it only
+                    # bounds resident SRAM used outside the timed boundary.
+                    self.runtime = None
+                    self.context_id = None
+                    self.contexts = {}
+                    gc.collect()
                 runtime = self._new_runtime()
                 restore_state = (
                     state
@@ -827,5 +898,6 @@ class PersistentRuntimeSlot:
         self.context_id = None
         self.contexts = {}
         self.context_capacity = 1
+        self.context_residency_limit = 1
         self.allowed_context_ids = None
         self.trial_config = None

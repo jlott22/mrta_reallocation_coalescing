@@ -62,6 +62,25 @@ def _state(count: int = 8) -> dict:
 
 
 class NativeCollaborativeTests(unittest.TestCase):
+    def test_outbox_coalesces_same_call_updates_by_message_type_and_cell(self) -> None:
+        runtime = create_persistent_runtime(_config("ACBBA"))
+        runtime.reset_trial({}, _state(3))
+        first = {
+            "type": "acbba_entry",
+            "sender": "00",
+            "x": 1,
+            "y": 1,
+            "winner": "00",
+            "bid": -1.0,
+            "timestamp": 1,
+        }
+        final = dict(first, bid=-2.0, timestamp=2)
+
+        runtime.state.queue_message(first)
+        runtime.state.queue_message(final)
+
+        self.assertEqual(runtime.state.drain_messages(), [final])
+
     def test_every_allocator_uses_shared_persistent_interface(self) -> None:
         for algorithm in ALGORITHMS:
             with self.subTest(algorithm=algorithm):

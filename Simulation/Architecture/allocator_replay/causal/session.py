@@ -280,7 +280,7 @@ def coerce_mission_binding(value: Any) -> MissionBinding:
 class CausalBoardSession:
     """A timing provider owned by one simulation worker and one board.
 
-    Four logical contexts persist as independently restored device snapshots.
+    Four logical contexts execute as independently restored device snapshots.
     The controller can execute only one physical request at a time, so a
     same-time group is measured serially.  All requests are detached before
     the first request, all outputs are withheld until the group passes parity,
@@ -328,6 +328,7 @@ class CausalBoardSession:
         self._session_nonce = uuid.uuid4().hex[:12]
         self.invalid_reason: str | None = None
         self.last_failure: dict[str, Any] | None = None
+        self._logical_context_execution = ""
         self.closed = False
 
     @property
@@ -407,6 +408,15 @@ class CausalBoardSession:
                 "robot_ids": list(mission.robot_ids),
                 "seed": int(mission.seed),
                 "logical_context_count": len(mission.robot_ids),
+                # A 3pi+ 2040 has enough heap for one mature 50-task native
+                # context plus the largest bounded callback burst, but not
+                # four such contexts with adequate fragmentation margin.
+                # Every causal call already carries a complete frozen logical
+                # checkpoint and setup is outside W_alloc, so time-multiplex
+                # one resident runtime without changing allocator inputs or
+                # the measured transaction.
+                "logical_context_residency_limit": 1,
+                "logical_context_execution": "checkpointed_time_multiplexing",
             }
         )
         try:
@@ -415,6 +425,9 @@ class CausalBoardSession:
             self._invalidate(exc, {"stage": "begin_mission"})
             raise DeviceCallError(f"failed to initialize four device contexts: {exc}") from exc
         self.mission = mission
+        self._logical_context_execution = str(
+            config["logical_context_execution"]
+        )
         self.context_state = {
             robot_id: copy.deepcopy(dict(mission.initial_context_states[robot_id]))
             for robot_id in mission.robot_ids
@@ -515,11 +528,11 @@ class CausalBoardSession:
     ) -> dict[str, int | None]:
         """Prepare one logical call with bounded ordered event transactions.
 
-        Existing contexts receive callbacks against their resident pre-hook
-        state before the complete authoritative checkpoint is synchronized.
-        A context's first call must bootstrap its state first, matching the
-        original create-then-apply behavior.  All stages remain outside the
-        timed allocator region and share one scientific attempt ID.
+        Resident contexts receive queued callbacks before their complete
+        authoritative checkpoint is synchronized. A reconstructed context
+        must bootstrap the checkpoint first so its learned-task registry
+        exists before event staging. All stages remain outside the timed
+        allocator region and share one scientific attempt ID.
         """
 
         prepare = getattr(self.device, "prepare_persistent_call")
@@ -554,7 +567,12 @@ class CausalBoardSession:
                 "pre_state": _empty_persistent_state(),
             }
 
-        if first_context_call:
+        checkpoint_first = (
+            first_context_call
+            or getattr(self, "_logical_context_execution", "")
+            == "checkpointed_time_multiplexing"
+        )
+        if checkpoint_first:
             stages.append(checkpoint)
             stages.extend(
                 event_stage(index, batch)
@@ -860,6 +878,9 @@ class CausalBoardSession:
                 "group_id": call.group_id,
                 "call_id": call.call_id,
                 "logical_context_id": call.logical_robot_id,
+                "logical_context_count": len(self.mission.robot_ids),
+                "logical_context_residency_limit": 1,
+                "logical_context_execution": "checkpointed_time_multiplexing",
                 "attempt_id": attempt_id,
                 "physical_measurement_index": physical_index,
                 "timing_decomposition_schema": 2,
@@ -1049,6 +1070,7 @@ class CausalBoardSession:
             self._invalidate(exc, {"stage": "end_mission"})
         finally:
             self.mission = None
+            self._logical_context_execution = ""
             self.context_state.clear()
             self.context_call_count.clear()
             self._seen_calls.clear()

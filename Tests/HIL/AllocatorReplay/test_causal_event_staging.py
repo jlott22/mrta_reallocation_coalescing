@@ -438,6 +438,45 @@ class InboundConsensusRepairTests(unittest.TestCase):
         self.assertEqual(observed[1]["path"], [])
         self.assertEqual(observed[1]["owners"], [1, -1, -1])
 
+    def test_pi_repairs_inactive_path_after_losing_peer_tie(self) -> None:
+        runtime, cells, slots = self._runtime("PI")
+        runtime.allocator.path = list(slots)
+        runtime.allocator.time_counter = 192
+        for index, slot in enumerate(slots):
+            runtime.state.set_claim(
+                slot, runtime.state.robot_index, float(index + 1), 190 + index
+            )
+
+        # The frozen checkpoint has already completed the head task.  This
+        # peer callback loses its equal-significance tie and therefore does
+        # not mutate the consensus table.  Desktop PI nevertheless repairs
+        # the retained path after every valid callback.  The v7 Pololu port
+        # skipped that repair when ``changed`` was false, leaving downstream
+        # significance stale for the next queued peer entry.
+        runtime.state.unavailable[slots[0]] = 1
+        observed = self._observe_after_each_inbound_message(
+            runtime,
+            slots,
+            [
+                {
+                    "kind": "allocator_message",
+                    "payload": {
+                        "type": "pi_entry",
+                        "sender": ROBOT_IDS[3],
+                        "x": cells[0][0],
+                        "y": cells[0][1],
+                        "winner": ROBOT_IDS[3],
+                        "significance": 1.0,
+                        "timestamp": 190,
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual(observed[0]["path"], slots[1:])
+        self.assertEqual(observed[0]["owners"], [-1, 0, 0])
+        self.assertGreater(observed[0]["protocol_counter"], 192)
+
     def test_cbaa_losing_relay_moves_winner_before_bid_comparison(self) -> None:
         runtime, cells, slots = self._runtime("CBAA")
         runtime.allocator.path = [slots[0]]

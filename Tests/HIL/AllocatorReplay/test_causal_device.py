@@ -578,6 +578,144 @@ class NativeFourContextSlotTests(unittest.TestCase):
         slot.end_trial()
         self.assertEqual(slot.contexts, {})
 
+    def test_four_logical_contexts_can_share_one_checkpointed_resident(self) -> None:
+        config = {
+            "mission": "collaborative",
+            "algorithm": "CBAA",
+            "robot_ids": list(ROBOT_IDS),
+            "grid_size": 19,
+            "all_tasks": [[1, 1], [2, 2]],
+            "active_tasks": [[1, 1], [2, 2]],
+            "seed": 17,
+            "logical_context_count": 4,
+            "logical_context_residency_limit": 1,
+        }
+        slot = PersistentRuntimeSlot(create_persistent_runtime)
+        slot.begin_trial(config)
+
+        for robot_id in ROBOT_IDS:
+            slot.prepare(
+                robot_id,
+                "causal_context",
+                state(robot_id),
+                events=[],
+            )
+            self.assertEqual(list(slot.contexts), [robot_id])
+            self.assertEqual(slot.runtime.call_index, 0)
+            slot.runtime.choose_goal()
+            self.assertEqual(slot.runtime.call_index, 1)
+
+        # A later call reconstructs robot_0 from that call's complete frozen
+        # checkpoint rather than retaining four allocator heaps concurrently.
+        slot.prepare(
+            "robot_0",
+            "causal_context",
+            state("robot_0"),
+            events=[],
+        )
+        self.assertEqual(list(slot.contexts), ["robot_0"])
+        self.assertEqual(slot.runtime.call_index, 0)
+        slot.runtime.choose_goal()
+        self.assertEqual(slot.runtime.call_index, 1)
+
+    def test_inactive_allocator_messages_are_not_serialized_or_remembered(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "ACBBA", ROBOT_IDS[0]
+        )
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, copy.deepcopy(pre_state))
+        cell = (1, 1)
+        slot = runtime.state.slot_for_cell(cell)
+        runtime.state.set_claim(slot, runtime.state.robot_index, -1.0, 7)
+        runtime.state.queue_message(
+            {
+                "type": "acbba_entry",
+                "sender": ROBOT_IDS[0],
+                "x": cell[0],
+                "y": cell[1],
+                "winner": ROBOT_IDS[0],
+                "bid": -1.0,
+                "timestamp": 7,
+            }
+        )
+        runtime.state.complete_cells([cell])
+
+        self.assertEqual(runtime.drain_messages(), [])
+        self.assertFalse(
+            any(
+                item.get("cell") == [cell[0], cell[1]]
+                for item in runtime.behavior_last_sent
+            )
+        )
+
+    def test_checkpointed_duplicate_epoch_does_not_reactivate_completed_task(self) -> None:
+        config, pre_state, _ = CausalLoopbackProtocolTests._inputs(
+            "ACBBA", ROBOT_IDS[0]
+        )
+        completed = (1, 1)
+        retained = (3, 3)
+        pre_state["views"]["active_tasks"] = [retained, (5, 5)]
+        pre_state["robot_attrs"].update(
+            {
+                "last_allocation_epoch_index": 5,
+                "last_allocation_epoch_reason": "batch_threshold",
+                "last_allocation_epoch_admitted": [completed],
+                "acbba_path": [retained],
+                "acbba_winner_by_cell": {
+                    completed: None,
+                    retained: ROBOT_IDS[0],
+                    (5, 5): None,
+                },
+                "acbba_winning_bid_by_cell": {
+                    completed: -1.0e18,
+                    retained: -2.0,
+                    (5, 5): -1.0e18,
+                },
+                "acbba_bid_time_by_cell": {
+                    completed: -1.0e18,
+                    retained: 4,
+                    (5, 5): -1.0e18,
+                },
+                "acbba_bid_counter": 4,
+            }
+        )
+        config.update(
+            {
+                "logical_context_count": 4,
+                "logical_context_residency_limit": 1,
+                "logical_context_execution": "checkpointed_time_multiplexing",
+            }
+        )
+        slot = PersistentRuntimeSlot(create_persistent_runtime)
+        slot.begin_trial(config)
+        slot.prepare(
+            ROBOT_IDS[0],
+            "causal_context",
+            copy.deepcopy(pre_state),
+            events=[
+                {
+                    "kind": "allocation_epoch",
+                    "payload": {
+                        "epoch_index": 5,
+                        "trigger_reason": "batch_threshold",
+                        "admitted_cells": [completed],
+                    },
+                }
+            ],
+        )
+        completed_slot = slot.runtime.state.slot_for_cell(completed)
+
+        slot.runtime.choose_goal()
+
+        self.assertFalse(slot.runtime.state.is_active(completed_slot))
+        self.assertFalse(
+            any(
+                message.get("x") == completed[0]
+                and message.get("y") == completed[1]
+                for message in slot.runtime.drain_messages()
+            )
+        )
+
     def test_cbaa_admission_is_deferred_and_non_destructive(self) -> None:
         config, pre_state, event = CausalLoopbackProtocolTests._inputs(
             "CBAA", ROBOT_IDS[0]
@@ -1460,7 +1598,7 @@ class CausalLoopbackProtocolTests(unittest.TestCase):
             }
         )
 
-    def test_primary_algorithms_use_split_timer_and_four_resident_contexts(self) -> None:
+    def test_primary_algorithms_use_split_timer_and_checkpointed_contexts(self) -> None:
         for algorithm in ("CBAA", "ACBBA", "PI", "HIPC"):
             with self.subTest(algorithm=algorithm), tempfile.TemporaryDirectory() as temporary:
                 device = LoopbackReplayDevice(
@@ -1521,7 +1659,7 @@ class CausalLoopbackProtocolTests(unittest.TestCase):
                         )
                     )
                     self.assertEqual(
-                        len(device.serial.persistent_slot.contexts), 4
+                        len(device.serial.persistent_slot.contexts), 1
                     )
                     self.assertEqual(device.serial.context_clear_count, 0)
                     self.assertTrue(

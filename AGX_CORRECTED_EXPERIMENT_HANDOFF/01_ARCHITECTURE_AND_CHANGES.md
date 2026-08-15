@@ -24,7 +24,10 @@ mode.
   hooks, local recovery, and goal selection. Transport, decoding, serialization,
   and outbound extraction remain outside.
 - RP2040 contexts register admitted tasks dynamically and use the same
-  non-destructive state and timing boundaries as the desktop allocator.
+  non-destructive state and timing boundaries as the desktop allocator. Four
+  logical robot checkpoints are time-multiplexed through one resident native
+  runtime per board call; reconstruction is complete and occurs outside
+  `W_alloc`, with no task/path horizon.
 
 Canonical detail is in `docs/SIMULATION_ARCHITECTURE.md` and the corrected
 pilot record is in `PILOT_REPORT.md`.

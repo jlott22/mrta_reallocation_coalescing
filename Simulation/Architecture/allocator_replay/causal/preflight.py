@@ -34,7 +34,10 @@ PREFLIGHT_REQUIREMENTS: tuple[tuple[str, str], ...] = (
     ("sealed_build", "Firmware/build/module hashes match deployment"),
     ("native_runtime", "MicroPython/native runtime version is correct"),
     ("device_timer", "Device timer units/resolution/monotonicity verified"),
-    ("four_contexts", "Four logical contexts can be created and reset"),
+    (
+        "four_contexts",
+        "Four logical contexts execute through checkpointed reconstruction",
+    ),
     ("primary_algorithms", "CBAA, ACBBA, PI, and HIPC load"),
     ("online_growth", "Online task-set growth works"),
     ("persistent_state", "Persistent context state survives calls"),
@@ -467,6 +470,19 @@ class _KnownAnswerTeam:
             self.runtimes[robot_id] = runtime
             runtime.apply_delta({"events": [copy.deepcopy(event)]})
         else:
+            # The hardware policy reconstructs every call from a complete
+            # checkpoint. This compact known-answer authority has no desktop
+            # Robot object from which to capture allocator fields, so carry
+            # its previous native checkpoint explicitly. The real campaign's
+            # frozen desktop state supplies the equivalent consensus/path
+            # fields and is exercised by the longitudinal loopback gate.
+            prior = runtime.snapshot_minimal()
+            pre_state["allocator_attrs"].update(
+                copy.deepcopy(prior.get("allocator_attrs", {}))
+            )
+            pre_state["robot_attrs"].update(
+                copy.deepcopy(prior.get("robot_attrs", {}))
+            )
             runtime.apply_delta(
                 {
                     "set": copy.deepcopy(pre_state),

@@ -23,12 +23,16 @@ completed first 25 trace IDs.
 `4 algorithms x 3 loads x 2 policies x 4 traces = 96 missions`.
 
 The hardware policies are Eager and Count B4. The RP subset remains four
-traces; it is not expanded to 25 or 50. A tiny preflight/stress probe is
-engineering evidence and is not part of the inferential matrix.
+traces; it is not expanded to 25 or 50. Brief preflight and targeted late-call
+probes are engineering evidence, but there is no long standalone hardware
+smoke. Trace 0000 is prioritized inside this 96-mission schedule, so every
+successful long mission is retained as publication-core data.
 
-The separate engineering-only RP2040 smoke has eight missions: four
-allocators x Eager/B4 x medium load x trace 0000. It is not counted in the 96
-publication missions.
+Every hardware mission still models four logical robots. Their complete frozen
+checkpoints are reconstructed one at a time through a single resident native
+runtime per board call, outside the allocator timing boundary. This common
+constraint applies to all four algorithms and does not cap the task pool or
+path/bundle horizon.
 
 ## AGX cores
 

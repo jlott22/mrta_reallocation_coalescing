@@ -78,7 +78,16 @@ class CollaborativeState:
             ("active_tasks", "targets", "known_targets", "target_cells"),
             value_from(config, ("active_tasks", "targets", "known_targets", "target_cells"), []),
         )
-        encoded_targets = self._normalize_cell_collection(raw_active_targets)
+        # Checkpointed time-multiplexing restores only tasks already learned by
+        # this logical robot.  This explicit registry may include inactive or
+        # completed tasks needed to reproduce retained-path repair, while the
+        # host's future-facing ``all_tasks`` remains deliberately ignored.
+        raw_registry_targets = value_from(
+            initial_state,
+            ("admitted_task_registry",),
+            raw_active_targets,
+        )
+        encoded_targets = self._normalize_cell_collection(raw_registry_targets)
         encoded_targets.sort()
         unique_targets = []
         previous = -1
@@ -150,7 +159,11 @@ class CollaborativeState:
         self.last_allocation_epoch_admitted = array("H")
         self.allocation_epoch_hook_count = 0
 
-        self._replace_active(raw_active_targets, mark_revision=False)
+        self._replace_active(
+            raw_active_targets,
+            mark_revision=False,
+            register_unknown=False,
+        )
         completed = value_from(
             initial_state,
             ("completed_tasks", "visited_targets", "searched"),
@@ -486,6 +499,30 @@ class CollaborativeState:
         return None
 
     def queue_message(self, message):
+        # Consensus outputs are per-call delta caches on the desktop. Keep
+        # only the final effect for a task cell here as well; intermediate
+        # rebroadcasts are never transmitted before drain_messages() and can
+        # otherwise consume the remaining RP2040 heap during a large burst.
+        if isinstance(message, dict) and "x" in message and "y" in message:
+            try:
+                key = (
+                    str(message.get("type", "")),
+                    int(message["x"]),
+                    int(message["y"]),
+                )
+                for index in range(len(self.outbox) - 1, -1, -1):
+                    previous = self.outbox[index]
+                    if not isinstance(previous, dict):
+                        continue
+                    if (
+                        str(previous.get("type", "")),
+                        int(previous.get("x")),
+                        int(previous.get("y")),
+                    ) == key:
+                        self.outbox[index] = message
+                        return
+            except (TypeError, ValueError):
+                pass
         self.outbox.append(message)
 
     def drain_messages(self):

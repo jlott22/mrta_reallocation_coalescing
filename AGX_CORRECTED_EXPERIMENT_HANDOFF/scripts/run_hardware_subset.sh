@@ -4,7 +4,6 @@ set -euo pipefail
 HANDOFF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd -- "${HANDOFF_DIR}/.." && pwd)"
 CONFIG="${HANDOFF_DIR}/configs/hardware_core_96.json"
-SMOKE_SCRIPT="${HANDOFF_DIR}/scripts/run_hardware_smoke.sh"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 cd "${REPO_ROOT}"
@@ -20,10 +19,9 @@ require_file configs/local/agx_board_bindings.json
   --repo-root "${REPO_ROOT}" --require-hardware-bindings
 
 # Board deployment, environment attestation, and the brief RP preflight are
-# intentionally separate prerequisites. The corrected eight-mission smoke is
-# then run once (and resume-validated) to generate the required fresh smoke
-# gate before the 96-mission publication subset.
-bash "${SMOKE_SCRIPT}"
+# the complete release gate. The publication schedule prioritizes trace 0000,
+# so every long successful physical mission is retained in the 96-mission
+# result set instead of being discarded into a separate smoke campaign.
 
 "${PYTHON_BIN}" -m study.causal.native --repo-root "${REPO_ROOT}" \
   recover-stale-locks --config "${CONFIG}"

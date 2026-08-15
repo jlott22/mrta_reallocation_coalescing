@@ -5,14 +5,14 @@
 - [ ] Four-board preflight passes or hardware is explicitly pending
 - [ ] Fresh 50-trace manifests generated and shared by all treatments
 - [ ] Engineering-only AGX smoke: 8 jobs accounted for
-- [ ] Engineering-only RP2040 smoke: 8 missions accounted for, or hardware is explicitly pending
+- [ ] Brief RP2040 preflight and targeted late-call probes pass
 - [ ] Round 1 causal: 1,500 technically valid jobs accounted for
 - [ ] Round 1 zero-time: 1,500 technically valid jobs accounted for
 - [ ] Informational checkpoint QA recorded
 - [ ] No Round 2 policy/algorithm restriction or result-derived allowlist
 - [ ] Round 2 causal: 1,500 technically valid jobs accounted for
 - [ ] Round 2 zero-time: 1,500 technically valid jobs accounted for
-- [ ] RP2040 subset: 96 missions accounted for, or explicitly pending
+- [ ] RP2040 v8 publication subset: 96 missions accounted for, or explicitly pending
 - [ ] Piggyback/final-flush counts are zero
 - [ ] Exact-B and terminal-residual invariants pass
 - [ ] Failures and denominators retained

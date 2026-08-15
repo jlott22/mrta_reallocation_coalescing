@@ -35,11 +35,16 @@
     "policies": ["eager_b1", "count_b4"],
     "trace_ids": [0, 1, 2, 3],
     "total_missions": 96,
-    "worker_cores": [0, 1, 2, 3]
+    "worker_cores": [0, 1, 2, 3],
+    "logical_context_count": 4,
+    "resident_context_limit": 1,
+    "logical_context_execution": "checkpointed_time_multiplexing",
+    "priority_trace_count": 1,
+    "long_smoke_missions": 0
   },
   "engineering_smoke": {
     "agx_jobs": 8,
-    "rp2040_missions": 8,
+    "rp2040_missions": 0,
     "inferential": false
   },
   "support_cores": {

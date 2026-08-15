@@ -14,9 +14,9 @@
     "design_status": "corrected_four_trace_four_board_subset"
   },
   "campaign": {
-    "campaign_id": "corrected_hardware_core_96_v7",
+    "campaign_id": "corrected_hardware_core_96_v8",
     "stage": "publication_core",
-    "output_root": "study/output/corrected_hardware_core_96_v7",
+    "output_root": "study/output/corrected_hardware_core_96_v8",
     "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
     "loads": ["low", "medium", "high"],
     "policies": [
@@ -24,16 +24,16 @@
       {"policy_id": "count_b4", "mode": "count", "batch_size": 4}
     ],
     "trace_limit": 4,
+    "priority_trace_count": 1,
     "schedule_seed": 2026081415,
     "max_technical_retries": 1,
     "runner_factory": "study.causal.worker:run_causal_job",
     "required_gate_paths": [
       "study/native_gates/environment/native_environment_report.json",
-      "study/native_gates/preflight/native_preflight_report.json",
-      "study/native_gates/smoke/causal_smoke_report.json"
+      "study/native_gates/preflight/native_preflight_report.json"
     ],
     "require_clean_source": true,
-    "notes": "Fixed 96-mission RP2040 subset: four algorithms, three loads, Eager/B4, four paired traces, four boards. This v7 restart is inferentially separate from the engineering-only 8-mission smoke and must not resume or pool aborted v1/v2/v3/v4/v5/v6 output."
+    "notes": "Fixed 96-mission RP2040 subset: four algorithms, three loads, Eager/B4, four paired traces, four boards. V8 uses checkpointed time-multiplexing with one resident runtime and four logical robot checkpoints per mission. Trace 0000 is scheduled first so every long successful validation mission is already a publication-core result; there is no separate long hardware smoke. Do not resume or pool aborted hardware v1-v2-v3-v4-v5-v6-v7 output."
   },
   "hardware": {
     "bindings_file": "configs/local/agx_board_bindings.json",

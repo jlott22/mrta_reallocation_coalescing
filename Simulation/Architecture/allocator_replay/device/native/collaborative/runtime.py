@@ -233,6 +233,7 @@ class PersistentCollaborativeRuntime:
                 # Let restore_resume append learned cells in their saved slot
                 # order.  No future all_tasks list is required or accepted.
                 state_initial["active_tasks"] = []
+                state_initial["admitted_task_registry"] = []
                 state_initial["robot_ids"] = list(
                     state_resume.get(
                         "robot_ids",
@@ -285,6 +286,22 @@ class PersistentCollaborativeRuntime:
         self.allocator = allocator_class(self.state)
         if isinstance(resume, dict):
             self.allocator.restore_resume(resume.get("allocator"))
+            behavior = _plain_mapping(resume.get("behavior"))
+            if "last_sent" in behavior:
+                self.behavior_last_sent = [
+                    dict(item)
+                    for item in behavior.get("last_sent", ())
+                    if isinstance(item, dict)
+                ]
+                self.behavior_last_sent_initialized = True
+            self.authoritative_message_seed = [
+                dict(item)
+                for item in behavior.get("pending_messages", ())
+                if isinstance(item, dict)
+            ]
+            self.authoritative_pending_snapshot = bool(
+                behavior.get("pending_snapshot", False)
+            )
         self._synchronize_authoritative_state(initial)
         self.last_delta_sequence = int(
             resume.get("last_delta_sequence", -1)
@@ -390,13 +407,42 @@ class PersistentCollaborativeRuntime:
             last_sent_name,
             counter_name,
         ) = selected
+        # These causal measurement fields are common to both a desktop frozen
+        # checkpoint and the compact native checkpoint used by preflight. They
+        # must be restored even when no desktop owner/path maps are present.
+        state = self.state
+        if "candidate_count_before_filter" in flattened:
+            state.candidate_count_before = max(
+                0, int(flattened["candidate_count_before_filter"])
+            )
+        if "candidate_count_after_filter" in flattened:
+            state.candidate_count_after = max(
+                0, int(flattened["candidate_count_after_filter"])
+            )
         if owner_name not in flattened or path_name not in flattened:
             return False
 
         owners = _mapping(flattened.get(owner_name))
         values = _mapping(flattened.get(value_name))
         times = _mapping(flattened.get(time_name)) if time_name else {}
-        state = self.state
+        if "last_allocation_epoch_index" in flattened:
+            state.last_allocation_epoch_index = int(
+                flattened["last_allocation_epoch_index"]
+            )
+        if "last_allocation_epoch_reason" in flattened:
+            state.last_allocation_epoch_reason = str(
+                flattened["last_allocation_epoch_reason"]
+            )
+        if "last_allocation_epoch_admitted" in flattened:
+            admitted = state._normalize_cell_collection(
+                flattened["last_allocation_epoch_admitted"]
+            )
+            del state.last_allocation_epoch_admitted[:]
+            for encoded in admitted:
+                if encoded in state.slot_by_cell:
+                    state.last_allocation_epoch_admitted.append(encoded)
+        if "last_event" in flattened:
+            state.last_event = str(flattened["last_event"])
         if "current_goal" in flattened:
             raw_goal = _decoded(flattened.get("current_goal"), None)
             state.current_goal = (
@@ -969,23 +1015,56 @@ class PersistentCollaborativeRuntime:
                 elif kind == "allocator_message":
                     self.allocator.handle_message(payload)
                 elif kind in ("allocation_epoch", "__allocator_admission__"):
+                    # The desktop call classifier treats the presence of an
+                    # allocation-epoch callback as a full solve even when a
+                    # checkpointed restore has already synchronized the same
+                    # epoch metadata and the callback is idempotent.
                     epoch_index = int(payload.get("epoch_index", -1))
                     reason = str(payload.get("trigger_reason", ""))
                     admitted = payload.get("admitted_cells", ())
-                    state.activate_cells(admitted)
-                    for encoded in state._normalize_cell_collection(admitted):
-                        slot = state.slot_by_cell.get(encoded)
-                        if slot is not None:
-                            state.unavailable[slot] = 0
-                    if state.apply_allocation_epoch(
-                        epoch_index, reason, admitted
-                    ):
-                        saw_epoch = True
+                    epoch_was_synchronized = (
+                        epoch_index == state.last_allocation_epoch_index
+                    )
+                    if epoch_was_synchronized:
+                        synchronized_admitted = []
+                        seen_admitted = set()
+                        for encoded in state._normalize_cell_collection(
+                            admitted
+                        ):
+                            if encoded not in seen_admitted:
+                                seen_admitted.add(encoded)
+                                synchronized_admitted.append(encoded)
+                        if (
+                            reason != state.last_allocation_epoch_reason
+                            or synchronized_admitted
+                            != [
+                                int(item)
+                                for item in state.last_allocation_epoch_admitted
+                            ]
+                        ):
+                            raise ValueError(
+                                "duplicate allocation epoch metadata changed"
+                            )
+                        epoch_changed = False
+                    else:
+                        state.activate_cells(admitted)
+                        for encoded in state._normalize_cell_collection(admitted):
+                            slot = state.slot_by_cell.get(encoded)
+                            if slot is not None:
+                                state.unavailable[slot] = 0
+                        epoch_changed = state.apply_allocation_epoch(
+                            epoch_index, reason, admitted
+                        )
+                    if epoch_changed:
                         allocation_reason = reason
                         state.active_allocation_reason = reason
                         self.allocator.on_allocation_epoch(
                             reason, admitted, epoch_index
                         )
+                    if epoch_changed or str(
+                        self.config.get("logical_context_execution", "")
+                    ) == "checkpointed_time_multiplexing":
+                        saw_epoch = True
                 elif kind in (
                     "recover_stalled_allocation",
                     "allocator_recovery",
@@ -1009,6 +1088,26 @@ class PersistentCollaborativeRuntime:
                             payload.get("reason", ""),
                             bool(payload.get("local", False)),
                         )
+                    # A release created by the explicit completion callback is
+                    # causally meaningful even though the task becomes
+                    # inactive immediately afterward. Tag it internally so
+                    # the common inactive-traffic filter retains it; the tag
+                    # is removed before hashing or serialization.
+                    try:
+                        completed_cell = state.decode_cell(
+                            state.encode_cell(payload["cell"])
+                        )
+                        for queued in state.outbox:
+                            if (
+                                isinstance(queued, dict)
+                                and int(queued.get("x", -1))
+                                == int(completed_cell[0])
+                                and int(queued.get("y", -1))
+                                == int(completed_cell[1])
+                            ):
+                                queued["_causal_completion_release"] = True
+                    except (TypeError, ValueError, KeyError, IndexError):
+                        pass
                     state.complete_cells([payload["cell"]])
                 elif kind in (
                     "on_collision_avoidance_activated",
@@ -1104,6 +1203,33 @@ class PersistentCollaborativeRuntime:
 
         self._require_trial()
         generated = self.state.drain_messages()
+        # A completed/inactive task has no remaining allocator-visible
+        # receiver effect. Desktop pending-delta maps discard this obsolete
+        # traffic; apply the same common rule to every compact hardware
+        # allocator before hashes, last-sent state, or serialization.
+        active_generated = []
+        for message in generated:
+            completion_release = False
+            if isinstance(message, dict):
+                completion_release = bool(
+                    message.pop("_causal_completion_release", False)
+                )
+            if not isinstance(message, dict) or not (
+                "x" in message and "y" in message
+            ):
+                active_generated.append(message)
+                continue
+            try:
+                slot = self.state.slot_for_cell(
+                    (int(message["x"]), int(message["y"]))
+                )
+            except (TypeError, ValueError, KeyError):
+                slot = None
+            if completion_release or (
+                slot is not None and self.state.is_active(slot)
+            ):
+                active_generated.append(message)
+        generated = active_generated
         algorithm = self.algorithm
         if algorithm in ("PI", "HIPC"):
             path_changed = self._pre_choose_path != self._post_choose_path
@@ -1449,6 +1575,10 @@ class PersistentCollaborativeRuntime:
         if (
             self.last_call_had_epoch_reallocation
             or self.last_call_had_recovery
+            or str(self.state.last_event) in (
+                "task_admission",
+                "allocation_epoch",
+            )
         ):
             return "full_allocation_solve"
         path = str(self.allocator.last_call_path)

@@ -67,7 +67,16 @@ def validate(repo_root: Path, *, require_hardware_bindings: bool) -> None:
     _require(agx.get("total_jobs"), 6000, "AGX matrix job count")
     _require(rp2040.get("total_missions"), 96, "RP2040 matrix mission count")
     _require(mission.get("robot_count"), 4, "logical robots per mission")
-    _require(smoke, {"agx_jobs": 8, "rp2040_missions": 8, "inferential": False}, "engineering smoke matrix")
+    _require(smoke, {"agx_jobs": 8, "rp2040_missions": 0, "inferential": False}, "engineering smoke matrix")
+    _require(rp2040.get("logical_context_count"), 4, "RP2040 logical context count")
+    _require(rp2040.get("resident_context_limit"), 1, "RP2040 resident context limit")
+    _require(
+        rp2040.get("logical_context_execution"),
+        "checkpointed_time_multiplexing",
+        "RP2040 logical context execution",
+    )
+    _require(rp2040.get("priority_trace_count"), 1, "RP2040 priority trace count")
+    _require(rp2040.get("long_smoke_missions"), 0, "RP2040 long smoke count")
 
     compute = EXPECTED_RP2040_CORES + EXPECTED_AGX_CORES
     if len(compute) != 9 or len(set(compute)) != 9 or set(compute) != set(range(9)):
@@ -88,29 +97,17 @@ def validate(repo_root: Path, *, require_hardware_bindings: bool) -> None:
     if "Engineering-only" not in str(agx_smoke.get("notes", "")):
         raise ValueError("AGX smoke must be explicitly engineering-only")
 
-    hardware_smoke = _load(configs / "rp2040_smoke_8.json").get("campaign")
     hardware_core = _load(configs / "hardware_core_96.json").get("campaign")
-    if not isinstance(hardware_smoke, dict) or not isinstance(hardware_core, dict):
-        raise ValueError("hardware configs lack campaign objects")
-    _require(hardware_smoke.get("stage"), "smoke", "RP2040 smoke stage")
-    _require(hardware_smoke.get("trace_limit"), 1, "RP2040 smoke trace limit")
-    _require(_planned_jobs(hardware_smoke), 8, "RP2040 smoke mission count")
-    _require(
-        hardware_smoke.get("required_gate_paths"),
-        [
-            "study/native_gates/environment/native_environment_report.json",
-            "study/native_gates/preflight/native_preflight_report.json",
-        ],
-        "RP2040 smoke gate paths",
-    )
+    if not isinstance(hardware_core, dict):
+        raise ValueError("hardware core config lacks a campaign object")
     _require(hardware_core.get("trace_limit"), 4, "RP2040 core trace limit")
+    _require(hardware_core.get("priority_trace_count"), 1, "RP2040 priority trace count")
     _require(_planned_jobs(hardware_core), 96, "RP2040 core mission count")
     _require(
         hardware_core.get("required_gate_paths"),
         [
             "study/native_gates/environment/native_environment_report.json",
             "study/native_gates/preflight/native_preflight_report.json",
-            "study/native_gates/smoke/causal_smoke_report.json",
         ],
         "RP2040 core gate paths",
     )

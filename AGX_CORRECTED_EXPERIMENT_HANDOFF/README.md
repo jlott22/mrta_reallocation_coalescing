@@ -6,13 +6,12 @@ manifests/output roots.
 
 ## Current execution identity
 
-The active restart is **v7**. Its campaign IDs and output roots end in `_v7`;
-the retained `_v1`, `_v2`, `_v3`, `_v4`, `_v5`, and `_v6` output trees are
-aborted evidence from before the current admission-receipt accounting and
-standalone native-attestation validation repairs.
-Preserve those trees for audit, but never delete, rename, resume, analyze with,
-or pool them into v7 results. V7 deliberately reuses the immutable scenario
-manifest set, not prior completion state or analysis products.
+The active AGX-only campaign remains **v7** and must not be touched or
+restarted. The repaired hardware campaign is **v8**. Its campaign ID and output
+root end in `_v8`; retained hardware `_v1` through `_v7` trees are audit-only
+technical evidence and must never be resumed or pooled into v8. Both campaigns
+reuse the same immutable corrected scenario manifest set, not prior completion
+state or analysis products.
 
 ## Fixed design
 
@@ -23,24 +22,24 @@ manifest set, not prior completion state or analysis products.
 - AGX: 25 traces in Round 1 and 25 new traces in Round 2 for every condition,
   for both host-causal and zero-time treatments.
 - RP2040: Eager and Count B4 only, four traces, 96 missions total. Four
-  boards run one independent virtual mission each; every mission still has four
-  persistent logical robot contexts on its assigned board.
-- Engineering-only smoke: one 8-job AGX smoke and one 8-mission RP2040 smoke.
-  Neither belongs to the inferential matrices.
+  boards run one independent virtual mission each. Every mission retains four
+  logical robots, but their full frozen checkpoints are reconstructed through
+  one resident native runtime per board call to stay within RP2040 SRAM.
+- Engineering-only smoke: the completed 8-job AGX smoke remains separate. V8
+  has no long RP2040 smoke; brief preflight/late-call probes are the hardware
+  gate and trace 0000 is prioritized inside the final 96 missions.
 - Round 1 verification is informational. It must not restrict Round 2.
 
 ## Execution order
 
 1. Clone `main` into a fresh AGX directory; do not copy old `study/output`.
-   If this approved restart shares the prior disk, leave the aborted `_v1`,
-   `_v2`, `_v3`, `_v4`, `_v5`, and `_v6` roots in place and launch only the
-   `_v7` configs in this handoff.
+   If this approved restart shares the prior disk, leave all old roots in place;
+   resume AGX v7 and launch only hardware v8.
 2. Read `01_ARCHITECTURE_AND_CHANGES.md` through `07_DATA_REPLACEMENT_AND_GITHUB.md`.
 3. Run the brief software/native preflight in `05_PREFLIGHT_AND_QA.md`.
-4. Start the background supervisors with `scripts/start_background.sh`. The
-   simulation supervisor runs the 8-job AGX smoke before the 6,000-job matrix;
-   when hardware is enabled, the hardware supervisor runs the 8-mission
-   RP2040 smoke before the 96-mission subset.
+4. Keep the existing AGX v7 supervisor running. Launch
+   `scripts/run_hardware_subset.sh` separately on cores 0-3 after the v8 native
+   gates; it starts the final 96-mission hardware matrix directly.
 5. Monitor logs/PID files; do not hold an interactive AI session open.
 6. Validate and publish corrected results only after all planned stages finish.
 

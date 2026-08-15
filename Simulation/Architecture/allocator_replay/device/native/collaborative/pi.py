@@ -346,22 +346,27 @@ class PIAllocator(NativeAllocatorBase):
                     changed = True
 
         if message_type == "pi_clear_path":
-            if changed:
-                self._repair_path_after_consensus()
+            repaired = self._repair_path_after_consensus()
+            if changed or repaired:
                 self.last_call_path = "message_updated_consensus"
             self._sync_current_goal_after_message()
-            return changed
+            return changed or repaired
 
         changed = self.parse_claim_message(
             message,
             ("pi_entry", "acbba_entry", "cbaa_entry"),
             lower_is_better=True,
         ) or changed
-        if changed:
-            self._repair_path_after_consensus()
+        # Desktop PI repairs after every valid peer callback, even when the
+        # incoming tie loses and therefore leaves the consensus table
+        # unchanged. The local path can already contain a task that became
+        # inactive in the frozen checkpoint; repairing it changes downstream
+        # marginal significance before the next queued peer entry.
+        repaired = self._repair_path_after_consensus()
+        if changed or repaired:
             self.last_call_path = "message_updated_consensus"
         self._sync_current_goal_after_message()
-        return changed
+        return changed or repaired
 
     def export_resume(self):
         result = NativeAllocatorBase.export_resume(self)
