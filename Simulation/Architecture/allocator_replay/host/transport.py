@@ -1269,7 +1269,10 @@ class SerialReplayDevice:
         wall_started_ns = time.perf_counter_ns()
         cpu_started_ns = time.process_time_ns()
         try:
-            if setup.get("setup_mode") == "restore":
+            if (
+                setup.get("setup_mode") == "restore"
+                or setup.get("clear_context_before_header", False)
+            ):
                 context_id = str(setup["context_id"])
                 self._write_line(PROTOCOL, "PCLEAR", context_id)
                 self._expect_ack("PCLEAR", context_id)

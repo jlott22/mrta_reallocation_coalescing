@@ -176,6 +176,8 @@ class PersistentCollaborativeRuntime:
         self.pending_post_admission_completed = None
         self.pending_post_admission_activated = None
         self.pending_post_admission_probabilities = None
+        self.checkpoint_post_admission_active_seed = None
+        self.checkpoint_post_admission_probabilities_seed = None
         self.pending_algorithm_epoch_reset_us = 0
         self.last_call_had_recovery = False
 
@@ -322,7 +324,33 @@ class PersistentCollaborativeRuntime:
         self.pending_post_admission_completed = None
         self.pending_post_admission_activated = None
         self.pending_post_admission_probabilities = None
+        self.checkpoint_post_admission_active_seed = None
+        self.checkpoint_post_admission_probabilities_seed = None
         self.pending_algorithm_epoch_reset_us = 0
+        if isinstance(resume, dict) and "active_tasks" in initial:
+            desired_active = self.state._normalize_cell_collection(
+                initial["active_tasks"]
+            )
+            if any(
+                cell not in self.state.slot_by_cell
+                for cell in desired_active
+            ):
+                # The complete checkpoint can already list a just-admitted
+                # task whose allocator registry is intentionally learned only
+                # by the following queued epoch callback.  Retain the desired
+                # post-event active mask across the checkpoint/event transfer
+                # stages and reconcile it after that callback registers the
+                # coordinate.
+                self.pending_post_admission_active = desired_active
+                self.checkpoint_post_admission_active_seed = desired_active
+                probabilities = value_from(
+                    initial, ("target_p", "probabilities"), None
+                )
+                if probabilities is not None:
+                    self.pending_post_admission_probabilities = probabilities
+                    self.checkpoint_post_admission_probabilities_seed = (
+                        probabilities
+                    )
         return {
             "mission": "collaborative_visit",
             "algorithm": self.algorithm,
@@ -670,6 +698,12 @@ class PersistentCollaborativeRuntime:
     def begin_call_setup(self):
         """Start one logical call that may span several bounded PSETUPs."""
 
+        seeded_active = self.checkpoint_post_admission_active_seed
+        seeded_probabilities = (
+            self.checkpoint_post_admission_probabilities_seed
+        )
+        self.checkpoint_post_admission_active_seed = None
+        self.checkpoint_post_admission_probabilities_seed = None
         self.pending_allocator_events = []
         self.pending_message_sequences = {}
         self.pending_admitted_cells = set()
@@ -678,6 +712,10 @@ class PersistentCollaborativeRuntime:
         self.pending_post_admission_completed = None
         self.pending_post_admission_activated = None
         self.pending_post_admission_probabilities = None
+        if seeded_active is not None:
+            self.pending_post_admission_active = seeded_active
+        if seeded_probabilities is not None:
+            self.pending_post_admission_probabilities = seeded_probabilities
         self.pending_algorithm_epoch_reset_us = 0
 
     def _require_trial(self):
@@ -1006,6 +1044,18 @@ class PersistentCollaborativeRuntime:
         events = self.pending_allocator_events
         self.pending_allocator_events = []
         choose_counter = int(state.event_counter)
+        checkpointed_execution = str(
+            self.config.get("logical_context_execution", "")
+        ) == "checkpointed_time_multiplexing"
+        if checkpointed_execution:
+            # The environmental masks and their revision metadata are already
+            # the post-event authoritative snapshot.  Admission callbacks
+            # must temporarily see their cells as active, then the exact
+            # checkpoint masks must win after the FIFO has been consumed.
+            checkpoint_active = bytearray(state.active)
+            checkpoint_unavailable = bytearray(state.unavailable)
+            checkpoint_task_revision = int(state.task_revision)
+            checkpoint_last_event = str(state.last_event)
         saw_epoch = False
         allocation_reason = ""
         recovery_requested = False
@@ -1032,10 +1082,57 @@ class PersistentCollaborativeRuntime:
                     epoch_index = int(payload.get("epoch_index", -1))
                     reason = str(payload.get("trigger_reason", ""))
                     admitted = payload.get("admitted_cells", ())
-                    epoch_was_synchronized = (
-                        epoch_index == state.last_allocation_epoch_index
-                    )
-                    if epoch_was_synchronized:
+                    if checkpointed_execution:
+                        # A checkpoint is captured after the desktop robot has
+                        # updated its latest epoch metadata but before its
+                        # queued allocator-admission callbacks run.  The queue
+                        # can therefore contain older epochs as well as the
+                        # epoch represented by the checkpoint.  Re-applying
+                        # those indices to the restored metadata falsely looks
+                        # like time moving backwards.  Execute every callback
+                        # FIFO (the scientifically relevant operation) while
+                        # retaining the checkpoint's authoritative latest
+                        # metadata.
+                        normalized_admitted = (
+                            state._normalize_cell_collection(admitted)
+                        )
+                        state.activate_cells(admitted)
+                        for encoded in normalized_admitted:
+                            slot = state.slot_by_cell.get(encoded)
+                            if slot is not None:
+                                state.unavailable[slot] = 0
+                        if epoch_index > state.last_allocation_epoch_index:
+                            state.apply_allocation_epoch(
+                                epoch_index, reason, admitted
+                            )
+                        elif epoch_index == state.last_allocation_epoch_index:
+                            synchronized_admitted = []
+                            seen_admitted = set()
+                            for encoded in normalized_admitted:
+                                if encoded not in seen_admitted:
+                                    seen_admitted.add(encoded)
+                                    synchronized_admitted.append(encoded)
+                            if (
+                                reason != state.last_allocation_epoch_reason
+                                or synchronized_admitted
+                                != [
+                                    int(item)
+                                    for item in (
+                                        state.last_allocation_epoch_admitted
+                                    )
+                                ]
+                            ):
+                                raise ValueError(
+                                    "duplicate allocation epoch metadata "
+                                    "changed"
+                                )
+                        self.allocator.on_allocation_epoch(
+                            reason, admitted, epoch_index
+                        )
+                        allocation_reason = reason
+                        state.active_allocation_reason = reason
+                        saw_epoch = True
+                    elif epoch_index == state.last_allocation_epoch_index:
                         synchronized_admitted = []
                         seen_admitted = set()
                         for encoded in state._normalize_cell_collection(
@@ -1065,16 +1162,15 @@ class PersistentCollaborativeRuntime:
                         epoch_changed = state.apply_allocation_epoch(
                             epoch_index, reason, admitted
                         )
-                    if epoch_changed:
-                        allocation_reason = reason
-                        state.active_allocation_reason = reason
-                        self.allocator.on_allocation_epoch(
-                            reason, admitted, epoch_index
-                        )
-                    if epoch_changed or str(
-                        self.config.get("logical_context_execution", "")
-                    ) == "checkpointed_time_multiplexing":
-                        saw_epoch = True
+                    if not checkpointed_execution:
+                        if epoch_changed:
+                            allocation_reason = reason
+                            state.active_allocation_reason = reason
+                            self.allocator.on_allocation_epoch(
+                                reason, admitted, epoch_index
+                            )
+                        if epoch_changed:
+                            saw_epoch = True
                 elif kind in (
                     "recover_stalled_allocation",
                     "allocator_recovery",
@@ -1127,6 +1223,12 @@ class PersistentCollaborativeRuntime:
             finally:
                 state.event_counter = choose_counter
 
+        if checkpointed_execution:
+            state.active = checkpoint_active
+            state.unavailable = checkpoint_unavailable
+            state.task_revision = checkpoint_task_revision
+            state.last_event = checkpoint_last_event
+
         # Reconcile only after all ordered callbacks.  This covers a task that
         # was announced and completed before the same choose transaction while
         # ensuring the coordinate first entered state through the announcement.
@@ -1147,7 +1249,6 @@ class PersistentCollaborativeRuntime:
             state.update_probabilities(
                 self.pending_post_admission_probabilities
             )
-
         self.pending_admitted_cells = set()
         self.pending_post_admission_active = None
         self.pending_post_admission_unavailable = None

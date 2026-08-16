@@ -592,6 +592,16 @@ class CausalBoardSession:
         for index, stage in enumerate(stages):
             stage["begin_call_setup"] = index == 0
             stage["end_call_setup"] = index + 1 == len(stages)
+            # A checkpointed runtime is rebuilt for every measured call.  Let
+            # the serial host evict the preceding runtime before it allocates
+            # this first stage's JSON header; waiting until PSETUP needlessly
+            # keeps the mature runtime beside the transfer buffer and can
+            # exhaust a fragmented RP2040 heap.
+            stage["clear_context_before_header"] = bool(
+                index == 0
+                and getattr(self, "_logical_context_execution", "")
+                == "checkpointed_time_multiplexing"
+            )
             metrics = prepare(stage, attempt_id)
             if not isinstance(metrics, Mapping):
                 device_setup_reported = False

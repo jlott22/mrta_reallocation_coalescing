@@ -366,8 +366,9 @@ class HIPCAllocator(NativeAllocatorBase):
         state = self.state
         actual_first = None
         raw_bundle = message.get("bundle_cells")
-        signature = []
+        signature = ()
         if isinstance(raw_bundle, list):
+            cells = []
             for item in raw_bundle:
                 try:
                     cell = (
@@ -375,9 +376,10 @@ class HIPCAllocator(NativeAllocatorBase):
                         if isinstance(item, dict)
                         else (int(item[0]), int(item[1]))
                     )
-                    signature.append([cell[0], cell[1]])
+                    cells.append((cell[0], cell[1]))
                 except (KeyError, TypeError, ValueError, IndexError):
                     continue
+            signature = tuple(cells)
             if signature:
                 actual_first = tuple(signature[0])
         if actual_first is None:
@@ -386,7 +388,7 @@ class HIPCAllocator(NativeAllocatorBase):
                     actual_first = (
                         int(message["x"]), int(message["y"])
                     )
-                    signature = [[actual_first[0], actual_first[1]], 0]
+                    signature = ((actual_first[0], actual_first[1]), 0)
             except (KeyError, TypeError, ValueError):
                 return
         if actual_first is None:

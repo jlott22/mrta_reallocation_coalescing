@@ -1405,6 +1405,12 @@ def main():
             elif command == "PTIME":
                 if len(fields) != 3:
                     raise ValueError("PTIME requires attempt id")
+                # Serial acknowledgement formatting can leave small temporary
+                # objects after the final PSETUP collection.  Compact them
+                # immediately before entering the allocator wrapper, outside
+                # the device's W_alloc timer, to maximize contiguous SRAM for
+                # late 50-task bundle solves.
+                gc.collect()
                 _run_persistent(persistent_slot, fields[2])
             elif command == "PENDTRIAL":
                 persistent_slot.end_trial()

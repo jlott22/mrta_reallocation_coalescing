@@ -302,6 +302,23 @@ class CausalPersistentStageTests(unittest.TestCase):
         self.assertEqual(metrics["host_prepare_cpu_us"], 100)
         self.assertEqual(metrics["psetup_transaction_us"], 1_000)
 
+    def test_checkpointed_call_requests_eviction_before_first_header(self) -> None:
+        events = [allocator_event(ROBOT_IDS[1], 1)]
+        session, device = bare_session(prior_calls=9)
+        session._logical_context_execution = (
+            "checkpointed_time_multiplexing"
+        )
+
+        session._prepare_persistent_stages(
+            setup(events), "attempt-checkpointed"
+        )
+
+        checkpoint, event = [item[0] for item in device.calls]
+        self.assertTrue(checkpoint["begin_call_setup"])
+        self.assertTrue(checkpoint["clear_context_before_header"])
+        self.assertFalse(event["begin_call_setup"])
+        self.assertFalse(event["clear_context_before_header"])
+
 
 class InboundConsensusRepairTests(unittest.TestCase):
     """Regressions for ordered peer messages drained inside W_alloc.
@@ -574,6 +591,84 @@ class InboundConsensusRepairTests(unittest.TestCase):
         self.assertEqual(observed[0]["protocol_counter"], 35)
         self.assertEqual(observed[1]["protocol_counter"], 35)
 
+    def test_acbba_inactive_entry_still_applies_full_bundle_cleanup(self) -> None:
+        runtime, cells, slots = self._runtime("ACBBA")
+        runtime.state.set_claim(slots[0], 1, -1.0, 20)
+        runtime.state.set_claim(slots[1], 1, -2.0, 21)
+        runtime.state.unavailable[slots[0]] = 1
+
+        observed = self._observe_after_each_inbound_message(
+            runtime,
+            slots,
+            [
+                {
+                    "kind": "allocator_message",
+                    "payload": {
+                        "type": "acbba_entry",
+                        "sender": ROBOT_IDS[1],
+                        "x": cells[0][0],
+                        "y": cells[0][1],
+                        "winner": ROBOT_IDS[1],
+                        "bid": -1.0,
+                        "timestamp": 20,
+                        "bundle_cells": [list(cells[0])],
+                    },
+                },
+                {
+                    "kind": "allocator_message",
+                    "payload": {
+                        "type": "acbba_entry",
+                        "sender": ROBOT_IDS[2],
+                        "x": cells[1][0],
+                        "y": cells[1][1],
+                        "winner": ROBOT_IDS[3],
+                        "bid": 0.0,
+                        "timestamp": 30,
+                    },
+                },
+            ],
+        )
+
+        # Even though the declaration's primary cell is inactive, its full
+        # bundle omits cells[1] and must clear peer 01's stale ownership before
+        # peer 02 relays peer 03's authoritative claim.
+        self.assertEqual(observed[0]["owners"], [-1, -1, -1])
+        self.assertEqual(observed[1]["owners"], [-1, 3, -1])
+
+    def test_hipc_restored_bundle_signature_is_not_counted_twice(self) -> None:
+        runtime, cells, _ = self._runtime("HIPC")
+        peer_id = ROBOT_IDS[1]
+        signature = (cells[0], cells[1])
+        runtime.allocator.seen_peer_bundle_signature = {
+            peer_id: signature
+        }
+        runtime.allocator.last_predicted_peer_first_task = {
+            peer_id: cells[2]
+        }
+        runtime.allocator.bad_prediction_count = {peer_id: 4}
+        repeated = {
+            "type": "hipc_entry",
+            "sender": peer_id,
+            "x": cells[0][0],
+            "y": cells[0][1],
+            "winner": peer_id,
+            "bid": 0.0,
+            "timestamp": 10,
+            "bundle_cells": [list(cell) for cell in signature],
+        }
+
+        runtime.allocator.handle_message(copy.deepcopy(repeated))
+        self.assertEqual(runtime.allocator.bad_prediction_count[peer_id], 4)
+        self.assertEqual(
+            runtime.allocator.seen_peer_bundle_signature[peer_id], signature
+        )
+
+        changed = copy.deepcopy(repeated)
+        changed["bundle_cells"] = [list(cells[1])]
+        changed["x"], changed["y"] = cells[1]
+        runtime.allocator.handle_message(changed)
+        self.assertEqual(runtime.allocator.bad_prediction_count[peer_id], 5)
+
     def test_admission_call_reason_preserves_hipc_executing_head(self) -> None:
         runtime, cells, slots = self._runtime("HIPC")
         # From this position HIPC's unconstrained team solve prefers cells[1]
@@ -669,6 +764,79 @@ class InboundConsensusRepairTests(unittest.TestCase):
 
 
 class StagedEpochTimingTests(unittest.TestCase):
+    def test_checkpointed_epoch_fifo_preserves_latest_snapshot_metadata(self) -> None:
+        config = {
+            "mission": "collaborative",
+            "algorithm": "CBAA",
+            "robot_ids": list(ROBOT_IDS),
+            "grid_size": 19,
+            "all_tasks": [[1, 1], [2, 2], [3, 3]],
+            "active_tasks": [[3, 3]],
+            "logical_context_execution": "checkpointed_time_multiplexing",
+            "seed": 19,
+        }
+        initial = {
+            "rid": ROBOT_IDS[0],
+            "robot_ids": list(ROBOT_IDS),
+            "all_tasks": [[1, 1], [2, 2], [3, 3]],
+            "active_tasks": [[3, 3]],
+            "last_allocation_epoch_index": 10,
+            "last_allocation_epoch_reason": "latest",
+            "last_allocation_epoch_admitted": [[2, 2]],
+        }
+        runtime = create_persistent_runtime(config)
+        runtime.reset_trial(config, initial)
+        runtime.state.activate_cells([[2, 2]])
+        runtime.state.apply_allocation_epoch(10, "latest", [[2, 2]])
+        observed = []
+        original_hook = runtime.allocator.on_allocation_epoch
+
+        def observe(reason, admitted, epoch_index=None):
+            observed.append((reason, tuple(map(tuple, admitted)), epoch_index))
+            return original_hook(reason, admitted, epoch_index)
+
+        runtime.allocator.on_allocation_epoch = observe
+        runtime.begin_call_setup()
+        runtime.apply_delta(
+            {
+                "events": [
+                    {
+                        "kind": "allocation_epoch",
+                        "payload": {
+                            "epoch_index": 9,
+                            "trigger_reason": "older_pending",
+                            "admitted_cells": [[1, 1]],
+                        },
+                    },
+                    {
+                        "kind": "allocation_epoch",
+                        "payload": {
+                            "epoch_index": 10,
+                            "trigger_reason": "latest",
+                            "admitted_cells": [[2, 2]],
+                        },
+                    },
+                ]
+            }
+        )
+
+        runtime.choose_goal()
+
+        self.assertEqual(
+            observed,
+            [
+                ("older_pending", ((1, 1),), 9),
+                ("latest", ((2, 2),), 10),
+            ],
+        )
+        self.assertEqual(runtime.state.last_allocation_epoch_index, 10)
+        self.assertEqual(runtime.state.last_allocation_epoch_reason, "latest")
+        self.assertEqual(
+            list(runtime.state.last_allocation_epoch_admitted),
+            [runtime.state.encode_cell((2, 2))],
+        )
+        self.assertEqual(runtime.call_class(), "full_allocation_solve")
+
     def test_admission_is_non_destructive_and_compatibility_timing_is_zero(self) -> None:
         config = {
             "mission": "collaborative",

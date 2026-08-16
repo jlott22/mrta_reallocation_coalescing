@@ -1661,7 +1661,7 @@ class CausalLoopbackProtocolTests(unittest.TestCase):
                     self.assertEqual(
                         len(device.serial.persistent_slot.contexts), 1
                     )
-                    self.assertEqual(device.serial.context_clear_count, 0)
+                    self.assertEqual(device.serial.context_clear_count, 4)
                     self.assertTrue(
                         all(
                             item.serial_roundtrip_us

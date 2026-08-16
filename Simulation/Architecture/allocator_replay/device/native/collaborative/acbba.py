@@ -261,22 +261,12 @@ class ACBBAAllocator(NativeAllocatorBase):
             return False
         if slot is None:
             return False
-        if not state.is_candidate(slot):
-            # Desktop ACBBA clears an invalid/completed table entry before it
-            # processes the next queued peer callback.  Returning here leaves
-            # a stale local head and dependent suffix in place; a later weak
-            # peer bid then advances the local protocol counter even though
-            # the authoritative handler had already released that suffix.
-            changed = self._set_claim(
-                slot, -1, self.NO_VALUE, 0
-            )
-            if changed:
-                self._queue_claim(slot, -1, self.NO_VALUE, 0)
-                self._repair_bundle_after_consensus()
-                self.last_call_path = "message_updated_consensus"
-            self._sync_current_goal_after_message()
-            return changed
 
+        # A full-bundle declaration supersedes the sender's earlier claims
+        # even when the message's primary entry has since become inactive.
+        # Desktop ACBBA performs this cleanup before candidate validation; an
+        # early return here previously left omitted peer claims stale for the
+        # next ordered callback.
         bundle = message.get("bundle_cells")
         if isinstance(bundle, list) and incoming_owner == sender:
             included = set()
@@ -299,6 +289,22 @@ class ACBBAAllocator(NativeAllocatorBase):
                         other, -1, self.NO_VALUE, 0
                     ) or changed
                     self._queue_claim(other, -1, self.NO_VALUE, 0)
+
+        if not state.is_candidate(slot):
+            # Desktop ACBBA clears an invalid/completed table entry before it
+            # processes the next queued peer callback.  Returning here leaves
+            # a stale local head and dependent suffix in place; a later weak
+            # peer bid then advances the local protocol counter even though
+            # the authoritative handler had already released that suffix.
+            changed = self._set_claim(
+                slot, -1, self.NO_VALUE, 0
+            )
+            if changed:
+                self._queue_claim(slot, -1, self.NO_VALUE, 0)
+                self._repair_bundle_after_consensus()
+                self.last_call_path = "message_updated_consensus"
+            self._sync_current_goal_after_message()
+            return changed
 
         local_owner = int(state.claim_owner[slot])
         local_bid = float(state.claim_value[slot])
