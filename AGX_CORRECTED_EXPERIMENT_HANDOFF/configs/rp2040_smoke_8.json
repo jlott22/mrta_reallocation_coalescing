@@ -32,7 +32,7 @@
       "study/native_gates/preflight/native_preflight_report.json"
     ],
     "require_clean_source": true,
-    "notes": "RETIRED AUDIT-ONLY v7 engineering smoke. Do not launch or resume. Hardware v8 uses brief gates followed directly by the priority-ordered 96-mission publication core so every successful long physical mission is retained."
+    "notes": "RETIRED AUDIT-ONLY v7 engineering smoke. Do not launch or resume. Hardware v9 uses brief gates followed directly by the priority-ordered 96-mission publication core so every successful long physical mission is retained."
   },
   "hardware": {
     "bindings_file": "configs/local/agx_board_bindings.json",

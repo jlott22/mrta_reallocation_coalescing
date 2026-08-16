@@ -12,7 +12,7 @@
 - [ ] No Round 2 policy/algorithm restriction or result-derived allowlist
 - [ ] Round 2 causal: 1,500 technically valid jobs accounted for
 - [ ] Round 2 zero-time: 1,500 technically valid jobs accounted for
-- [ ] RP2040 v8 publication subset: 96 missions accounted for, or explicitly pending
+- [ ] RP2040 v9 publication subset: 96 missions accounted for, or explicitly pending
 - [ ] Piggyback/final-flush counts are zero
 - [ ] Exact-B and terminal-residual invariants pass
 - [ ] Failures and denominators retained

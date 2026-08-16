@@ -3,8 +3,8 @@
 The replicate is the mission trace, not a task, call, message, or epoch. Use
 paired trace-level contrasts against Eager within `(allocator, load, trace)`.
 
-Analyze AGX-only `_v7` roots and the hardware-core `_v8` root. Hardware `_v1`
-through `_v7` trees are aborted technical evidence and are excluded from every
+Analyze AGX-only `_v7` roots and the hardware-core `_v9` root. Hardware `_v1`
+through `_v8` trees are aborted technical evidence and are excluded from every
 denominator, table, model, and pooled dataset.
 
 Primary hierarchy:

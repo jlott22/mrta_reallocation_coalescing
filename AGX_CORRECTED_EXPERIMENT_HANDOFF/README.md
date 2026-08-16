@@ -7,9 +7,9 @@ manifests/output roots.
 ## Current execution identity
 
 The active AGX-only campaign remains **v7** and must not be touched or
-restarted. The repaired hardware campaign is **v8**. Its campaign ID and output
-root end in `_v8`; retained hardware `_v1` through `_v7` trees are audit-only
-technical evidence and must never be resumed or pooled into v8. Both campaigns
+restarted. The repaired hardware campaign is **v9**. Its campaign ID and output
+root end in `_v9`; retained hardware `_v1` through `_v8` trees are audit-only
+technical evidence and must never be resumed or pooled into v9. Both campaigns
 reuse the same immutable corrected scenario manifest set, not prior completion
 state or analysis products.
 
@@ -25,7 +25,7 @@ state or analysis products.
   boards run one independent virtual mission each. Every mission retains four
   logical robots, but their full frozen checkpoints are reconstructed through
   one resident native runtime per board call to stay within RP2040 SRAM.
-- Engineering-only smoke: the completed 8-job AGX smoke remains separate. V8
+- Engineering-only smoke: the completed 8-job AGX smoke remains separate. V9
   has no long RP2040 smoke; brief preflight/late-call probes are the hardware
   gate and trace 0000 is prioritized inside the final 96 missions.
 - Round 1 verification is informational. It must not restrict Round 2.
@@ -34,11 +34,11 @@ state or analysis products.
 
 1. Clone `main` into a fresh AGX directory; do not copy old `study/output`.
    If this approved restart shares the prior disk, leave all old roots in place;
-   resume AGX v7 and launch only hardware v8.
+   resume AGX v7 and launch only hardware v9.
 2. Read `01_ARCHITECTURE_AND_CHANGES.md` through `07_DATA_REPLACEMENT_AND_GITHUB.md`.
 3. Run the brief software/native preflight in `05_PREFLIGHT_AND_QA.md`.
 4. Keep the existing AGX v7 supervisor running. Launch
-   `scripts/run_hardware_subset.sh` separately on cores 0-3 after the v8 native
+   `scripts/run_hardware_subset.sh` separately on cores 0-3 after the v9 native
    gates; it starts the final 96-mission hardware matrix directly.
 5. Monitor logs/PID files; do not hold an interactive AI session open.
 6. Validate and publish corrected results only after all planned stages finish.

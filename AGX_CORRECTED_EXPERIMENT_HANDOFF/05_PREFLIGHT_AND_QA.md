@@ -19,7 +19,7 @@ Before launch:
    - compact/chunked large messages;
    - timer-scope attestation and host/native parity.
 
-Use the v8 publication config for both existing native gates; do not invoke
+Use the v9 publication config for both existing native gates; do not invoke
 their legacy defaults:
 
 ```bash
