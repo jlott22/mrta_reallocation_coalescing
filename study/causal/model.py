@@ -155,6 +155,9 @@ class CausalConfig:
     runner_factory: str
     provider_factory: str
     priority_trace_count: int = 0
+    excluded_completed_blocks: tuple[str, ...] = ()
+    continuation_manifest_path: Path | None = None
+    continuation_manifest_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -294,6 +297,104 @@ def load_causal_config(path: Path | str, repo_root: Path | str = ".") -> CausalC
     if isinstance(schedule_seed, bool) or not isinstance(schedule_seed, int):
         raise ValueError("campaign.schedule_seed must be an integer")
     algorithms = _validate_primary_algorithms(campaign.get("algorithms"))
+    continuation = campaign.get("continuation")
+    excluded_completed_blocks: tuple[str, ...] = ()
+    continuation_manifest_path: Path | None = None
+    continuation_manifest_sha256: str | None = None
+    if continuation is not None:
+        if not isinstance(continuation, dict):
+            raise ValueError("campaign.continuation must be an object")
+        excluded_raw = continuation.get("excluded_completed_blocks")
+        if not isinstance(excluded_raw, list) or not excluded_raw:
+            raise ValueError(
+                "campaign.continuation.excluded_completed_blocks must be a "
+                "nonempty list"
+            )
+        excluded_completed_blocks = tuple(
+            _safe_id(value, "excluded_completed_block") for value in excluded_raw
+        )
+        if len(excluded_completed_blocks) != len(set(excluded_completed_blocks)):
+            raise ValueError("excluded completed blocks contain duplicates")
+        continuation_manifest_path = _contained_path(
+            root,
+            continuation.get("completion_manifest"),
+            "campaign.continuation.completion_manifest",
+        )
+        declared_manifest_sha = str(
+            continuation.get("completion_manifest_sha256", "")
+        )
+        if re.fullmatch(r"[0-9a-f]{64}", declared_manifest_sha) is None:
+            raise ValueError(
+                "campaign.continuation.completion_manifest_sha256 must be a "
+                "lowercase SHA-256 digest"
+            )
+        actual_manifest_sha = sha256_file(continuation_manifest_path)
+        if actual_manifest_sha != declared_manifest_sha:
+            raise ValueError("continuation completion manifest SHA-256 mismatch")
+        continuation_manifest_sha256 = actual_manifest_sha
+        completion_manifest = _load_object(continuation_manifest_path)
+        if completion_manifest.get("report_kind") != (
+            "hardware_continuation_predecessor_manifest"
+        ):
+            raise ValueError("unsupported continuation completion manifest kind")
+        prior_root = _contained_path(
+            root,
+            completion_manifest.get("prior_output_root"),
+            "continuation_manifest.prior_output_root",
+        )
+        completed_rows = completion_manifest.get("completed_jobs")
+        if not isinstance(completed_rows, list) or not completed_rows:
+            raise ValueError("continuation manifest has no completed jobs")
+        completed_by_block: dict[str, set[str]] = {}
+        observed_job_ids: set[str] = set()
+        for row in completed_rows:
+            if not isinstance(row, dict):
+                raise ValueError("continuation completed job rows must be objects")
+            job_id = _safe_id(row.get("job_id"), "continuation job_id")
+            if job_id in observed_job_ids:
+                raise ValueError("continuation manifest repeats a completed job")
+            observed_job_ids.add(job_id)
+            marker_sha = str(row.get("completion_json_sha256", ""))
+            if re.fullmatch(r"[0-9a-f]{64}", marker_sha) is None:
+                raise ValueError("invalid continuation completion marker SHA-256")
+            marker_path = prior_root / "causal" / "completed" / job_id / "completion.json"
+            if sha256_file(marker_path) != marker_sha:
+                raise ValueError(
+                    f"prior completion marker changed or is absent: {job_id}"
+                )
+            marker = _load_object(marker_path)
+            if marker.get("job_id") != job_id:
+                raise ValueError("prior completion marker job ID mismatch")
+            output_hashes = marker.get("required_output_sha256")
+            if not isinstance(output_hashes, dict) or not output_hashes:
+                raise ValueError("prior completion marker lacks output hashes")
+            completion_dir = marker_path.parent
+            for name, expected_output_sha in output_hashes.items():
+                if (
+                    not isinstance(name, str)
+                    or Path(name).name != name
+                    or re.fullmatch(r"[0-9a-f]{64}", str(expected_output_sha))
+                    is None
+                ):
+                    raise ValueError("invalid prior required-output hash entry")
+                if sha256_file(completion_dir / name) != expected_output_sha:
+                    raise ValueError(f"prior completed output changed: {job_id}/{name}")
+            try:
+                block_id, policy_id = job_id.rsplit("__", 1)
+            except ValueError as error:
+                raise ValueError(f"invalid prior completed job ID: {job_id}") from error
+            completed_by_block.setdefault(block_id, set()).add(policy_id)
+        expected_policies = {policy.policy_id for policy in policies}
+        if any(value != expected_policies for value in completed_by_block.values()):
+            raise ValueError(
+                "continuation may exclude only fully completed paired-policy blocks"
+            )
+        if set(excluded_completed_blocks) != set(completed_by_block):
+            raise ValueError(
+                "excluded completed blocks differ from the sealed prior results"
+            )
+        if completion_manifest.get("completed_job_count") != len(observed_job_ids):
+            raise ValueError("continuation completed job count mismatch")
     binding_sha256: str | None = None
     declared_binding_sha256 = hardware.get("bindings_file_sha256")
     if declared_binding_sha256 is not None and (
@@ -408,6 +509,9 @@ def load_causal_config(path: Path | str, repo_root: Path | str = ".") -> CausalC
         device_timeout_seconds=timeout_seconds,
         runner_factory=runner_factory,
         provider_factory=provider_factory,
+        excluded_completed_blocks=excluded_completed_blocks,
+        continuation_manifest_path=continuation_manifest_path,
+        continuation_manifest_sha256=continuation_manifest_sha256,
     )
 
 

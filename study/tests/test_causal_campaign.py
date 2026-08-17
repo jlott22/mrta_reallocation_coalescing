@@ -122,6 +122,67 @@ class CausalStudyTests(unittest.TestCase):
                 [job.job_id for job in zero.jobs],
             )
 
+    def test_continuation_excludes_only_sealed_complete_pairs(self) -> None:
+        original_config = load_causal_config(self.config_path, self.root)
+        original = plan_paired_blocks(original_config)
+        excluded = original[0]
+        prior_root = self.root / "study" / "output" / "prior"
+        rows = []
+        for job in excluded.jobs:
+            marker = prior_root / "causal" / "completed" / job.job_id / "completion.json"
+            marker.parent.mkdir(parents=True)
+            summary = marker.parent / "trial_summary.json"
+            summary.write_bytes(canonical_json_bytes({"job_id": job.job_id}))
+            marker.write_bytes(canonical_json_bytes({
+                "job_id": job.job_id,
+                "required_output_sha256": {
+                    "trial_summary.json": hashlib.sha256(
+                        summary.read_bytes()
+                    ).hexdigest(),
+                },
+            }))
+            rows.append({
+                "job_id": job.job_id,
+                "completion_json_sha256": hashlib.sha256(marker.read_bytes()).hexdigest(),
+            })
+        manifest = {
+            "schema_version": 1,
+            "report_kind": "hardware_continuation_predecessor_manifest",
+            "prior_output_root": "study/output/prior",
+            "completed_job_count": len(rows),
+            "completed_jobs": rows,
+        }
+        manifest_path = self.root / "configs" / "prior.json"
+        manifest_path.write_bytes(canonical_json_bytes(manifest))
+        config_value = self._config()
+        config_value["campaign"]["continuation"] = {
+            "completion_manifest": "configs/prior.json",
+            "completion_manifest_sha256": hashlib.sha256(
+                manifest_path.read_bytes()
+            ).hexdigest(),
+            "excluded_completed_blocks": [excluded.block_id],
+        }
+        self.config_path.write_bytes(canonical_json_bytes(config_value))
+
+        continuation = load_causal_config(self.config_path, self.root)
+        remaining = plan_paired_blocks(continuation)
+        self.assertNotIn(excluded.block_id, {block.block_id for block in remaining})
+        self.assertEqual(295, sum(len(block.jobs) for block in remaining))
+        original_orders = {
+            block.block_id: tuple(job.policy.policy_id for job in block.jobs)
+            for block in original
+        }
+        self.assertTrue(all(
+            tuple(job.policy.policy_id for job in block.jobs)
+            == original_orders[block.block_id]
+            for block in remaining
+        ))
+
+        marker = prior_root / "causal" / "completed" / rows[0]["job_id"] / "completion.json"
+        marker.write_text("{}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "marker changed"):
+            load_causal_config(self.config_path, self.root)
+
     def test_priority_trace_blocks_run_first_without_changing_balance(self) -> None:
         config_value = self._config()
         config_value["campaign"]["priority_trace_count"] = 1

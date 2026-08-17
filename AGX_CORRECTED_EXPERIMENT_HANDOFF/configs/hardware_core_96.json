@@ -14,9 +14,9 @@
     "design_status": "corrected_four_trace_four_board_subset"
   },
   "campaign": {
-    "campaign_id": "corrected_hardware_core_96_v9",
+    "campaign_id": "corrected_hardware_core_96_v10_continuation",
     "stage": "publication_core",
-    "output_root": "study/output/corrected_hardware_core_96_v9",
+    "output_root": "study/output/corrected_hardware_core_96_v10_continuation",
     "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
     "loads": ["low", "medium", "high"],
     "policies": [
@@ -27,13 +27,32 @@
     "priority_trace_count": 1,
     "schedule_seed": 2026081415,
     "max_technical_retries": 1,
+    "continuation": {
+      "completion_manifest": "AGX_CORRECTED_EXPERIMENT_HANDOFF/audit/hardware_v9_completed_26.json",
+      "completion_manifest_sha256": "03a90d93e1709ba5421100a40413f7b398dfdd9beb2c0e3d86cd7f6a5ab2a3fb",
+      "excluded_completed_blocks": [
+        "ACBBA__low__trace_0000",
+        "CBAA__high__trace_0000",
+        "CBAA__low__trace_0000",
+        "CBAA__medium__trace_0000",
+        "HIPC__high__trace_0000",
+        "HIPC__high__trace_0002",
+        "HIPC__high__trace_0003",
+        "HIPC__low__trace_0000",
+        "HIPC__low__trace_0001",
+        "HIPC__medium__trace_0000",
+        "PI__high__trace_0000",
+        "PI__medium__trace_0000",
+        "PI__medium__trace_0001"
+      ]
+    },
     "runner_factory": "study.causal.worker:run_causal_job",
     "required_gate_paths": [
       "study/native_gates/environment/native_environment_report.json",
       "study/native_gates/preflight/native_preflight_report.json"
     ],
     "require_clean_source": true,
-    "notes": "Fixed 96-mission RP2040 subset: four algorithms, three loads, Eager/B4, four paired traces, four boards. V9 uses corrected checkpointed time-multiplexing with one resident runtime and four logical robot checkpoints per mission. Trace 0000 is scheduled first so every long successful validation mission is already a publication-core result; there is no separate long hardware smoke. Do not resume or pool aborted hardware v1-v2-v3-v4-v5-v6-v7-v8 output."
+    "notes": "V10 executes only the 70 unfinished missions after the RP2040 heap-fragmentation repair. The sealed continuation manifest preserves and excludes all 26 successful V9 missions (13 complete Eager/B4 pairs), so no successful physical trial is rerun. V9 plus V10 remains the fixed 96-mission matrix. Aborted/failed V9 attempts are audit evidence only, not results."
   },
   "hardware": {
     "bindings_file": "configs/local/agx_board_bindings.json",

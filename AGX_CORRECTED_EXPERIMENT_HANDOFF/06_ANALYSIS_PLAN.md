@@ -3,9 +3,13 @@
 The replicate is the mission trace, not a task, call, message, or epoch. Use
 paired trace-level contrasts against Eager within `(allocator, load, trace)`.
 
-Analyze AGX-only `_v7` roots and the hardware-core `_v9` root. Hardware `_v1`
-through `_v8` trees are aborted technical evidence and are excluded from every
-denominator, table, model, and pooled dataset.
+Analyze AGX-only `_v7` roots. For hardware, validate the 26 sealed successful
+v9 missions and the 70 v10 continuation missions independently, then combine
+their rows into the fixed 96-mission matrix with a required `runtime_lineage`
+field. Hardware `_v1` through `_v8` and failed/unpromoted v9 attempts are
+excluded from every denominator, table, model, and pooled dataset. Report a
+v9-versus-v10 timing sensitivity because the heap repair can reduce incidental
+GC inside `W_alloc`, even though allocator inputs/outputs remain unchanged.
 
 Primary hierarchy:
 

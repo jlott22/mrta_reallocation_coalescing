@@ -718,6 +718,15 @@ def run_campaign(
             config.repo_root / config.raw["campaign"]["design_freeze_path"]
         ),
         "schedule_sha256": schedule_summary["schedule_sha256"],
+        "continuation": {
+            "excluded_completed_blocks": list(config.excluded_completed_blocks),
+            "completion_manifest": (
+                None
+                if config.continuation_manifest_path is None
+                else str(config.continuation_manifest_path)
+            ),
+            "completion_manifest_sha256": config.continuation_manifest_sha256,
+        },
         "worker_count": selected_workers,
         "required_publication_workers": PUBLICATION_WORKER_COUNT,
         "exact_publication_worker_count": (

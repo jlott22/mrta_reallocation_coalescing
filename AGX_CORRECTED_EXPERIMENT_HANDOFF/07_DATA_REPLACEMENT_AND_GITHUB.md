@@ -9,10 +9,11 @@ deleting them; never run a broad recursive delete against a home directory or
 workspace root.
 
 The existing hardware `_v1` through `_v8` campaign roots are aborted execution
-evidence. Preserve them in place for audit; do not delete, rename, resume, or
-copy them into the hardware v9 root. AGX-only v7 remains eligible and unchanged;
-only hardware `_v9` is eligible as new physical experimental data. Preflight
-logs may be kept separately as engineering evidence but are not matrix rows.
+evidence. Preserve them in place for audit. Hardware v9 contributes only the 26
+successful jobs sealed by `audit/hardware_v9_completed_26.json`; failed and
+unpromoted v9 attempts remain audit-only. Do not copy v9 directories into v10.
+The v10 root contributes only the 70 unfinished jobs. AGX-only v7 remains
+eligible and unchanged. Preflight logs are engineering evidence, not matrix rows.
 
 ## After collection
 
@@ -22,8 +23,8 @@ logs may be kept separately as engineering evidence but are not matrix rows.
    corrupt attempts according to the campaign's promotion rules.
 3. Replace the tracked pre-correction result/publication data on GitHub `main`
    with the corrected compact data and reports in one intentional commit.
-4. Do not retain both datasets in the active publication path and do not merge
-   aborted hardware v1-v8 rows into v9 tables. Git history is the recovery record.
+4. Do not merge aborted hardware v1-v8 or failed v9 rows into the 96 valid
+   hardware rows. Preserve the v9/v10 runtime-lineage column and sensitivity.
 5. Push only after the corrected output manifest and checksums validate.
 
 The AI agent may commit/push completed phases incrementally if this reduces

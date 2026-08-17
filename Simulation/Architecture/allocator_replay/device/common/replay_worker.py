@@ -53,6 +53,17 @@ ALGORITHM_CLASSES = {
     "DGA": "DGAAllocator",
 }
 _ACTIVE_ALLOCATOR_MODULE = None
+_PERSISTENT_ALLOCATOR_MODULES = {
+    "CBAA": "replay_native_c_cbaa",
+    "ACBBA": "replay_native_c_acbba",
+    "PI": "replay_native_c_pi",
+    "HIPC": "replay_native_c_hipc",
+    "DMCHBA": "replay_native_c_dmchba",
+    "DGA": "replay_native_c_dga",
+}
+_PERSISTENT_ALLOCATOR_MODULE_NAMES = tuple(
+    _PERSISTENT_ALLOCATOR_MODULES.values()
+)
 
 
 class TypedArrayView:
@@ -215,11 +226,31 @@ def _load_allocator(fixture):
 
 def _persistent_runtime(config):
     """Use the exact factory shared with a future physical control wrapper."""
+    global _ACTIVE_ALLOCATOR_MODULE
     mission = str(config.get("mission", "")).lower()
     if mission not in ("collaborative", "collaborative_visit"):
         raise ValueError("persistent replay supports Collaborative Visit only")
     if config.get("max_candidate_cells") is not None:
         raise ValueError("persistent replay requires unrestricted candidates")
+    algorithm = str(config.get("algorithm", "")).upper()
+    module_name = _PERSISTENT_ALLOCATOR_MODULES.get(algorithm)
+    if module_name is None:
+        raise ValueError("unknown collaborative allocator: " + algorithm)
+    if _ACTIVE_ALLOCATOR_MODULE != module_name:
+        # begin_trial() has already released every runtime from the preceding
+        # mission.  Remove only algorithm-specific modules; shared runtime,
+        # state, codec, and transport modules remain resident and validated.
+        for loaded_name in list(sys.modules):
+            if (
+                loaded_name in _PERSISTENT_ALLOCATOR_MODULE_NAMES
+                and loaded_name != module_name
+            ):
+                try:
+                    del sys.modules[loaded_name]
+                except KeyError:
+                    pass
+        gc.collect()
+        _ACTIVE_ALLOCATOR_MODULE = module_name
     module = __import__("replay_physical_factory")
     return module.create_complete_runtime(config)
 
@@ -1065,9 +1096,11 @@ def main():
     fixture_meta = None
     fixture = None
     expected_sequence = 0
+    fixture_received = 0
     part_buffer = None
     part_meta = None
     part_expected_sequence = 0
+    part_received = 0
     persistent_slot = PersistentRuntimeSlot(_persistent_runtime)
     _write(
         PROTOCOL,
@@ -1134,6 +1167,10 @@ def main():
                     actual_module_hash = (
                         "error:" + type(exc).__name__
                     )
+                # Integrity hashing reads every module in 4 KiB blocks.  The
+                # buffers are dead once the digest is complete; reclaim them
+                # before reporting heap headroom or accepting trial state.
+                gc.collect()
                 timer_started = ticks_us()
                 timer_stopped = timer_started
                 for _timer_probe_index in range(10000):
@@ -1175,7 +1212,8 @@ def main():
                     "length": int(fields[3]),
                     "crc32": int(fields[4]),
                 }
-                fixture_buffer = bytearray()
+                fixture_buffer = bytearray(fixture_meta["length"])
+                fixture_received = 0
                 expected_sequence = 0
                 _write(PROTOCOL, "ACK", "BEGIN", fields[2])
             elif command == "DATA":
@@ -1187,13 +1225,19 @@ def main():
                 payload = binascii.a2b_base64(fields[3])
                 if _crc32(payload) != int(fields[4]):
                     raise ValueError("chunk crc mismatch")
-                fixture_buffer.extend(payload)
+                end_offset = fixture_received + len(payload)
+                if end_offset > len(fixture_buffer):
+                    raise ValueError("fixture chunk exceeds declared length")
+                fixture_buffer[fixture_received:end_offset] = payload
+                fixture_received = end_offset
                 expected_sequence += 1
+                payload = None
+                gc.collect()
                 _write(PROTOCOL, "ACK", "DATA", sequence)
             elif command == "END":
                 if fixture_buffer is None or fixture_meta is None:
                     raise ValueError("END without BEGIN")
-                if len(fixture_buffer) != fixture_meta["length"]:
+                if fixture_received != fixture_meta["length"]:
                     raise ValueError("fixture length mismatch")
                 if _crc32(fixture_buffer) != fixture_meta["crc32"]:
                     raise ValueError("fixture crc mismatch")
@@ -1221,7 +1265,9 @@ def main():
                     "length": int(fields[6]),
                     "crc32": int(fields[7]),
                 }
-                part_buffer = bytearray()
+                gc.collect()
+                part_buffer = bytearray(part_meta["length"])
+                part_received = 0
                 part_expected_sequence = 0
                 _write(PROTOCOL, "ACK", "PBEGIN", fields[3])
             elif command == "PDATA":
@@ -1233,13 +1279,19 @@ def main():
                 payload = binascii.a2b_base64(fields[3])
                 if _crc32(payload) != int(fields[4]):
                     raise ValueError("part chunk crc mismatch")
-                part_buffer.extend(payload)
+                end_offset = part_received + len(payload)
+                if end_offset > len(part_buffer):
+                    raise ValueError("part chunk exceeds declared length")
+                part_buffer[part_received:end_offset] = payload
+                part_received = end_offset
                 part_expected_sequence += 1
+                payload = None
+                gc.collect()
                 _write(PROTOCOL, "ACK", "PDATA", sequence)
             elif command == "PEND":
                 if part_buffer is None or part_meta is None:
                     raise ValueError("PEND without PBEGIN")
-                if len(part_buffer) != part_meta["length"]:
+                if part_received != part_meta["length"]:
                     raise ValueError("part length mismatch")
                 if _crc32(part_buffer) != part_meta["crc32"]:
                     raise ValueError("part crc mismatch")

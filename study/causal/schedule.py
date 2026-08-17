@@ -50,6 +50,17 @@ def plan_paired_blocks(config: CausalConfig, *, zero_compute: bool = False) -> l
         for load_id in config.loads
         for trace_id in trace_ids
     ]
+    available_block_ids = {
+        f"{algorithm}__{load_id}__{trace_id}"
+        for algorithm, load_id, trace_id in raw_blocks
+    }
+    excluded_block_ids = set(config.excluded_completed_blocks)
+    unknown_exclusions = excluded_block_ids - available_block_ids
+    if unknown_exclusions:
+        raise ValueError(
+            "continuation excludes unknown blocks: "
+            + ", ".join(sorted(unknown_exclusions))
+        )
     priority_trace_ids = frozenset(trace_ids[: config.priority_trace_count])
     raw_blocks.sort(
         key=lambda item: (
@@ -121,8 +132,14 @@ def plan_paired_blocks(config: CausalConfig, *, zero_compute: bool = False) -> l
             core_id=core_id,
             jobs=tuple(jobs),
         ))
-    validate_schedule(config, blocks, zero_compute=zero_compute)
-    return blocks
+    # Build the complete original schedule before removing predecessor blocks.
+    # This preserves each unfinished block's board assignment and Latin policy
+    # order exactly; filtering earlier would silently rotate later pairs.
+    selected = [
+        block for block in blocks if block.block_id not in excluded_block_ids
+    ]
+    validate_schedule(config, selected, zero_compute=zero_compute)
+    return selected
 
 
 def validate_schedule(
@@ -165,7 +182,10 @@ def validate_schedule(
         dimensions["algorithm"][block.algorithm] += 1
         dimensions["load"][block.load_id] += 1
         dimensions["trace"][block.trace_id] += 1
-    if max(board_counts.values()) - min(board_counts.values()) > 1:
+    if (
+        not config.excluded_completed_blocks
+        and max(board_counts.values()) - min(board_counts.values()) > 1
+    ):
         raise AssertionError("paired blocks are not approximately balanced across boards")
     if config.stage == "full":
         board_ids = [board.board_id for board in config.boards]
@@ -184,6 +204,10 @@ def validate_schedule(
         "schema_version": 1,
         "block_count": len(blocks),
         "job_count": sum(len(block.jobs) for block in blocks),
+        "excluded_completed_block_count": len(config.excluded_completed_blocks),
+        "excluded_completed_job_count": (
+            len(config.excluded_completed_blocks) * len(config.policies)
+        ),
         "board_block_counts": dict(sorted(board_counts.items())),
         "first_policy_counts_by_board": {
             board: dict(sorted(counts.items())) for board, counts in sorted(first_positions.items())

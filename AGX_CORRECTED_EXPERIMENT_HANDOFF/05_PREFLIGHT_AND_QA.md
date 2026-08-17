@@ -19,7 +19,7 @@ Before launch:
    - compact/chunked large messages;
    - timer-scope attestation and host/native parity.
 
-Use the v9 publication config for both existing native gates; do not invoke
+Use the v10 continuation config for both fresh native gates; do not invoke
 their legacy defaults:
 
 ```bash
@@ -36,7 +36,7 @@ bash scripts/agx_rp2040_preflight.sh \
 Do not perform a large RP calibration or a long standalone smoke. Physical
 boards validate semantics, memory/transport viability, and timing scope in the
 brief gates. Every later long run belongs to the fixed 96-mission publication
-subset, whose first trace is scheduled first.
+continuation. The isolated diagnostic calls are never promoted as results.
 
 The hardware execution constraint is common to CBAA, ACBBA, PI, and HIPC:
 four logical robot checkpoints, one native runtime resident at a time, and a

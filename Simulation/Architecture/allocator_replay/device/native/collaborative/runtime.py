@@ -2,12 +2,6 @@
 
 from array import array
 
-from .acbba import ACBBAAllocator
-from .cbaa import CBAAAllocator
-from .dga import DGAAllocator
-from .dmchba import DMCHBAAllocator
-from .hipc import HIPCAllocator
-from .pi import PIAllocator
 from .state import CollaborativeState, value_from
 
 try:
@@ -16,13 +10,13 @@ except ImportError:  # package import during desktop tests
     from allocator_replay.capture.codec import decode_value
 
 
-ALLOCATORS = {
-    "CBAA": CBAAAllocator,
-    "ACBBA": ACBBAAllocator,
-    "PI": PIAllocator,
-    "HIPC": HIPCAllocator,
-    "DMCHBA": DMCHBAAllocator,
-    "DGA": DGAAllocator,
+ALLOCATOR_MODULES = {
+    "CBAA": ("cbaa", "CBAAAllocator"),
+    "ACBBA": ("acbba", "ACBBAAllocator"),
+    "PI": ("pi", "PIAllocator"),
+    "HIPC": ("hipc", "HIPCAllocator"),
+    "DMCHBA": ("dmchba", "DMCHBAAllocator"),
+    "DGA": ("dga", "DGAAllocator"),
 }
 RESUME_ATTRIBUTE = "native_collaborative_resume"
 DGA_POPULATION_PREFIX = "native_collaborative_dga_population_"
@@ -51,6 +45,31 @@ _CAUSAL_MESSAGE_FIELDS = (
     "released_value",
     "cell",
 )
+
+
+def _allocator_class(algorithm):
+    """Import only the allocator selected for this trial.
+
+    Importing every collaborative allocator costs roughly 60 KiB of RP2040
+    MicroPython heap even though a trial uses exactly one algorithm.  Device
+    builds flatten modules to ``replay_native_c_*``; desktop tests retain the
+    package layout and use the fallback import.
+    """
+
+    spec = ALLOCATOR_MODULES.get(algorithm)
+    if spec is None:
+        raise ValueError("unknown collaborative allocator: " + algorithm)
+    module_suffix, class_name = spec
+    try:
+        module = __import__("replay_native_c_" + module_suffix)
+    except ImportError:
+        module = __import__(
+            __package__ + "." + module_suffix,
+            globals(),
+            locals(),
+            (class_name,),
+        )
+    return getattr(module, class_name)
 
 
 def _expand_compact_message(mask, values):
@@ -218,9 +237,7 @@ class PersistentCollaborativeRuntime:
                 value_from(merged, ("algorithm", "allocator"), self.algorithm),
             )
         ).upper()
-        allocator_class = ALLOCATORS.get(algorithm)
-        if allocator_class is None:
-            raise ValueError("unknown collaborative allocator: " + algorithm)
+        allocator_class = _allocator_class(algorithm)
 
         if algorithm in ("CBAA", "ACBBA", "PI", "HIPC"):
             # The experimental allocators must see the complete locally known
