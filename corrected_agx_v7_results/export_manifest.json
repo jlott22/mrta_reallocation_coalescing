@@ -1,0 +1,142 @@
+{
+  "allocation_epoch_row_count": 121240,
+  "bundle_id": "corrected_agx_v7_results",
+  "campaign_count": 4,
+  "campaigns": [
+    {
+      "algorithmic_completed": 1470,
+      "algorithmic_incomplete": 30,
+      "campaign_id": "corrected_round1_causal_v7",
+      "round": "round1",
+      "source_commit": "598485103ee270a27d8b684c0082e46e2ad53802",
+      "source_tree_sha256": "49b978dd91f3e30388d913f090454ec645459f246d8daa4e7e754127a13bfc7c",
+      "technical_completed": 1500,
+      "timing_arm": "causal",
+      "trace_max": 24,
+      "trace_min": 0
+    },
+    {
+      "algorithmic_completed": 1500,
+      "algorithmic_incomplete": 0,
+      "campaign_id": "corrected_round1_zero_v7",
+      "round": "round1",
+      "source_commit": "598485103ee270a27d8b684c0082e46e2ad53802",
+      "source_tree_sha256": "49b978dd91f3e30388d913f090454ec645459f246d8daa4e7e754127a13bfc7c",
+      "technical_completed": 1500,
+      "timing_arm": "zero_compute",
+      "trace_max": 24,
+      "trace_min": 0
+    },
+    {
+      "algorithmic_completed": 1470,
+      "algorithmic_incomplete": 30,
+      "campaign_id": "corrected_round2_causal_v7",
+      "round": "round2",
+      "source_commit": "598485103ee270a27d8b684c0082e46e2ad53802",
+      "source_tree_sha256": "49b978dd91f3e30388d913f090454ec645459f246d8daa4e7e754127a13bfc7c",
+      "technical_completed": 1500,
+      "timing_arm": "causal",
+      "trace_max": 49,
+      "trace_min": 25
+    },
+    {
+      "algorithmic_completed": 1500,
+      "algorithmic_incomplete": 0,
+      "campaign_id": "corrected_round2_zero_v7",
+      "round": "round2",
+      "source_commit": "598485103ee270a27d8b684c0082e46e2ad53802",
+      "source_tree_sha256": "49b978dd91f3e30388d913f090454ec645459f246d8daa4e7e754127a13bfc7c",
+      "technical_completed": 1500,
+      "timing_arm": "zero_compute",
+      "trace_max": 49,
+      "trace_min": 25
+    }
+  ],
+  "completion_record_count": 6000,
+  "files": {
+    "README.md": {
+      "bytes": 2104,
+      "sha256": "e95fec17b83b9d1ec939dd022dbc2d87824b8d1242dcbc4f0d702c64ad13a3be"
+    },
+    "allocation_epoch_level.csv.gz": {
+      "bytes": 8960837,
+      "sha256": "d525390172caa9bd0aef64eaa05ba76d7199cd745ab8233e7c2c13e39c2244ff"
+    },
+    "campaign_coverage.csv": {
+      "bytes": 815,
+      "sha256": "c26b69a69005225fd24e96fdf24d43f5929047da6d3ae07751def842111f7a73"
+    },
+    "causal_zero_pairs.csv.gz": {
+      "bytes": 805860,
+      "sha256": "95e56f8d5372f9076ef77163735729bf37bfd72a8dde25c994eb371c90aabc18"
+    },
+    "completion_records.jsonl.gz": {
+      "bytes": 1805739,
+      "sha256": "c445e92615fd53f080583dc8e5519472510c99d9ac50891bf8a831de839b194b"
+    },
+    "condition_summaries.csv": {
+      "bytes": 190302,
+      "sha256": "a4f4ecea11d97034b1890ecbf0dd315996dd47edd637a12c3fadba6145c55d2f"
+    },
+    "matrix_coverage.csv": {
+      "bytes": 5082,
+      "sha256": "ad3418b13003fd035a68b60e0c65d12253f78b96a043be96fc840027355c9d21"
+    },
+    "provenance/corrected_round1_causal_v7__campaign_events.jsonl": {
+      "bytes": 272375,
+      "sha256": "0c461bd75dfe9870397906ca4c25e7917e94009dc112513688ddc12c33445e8c"
+    },
+    "provenance/corrected_round1_causal_v7__run_20260815T050205621479Z_27f8b558.json": {
+      "bytes": 78779,
+      "sha256": "8dbd991ead575fd17469b13b7d0172cd43f4631f44c166d14aecb4bb65d9b870"
+    },
+    "provenance/corrected_round1_zero_v7__campaign_events.jsonl": {
+      "bytes": 271382,
+      "sha256": "dd924cc104bf925135ee1ef47af33ef8f9fb8ffe98a9f77429f21f9d4a1b9bda"
+    },
+    "provenance/corrected_round1_zero_v7__run_20260815T143000738134Z_5f457f23.json": {
+      "bytes": 78761,
+      "sha256": "f769652d3a12cb0c9318770349f57651105eb00fd2aef45d719fceddfba982ae"
+    },
+    "provenance/corrected_round2_causal_v7__campaign_events.jsonl": {
+      "bytes": 272340,
+      "sha256": "73c0b9618042eda867a672dbcf86bfa069076f0b54961baab286248ca36cba9d"
+    },
+    "provenance/corrected_round2_causal_v7__run_20260815T160315512456Z_f31e7735.json": {
+      "bytes": 79580,
+      "sha256": "0d8b24b5cd339b6dca6005441e6662649e00279ee94ced8a538f52bda1ef2e99"
+    },
+    "provenance/corrected_round2_zero_v7__campaign_events.jsonl": {
+      "bytes": 271384,
+      "sha256": "af8c0772936a16438cd570c98335b0deaa06a82c8fa465a8f6b6811b22b10a2f"
+    },
+    "provenance/corrected_round2_zero_v7__run_20260816T142930871654Z_81622c8d.json": {
+      "bytes": 79571,
+      "sha256": "1417427bb8354567c007df04bd71fb021235b4d931ac13dda9adf512fd8ec8ef"
+    },
+    "raw_artifact_index.csv.gz": {
+      "bytes": 1076443,
+      "sha256": "58c27412b58f738a2425df217c1667618f947ea80378f04dbced79eafa3b821d"
+    },
+    "task_level.csv.gz": {
+      "bytes": 36459985,
+      "sha256": "865e2c840058bf96e84db62eda1b4e47f923c539a3592272d27f7e22fec63e44"
+    },
+    "trial_level.csv.gz": {
+      "bytes": 2993430,
+      "sha256": "2b7c8975de20a16ba18ca6c6fc6ec836512a82ca5b3a42c664ab64b6c05f2e6b"
+    },
+    "trial_summaries.jsonl.gz": {
+      "bytes": 3634572,
+      "sha256": "f0f6215bf77a9b41f6f2f869403d69572c8deca139be33216727b1820fbcdbdf"
+    }
+  },
+  "latest_trial_completed_at": "2026-08-16T16:02:43.361856Z",
+  "paired_causal_zero_count": 3000,
+  "schema_version": 1,
+  "scope": "AGX-only simulations; no RP2040 campaign artifacts",
+  "source_commit": "598485103ee270a27d8b684c0082e46e2ad53802",
+  "source_tree_sha256": "49b978dd91f3e30388d913f090454ec645459f246d8daa4e7e754127a13bfc7c",
+  "task_event_row_count": 300000,
+  "trial_count": 6000
+}
