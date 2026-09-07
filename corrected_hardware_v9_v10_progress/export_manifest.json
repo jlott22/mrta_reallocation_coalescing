@@ -1,0 +1,98 @@
+{
+  "attempt_failure_categories": {
+    "memory": 3,
+    "parity": 24,
+    "result_chunk_sequence": 6,
+    "timeout_or_no_response": 1
+  },
+  "attempt_failure_count": 34,
+  "bundle_id": "corrected_hardware_v9_v10_progress",
+  "campaign_source_identities": {
+    "corrected_hardware_core_96_v10_continuation": {
+      "git_head": "a3490a7748d852af5b05f1df3caa1f86a44dda17",
+      "source_tree_sha256": "895b1584cf51aa2adf31aa5c197f1e24514af08667b507b055c39955e85d77d6"
+    },
+    "corrected_hardware_core_96_v9": {
+      "git_head": "3fe1f578987088fc8f044741bd046ca4e5488267",
+      "source_tree_sha256": "4dc06c3d1edcae1722ad3295e412fa863ced136415528bb840cd0b0c421724fe"
+    }
+  },
+  "complete_eager_count_blocks": 38,
+  "completed_trials": 82,
+  "completed_v10": 56,
+  "completed_v9": 26,
+  "files": {
+    "README.md": {
+      "bytes": 2456,
+      "sha256": "33d215677a07e6ef1a5caae5b05206a57bdb06446fa57a5ee3ef3a80e2c2f887"
+    },
+    "attempt_failures.csv": {
+      "bytes": 16724,
+      "sha256": "5f90d11976ac7d5c96974041ea6a50306d316f0846b9c3b0c4aa6bc354724d27"
+    },
+    "completion_records.jsonl.gz": {
+      "bytes": 34759,
+      "sha256": "5e500d6c64ba8749e92a44103acd5a9a575e32f4e9613f796c9ad8fa984d93b9"
+    },
+    "condition_summaries.csv": {
+      "bytes": 20530,
+      "sha256": "991702d9f2adbfc2eaacce32c1edfd09ccbeb4665357dbbd76addaade02c3ea0"
+    },
+    "matrix_coverage.csv": {
+      "bytes": 803,
+      "sha256": "1b4c2d5eb243cdbe8ab49f65f91b2aa56c74d667aee4b4b5626cb654fcf18b33"
+    },
+    "provenance/corrected_hardware_core_96_v10_continuation__LIVE_TRACKER.md": {
+      "bytes": 1445,
+      "sha256": "c94217d2728cd28b8fa5c47b1183bf8ae2bc30eca2477f8d7fca7077671d2340"
+    },
+    "provenance/corrected_hardware_core_96_v10_continuation__campaign_events.jsonl": {
+      "bytes": 46303,
+      "sha256": "2f8e760237c69a29b83ee97cd97478db1ea1a053f79bac07f89c2effc5e85f69"
+    },
+    "provenance/corrected_hardware_core_96_v10_continuation__causal_schedule.json": {
+      "bytes": 66819,
+      "sha256": "dc0a0c9a182ba4e5ab675b2b0a7a3be020e73476869800040a936ef356eb0642"
+    },
+    "provenance/corrected_hardware_core_96_v9__LIVE_TRACKER.md": {
+      "bytes": 1491,
+      "sha256": "0b778553bb59a2e2381c4beb2213c2485a7852274e0a33bfcf1b356053aa8e71"
+    },
+    "provenance/corrected_hardware_core_96_v9__campaign_events.jsonl": {
+      "bytes": 17678,
+      "sha256": "a04a871bc572c2068a7e43da6f2baa5d3da5a8d2ae7f62c6a6b062abf6a969cf"
+    },
+    "provenance/corrected_hardware_core_96_v9__causal_schedule.json": {
+      "bytes": 90048,
+      "sha256": "5d00878db158fd827a8dec0834150417289ce17e45c9338c50373d188d308f3b"
+    },
+    "provenance/hardware_v9_completed_26.json": {
+      "bytes": 4493,
+      "sha256": "03a90d93e1709ba5421100a40413f7b398dfdd9beb2c0e3d86cd7f6a5ab2a3fb"
+    },
+    "raw_artifact_index.csv.gz": {
+      "bytes": 29477,
+      "sha256": "aefdb4b989b37a0c799059217352a74518f15a7121063cc3b6cfaba625440251"
+    },
+    "terminal_failures.csv": {
+      "bytes": 1671,
+      "sha256": "7ae69a7b5b429b44d3b720a2abb3974ed10b1f83b6419ac4067cd92f3bd1bb33"
+    },
+    "trial_level.csv.gz": {
+      "bytes": 44469,
+      "sha256": "27bcc03284a4260fa2b6a6dd36f8826c1e75e067f85835d62782e1936422f7f3"
+    },
+    "trial_summaries.jsonl.gz": {
+      "bytes": 58954,
+      "sha256": "df76a4a48553c39b4c14f128415e2fed7e00f6650fa933605e49ea42603704f6"
+    }
+  },
+  "latest_successful_completion_at": "2026-08-28T18:47:38.710279Z",
+  "partial_eager_count_blocks": 6,
+  "planned_trials": 96,
+  "remaining_terminal_failed_trials": 14,
+  "schema_version": 1,
+  "scope": "compact RP2040 progress snapshot; raw per-call streams remain local and are hash-indexed",
+  "snapshot_date": "2026-09-07",
+  "v9_completion_manifest_sha256": "03a90d93e1709ba5421100a40413f7b398dfdd9beb2c0e3d86cd7f6a5ab2a3fb"
+}

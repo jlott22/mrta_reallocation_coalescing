@@ -1,5 +1,17 @@
 # MRTA Reallocation Coalescing
 
+## Current experiment status
+
+The corrected AGX execution is complete and the RP2040 campaign is stopped at
+82/96 successful missions. Start with
+[`CURRENT_EXPERIMENT_STATUS.md`](CURRENT_EXPERIMENT_STATUS.md) for the exact
+return point, known blockers, retained-result rules, and safe 14-job hardware
+resume plan. Compact checksummed results are under
+[`corrected_agx_v7_results/`](corrected_agx_v7_results/README.md) and
+[`corrected_hardware_v9_v10_progress/`](corrected_hardware_v9_v10_progress/README.md).
+
+Do not relaunch the full hardware matrix or rerun completed AGX jobs.
+
 ## Current rerun architecture
 
 New experiments use one architecture, not a selectable compatibility mode.
@@ -187,6 +199,9 @@ Simulation/Architecture/allocator_replay/  persistent RP2040/HIL runtime
 Tests/HIL/AllocatorReplay/              active HIL tests
 artifacts/pilots/                        compact calibration evidence
 publication/aug14_final_v1/              compact final data, analysis, and figures
+corrected_agx_v7_results/                corrected 6,000-trial AGX export
+corrected_hardware_v9_v10_progress/      corrected 82/96 RP2040 progress export
+CURRENT_EXPERIMENT_STATUS.md             authoritative return/resume status
 docs/SIMULATION_ARCHITECTURE.md           final simulation/hardware architecture
 scripts/                                AGX and Windows HIL launchers
 ```

@@ -6,13 +6,19 @@ manifests/output roots.
 
 ## Current execution identity
 
-The active AGX-only campaign remains **v7** and must not be touched or
-restarted. Hardware **v9** is sealed at 26 successful missions after the heap
-failure cutover. The repaired **v10 continuation** runs only the remaining 70;
-the two lineages together account for the unchanged 96-mission matrix. Hardware
-`_v1` through `_v8` and failed/unpromoted v9 attempts are audit-only evidence.
-The sealed continuation manifest prevents any successful v9 mission from being
-rerun or silently copied into the v10 output root.
+Execution is no longer active. AGX-only **v7** completed all 6,000 production
+jobs and must not be touched or restarted. Hardware **v9** is sealed at 26
+successful missions after the heap-failure cutover. The repaired **v10
+continuation** excluded those 26 and retained 56 more, then stopped incomplete
+after 14 jobs exhausted their allowed retries. The two lineages therefore hold
+82/96 successful missions. Hardware `_v1` through `_v8` and failed/unpromoted
+v9/v10 attempts are audit-only evidence.
+
+See [`../CURRENT_EXPERIMENT_STATUS.md`](../CURRENT_EXPERIMENT_STATUS.md) and
+[`../corrected_hardware_v9_v10_progress/`](../corrected_hardware_v9_v10_progress/README.md)
+before any new launch. A future continuation must seal all 82 successes and
+schedule only the 14 terminal failures; this historical v10 config is not a
+fresh-clone launch authority.
 
 ## Fixed design
 
@@ -38,9 +44,8 @@ rerun or silently copied into the v10 output root.
    resume AGX v7 and launch only the hardware v10 continuation.
 2. Read `01_ARCHITECTURE_AND_CHANGES.md` through `07_DATA_REPLACEMENT_AND_GITHUB.md`.
 3. Run the brief software/native preflight in `05_PREFLIGHT_AND_QA.md`.
-4. Keep the existing AGX v7 supervisor running. Launch
-   `scripts/run_hardware_subset.sh` separately on cores 0-3 after the v10 native
-   gates; it starts only the 70 unfinished missions.
+4. Historical step: AGX v7 and hardware v10 have ended. Do not repeat this
+   launch. Follow the safe resume plan in `CURRENT_EXPERIMENT_STATUS.md`.
 5. Monitor logs/PID files; do not hold an interactive AI session open.
 6. Validate and publish corrected results only after all planned stages finish.
 
