@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import copy
 import sys
+import types
 import unittest
+from unittest.mock import patch
 
 ARCHITECTURE = (
     Path(__file__).resolve().parents[3]
@@ -62,6 +64,19 @@ def _state(count: int = 8) -> dict:
 
 
 class NativeCollaborativeTests(unittest.TestCase):
+    def test_package_runtime_ignores_stale_flattened_allocator_module(self) -> None:
+        stale = types.ModuleType("replay_native_c_dga")
+
+        class StaleDGAAllocator:
+            pass
+
+        stale.DGAAllocator = StaleDGAAllocator
+        with patch.dict(sys.modules, {"replay_native_c_dga": stale}):
+            runtime = create_persistent_runtime(_config("DGA"))
+            runtime.reset_trial({}, _state(8))
+
+        self.assertIsInstance(runtime.allocator, DGAAllocator)
+
     def test_outbox_coalesces_same_call_updates_by_message_type_and_cell(self) -> None:
         runtime = create_persistent_runtime(_config("ACBBA"))
         runtime.reset_trial({}, _state(3))

@@ -374,23 +374,29 @@ def latest_device_build(*, compiled: bool) -> tuple[Path, dict[str, object]]:
 
 def validate_built_imports(build_root: Path) -> None:
     root = Path(build_root).resolve()
+    module_names = {
+        path.stem
+        for path in root.iterdir()
+        if path.is_file() and path.suffix in {".py", ".mpy"}
+    }
+    saved_modules = {
+        name: sys.modules.pop(name)
+        for name in module_names
+        if name in sys.modules
+    }
     sys.path.insert(0, str(root))
-    imported: list[str] = []
     try:
         importlib.invalidate_caches()
         runtime = importlib.import_module("replay_native_c_runtime")
-        imported.append("replay_native_c_runtime")
         factory = importlib.import_module("replay_physical_factory")
-        imported.append("replay_physical_factory")
         adapter = importlib.import_module("replay_physical_adapter")
-        imported.append("replay_physical_adapter")
         worker = importlib.import_module("replay_worker")
-        imported.append("replay_worker")
         getattr(runtime, "create_persistent_runtime")
         getattr(factory, "create_complete_runtime")
         getattr(adapter, "PhysicalAllocatorAdapter")
         getattr(worker, "PersistentRuntimeSlot")
     finally:
         sys.path.remove(str(root))
-        for name in imported:
+        for name in module_names:
             sys.modules.pop(name, None)
+        sys.modules.update(saved_modules)

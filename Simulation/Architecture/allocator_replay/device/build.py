@@ -684,6 +684,17 @@ def build_device_bundle(
 
 
 def validate_built_imports(build_root: Path) -> None:
+    build_root = Path(build_root).resolve()
+    module_names = {
+        path.stem
+        for path in build_root.iterdir()
+        if path.is_file() and path.suffix in {".py", ".mpy"}
+    }
+    saved_modules = {
+        name: sys.modules.pop(name)
+        for name in module_names
+        if name in sys.modules
+    }
     sys.path.insert(0, str(build_root))
     try:
         importlib.invalidate_caches()
@@ -718,3 +729,6 @@ def validate_built_imports(build_root: Path) -> None:
         getattr(physical_adapter, "PhysicalAllocatorAdapter")
     finally:
         sys.path.remove(str(build_root))
+        for name in module_names:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved_modules)

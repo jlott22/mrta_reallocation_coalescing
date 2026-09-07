@@ -60,15 +60,18 @@ def _allocator_class(algorithm):
     if spec is None:
         raise ValueError("unknown collaborative allocator: " + algorithm)
     module_suffix, class_name = spec
-    try:
-        module = __import__("replay_native_c_" + module_suffix)
-    except ImportError:
+    if __package__:
+        # Desktop/package execution must not pick up a flattened module left
+        # in sys.modules by an earlier build-validation or loopback session.
+        # Besides breaking class identity, that could validate the wrong build.
         module = __import__(
             __package__ + "." + module_suffix,
             globals(),
             locals(),
             (class_name,),
         )
+    else:
+        module = __import__("replay_native_c_" + module_suffix)
     return getattr(module, class_name)
 
 
