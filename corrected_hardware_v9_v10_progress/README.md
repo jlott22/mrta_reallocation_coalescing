@@ -1,13 +1,14 @@
 # Corrected RP2040 hardware progress: v9 + v10
 
-This is the compact, checksummed progress package for the corrected 96-trial
-RP2040 matrix. It is an **incomplete checkpoint**, not a final hardware result
-release.
+This is the compact, checksummed observed-result package for the corrected
+96-job RP2040 matrix. It accounts for 82 successful missions and 14 retained
+technical failures. Those failures are part of the study denominator; retrying
+them is optional.
 
 - V9 contributes 26 successful trials sealed before the heap repair.
 - V10 contributes 56 successful trials after the heap repair.
 - Together they retain 82/96 successful trials; 14 v10 jobs exhausted both
-  allowed attempts and remain to be resolved.
+  allowed attempts and are reported as terminal technical failures.
 - V10 did not schedule any of the 26 successful v9 trials.
 
 The two source/build lineages must remain explicit in timing analyses because
@@ -33,11 +34,13 @@ sensitivity analysis.
   the sealed v9-success manifest.
 - `export_manifest.json`: package counts, identities, file sizes, and hashes.
 
-## Resume rule
+## Optional retry rule
 
 Do not restart the 82 successful trials. Any future hardware continuation must
 seal those exact job IDs and schedule only the 14 jobs in
-`terminal_failures.csv`. Failed attempts are audit evidence, never results.
+`terminal_failures.csv`. The exact allowlisted path is documented in
+`../docs/experiment/OPTIONAL_HARDWARE_RETRY.md`. Failed attempts are audit
+evidence, never successful result rows.
 
 ## Rebuild
 

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "manifest": {
+    "manifest_set_id": "collaborative_visit_g19_t50_n50_corrected_v1",
+    "root": "study/generated/manifests",
+    "master_seed": 2026081406,
+    "trace_count": 50,
+    "grid_size": 19,
+    "robot_count": 4,
+    "task_count": 50,
+    "initial_task_count": 8,
+    "arrival_loads": {
+      "low": 0.075,
+      "medium": 0.3,
+      "high": 0.6
+    },
+    "arrival_rate_units": "tasks_per_mission_second",
+    "design_status": "corrected_four_trace_four_board_optional_retry"
+  },
+  "campaign": {
+    "campaign_id": "corrected_hardware_core_96_v11_optional_retry_14",
+    "stage": "publication_core",
+    "output_root": "study/output/corrected_hardware_core_96_v11_optional_retry_14",
+    "algorithms": ["CBAA", "ACBBA", "PI", "HIPC"],
+    "loads": ["low", "medium", "high"],
+    "policies": [
+      {"policy_id": "eager_b1", "mode": "eager", "batch_size": 1},
+      {"policy_id": "count_b4", "mode": "count", "batch_size": 4}
+    ],
+    "trace_limit": 4,
+    "priority_trace_count": 1,
+    "schedule_seed": 2026081415,
+    "max_technical_retries": 1,
+    "job_allowlist": {
+      "path": "corrected_hardware_v9_v10_progress/terminal_failures.csv",
+      "sha256": "7ae69a7b5b429b44d3b720a2abb3974ed10b1f83b6419ac4067cd92f3bd1bb33",
+      "predecessor_export_manifest": "corrected_hardware_v9_v10_progress/export_manifest.json",
+      "predecessor_export_manifest_sha256": "4dd6b2719c8aaab254ccd9beea33d72b23ad4d2d77b590c4b0533cbe55c9995e",
+      "expected_planned_jobs": 96,
+      "expected_completed_jobs": 82,
+      "expected_retry_jobs": 14
+    },
+    "runner_factory": "study.causal.worker:run_causal_job",
+    "required_gate_paths": [
+      "study/native_gates/environment/native_environment_report.json",
+      "study/native_gates/preflight/native_preflight_report.json"
+    ],
+    "require_clean_source": true,
+    "notes": "Optional retry only. The tracked checkpoint seals 82 successes and terminal_failures.csv allowlists exactly 14 jobs. New successes remain a separate v11 runtime lineage and do not erase v9/v10 failure history."
+  },
+  "hardware": {
+    "bindings_file": "configs/local/agx_board_bindings.json",
+    "development_override": false,
+    "provider_factory": "study.causal.worker:create_timing_provider"
+  }
+}

@@ -44,7 +44,14 @@ from allocator_replay.device.native.collaborative import (  # noqa: E402
 from allocator_replay.host.emulator import LoopbackReplayDevice  # noqa: E402
 
 
-PILOT_CONFIG = ROOT / "configs" / "hil_pilot.json"
+TEST_CONFIG = (
+    ROOT
+    / "Tests"
+    / "HIL"
+    / "AllocatorReplay"
+    / "fixtures"
+    / "hil_protocol_test.json"
+)
 
 
 class CoalescingConfigTests(unittest.TestCase):
@@ -62,7 +69,7 @@ class CoalescingConfigTests(unittest.TestCase):
         self.assertIn("hil-dry-run", choices)
 
     def test_generated_pairs_are_byte_verified(self) -> None:
-        config = load_campaign_config(PILOT_CONFIG)
+        config = load_campaign_config(TEST_CONFIG)
         pairs = load_all_pairs(config)
         self.assertEqual(set(pairs), {("medium", "trace_0000")})
         pair = pairs[("medium", "trace_0000")]
@@ -74,7 +81,7 @@ class CoalescingConfigTests(unittest.TestCase):
         self.assertTrue(pair.paired_manifest_sha256)
 
     def test_campaign_override_is_exactly_one_safe_component(self) -> None:
-        config = load_campaign_config(PILOT_CONFIG)
+        config = load_campaign_config(TEST_CONFIG)
         for unsafe in (
             "../escape",
             "..\\escape",
@@ -93,7 +100,7 @@ class CoalescingConfigTests(unittest.TestCase):
 
     def test_legacy_top_k_is_rejected(self) -> None:
         temporary = ROOT / "Tests" / "HIL" / "AllocatorReplay" / "_bad_hil_config.json"
-        value = json.loads(PILOT_CONFIG.read_text(encoding="utf-8"))
+        value = json.loads(TEST_CONFIG.read_text(encoding="utf-8"))
         value["top_k_cells"] = 5
         temporary.write_text(json.dumps(value), encoding="utf-8")
         try:
@@ -351,7 +358,7 @@ class PersistentProtocolTests(unittest.TestCase):
         validate_built_imports(cls.build_root)
 
     def test_loopback_keeps_device_timer_separate(self) -> None:
-        config = load_campaign_config(PILOT_CONFIG)
+        config = load_campaign_config(TEST_CONFIG)
         trace = load_all_pairs(config)[("medium", "trace_0000")]
         condition = HilCondition("CBAA", "medium", PolicySpec("count", 4), config.manifest_set_id)
         device = LoopbackReplayDevice("focused", build_root=self.build_root)
@@ -471,7 +478,7 @@ class HardwareIdentityHardeningTests(unittest.TestCase):
                 device.close()
 
     def test_loopback_epoch_hook_runs_once_per_robot_not_per_round(self) -> None:
-        config = load_campaign_config(PILOT_CONFIG)
+        config = load_campaign_config(TEST_CONFIG)
         trace = load_all_pairs(config)[("medium", "trace_0000")]
         condition = HilCondition(
             "CBAA", "medium", PolicySpec("eager", 1), config.manifest_set_id

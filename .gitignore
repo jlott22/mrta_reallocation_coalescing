@@ -28,7 +28,8 @@ Thumbs.db
 *.log
 *~
 
-# Generated figures and image artifacts
+# Generated figures and image artifacts. Final paper assets can be added
+# deliberately when future analysis is frozen.
 *.fig
 *.png
 *.jpg
@@ -41,25 +42,13 @@ Thumbs.db
 *.svg
 *.eps
 
-# Device backups are retained locally only.
+# Device backups are retained locally only
 /artifacts/pololu_backup_*/
 
-# Transient study execution state (preserve combined CSV/JSON and manifests)
+# Transient study execution state
 /study/output/
 /study/native_gates/
 /study/frozen/
 /study/native_device_leases/
 /configs/local/
-/results/
-/study/generated/manifests/collaborative_visit_g19_t50_n25_v1/
-/study/generated/manifests/*_causal_calibration_v1_*/
-/study/generated/manifests/*_causal_design_*/
 /Simulation/Architecture/allocator_replay/builds/
-/results/**/logs/
-/results/**/parts/
-/results/**/launcher.pid
-/results/**/monitor_progress.py
-/results/**/start_all_*.sh
-/results/**/_trial_journal.jsonl
-/results/**/_FAILED.txt
-/results/**/_COMPLETE.txt

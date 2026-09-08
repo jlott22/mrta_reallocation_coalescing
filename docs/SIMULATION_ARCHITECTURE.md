@@ -1,8 +1,8 @@
 # Simulation and hardware architecture
 
-This is the authoritative architecture for new reallocation-coalescing runs.
-The August 14 publication bundle and reports describe the pre-correction
-architecture and must not be combined with or used as evidence for a rerun.
+This is the authoritative architecture for corrected reallocation-coalescing
+runs. Only the corrected manifests, configs, and compact result exports in the
+current tree satisfy this contract.
 
 ## Experimental contract
 
@@ -216,23 +216,13 @@ A valid new trial must show all of the following:
 - hardware timing is claimed only when device identity and host/device parity
   evidence are present.
 
-Old campaign rows fail this design contract by construction and must remain a
-separate historical dataset.
+Rows that do not satisfy this design contract are not part of the corrected
+dataset.
 
-## Legacy configuration guardrails
+## Library guardrails
 
-No existing generated manifest should be mutated or resumed for the rerun.
-Several retained standalone-replay selectors intentionally remain broader than
-the current study:
-
-- `Simulation/Architecture/allocator_replay/config/study.py` lists DMCHBA/DGA
-  and defines a three-task commitment horizon for those legacy paths;
-- `Simulation/Architecture/allocator_replay/config/fixture.schema.json` accepts
-  DMCHBA/DGA fixtures and the historical `partial_bundle_refill` trigger; and
-- `configs/pilot_extended_algorithms.json` is a DMCHBA/DGA-only pilot.
-
-Those values do not cap the four primary allocators in the corrected causal
-runtime, but a fresh campaign allow-list must reject them so they cannot enter
-the analysis accidentally. No retained JSON campaign configuration contains a
-primary-allocator bundle or event-horizon cap; the risk is the broad legacy
-selector, not a hidden cap in the current four-algorithm matrices.
+The reusable allocator-replay library retains support for DMCHBA, DGA, and
+standalone fixtures, but those capabilities are outside this experiment. Every
+corrected campaign config explicitly limits the study to CBAA, ACBBA, PI, and
+HIPC. No retained corrected config applies a bundle or event-horizon cap to the
+primary allocators.

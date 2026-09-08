@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
 import json
 import math
@@ -181,6 +182,75 @@ class CausalStudyTests(unittest.TestCase):
         marker = prior_root / "causal" / "completed" / rows[0]["job_id"] / "completion.json"
         marker.write_text("{}\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "marker changed"):
+            load_causal_config(self.config_path, self.root)
+
+    def test_exact_job_allowlist_supports_partial_blocks_and_seals_successes(self) -> None:
+        original_config = load_causal_config(self.config_path, self.root)
+        original = plan_paired_blocks(original_config)
+        original_jobs = [job for block in original for job in block.jobs]
+        retry_jobs = (original[0].jobs[0], original[1].jobs[1])
+        retry_ids = {job.job_id for job in retry_jobs}
+        completed_ids = [job.job_id for job in original_jobs if job.job_id not in retry_ids]
+
+        checkpoint = self.root / "corrected_hardware_v9_v10_progress"
+        checkpoint.mkdir()
+        failures_path = checkpoint / "terminal_failures.csv"
+        with failures_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["job_id"])
+            writer.writeheader()
+            writer.writerows({"job_id": value} for value in sorted(retry_ids))
+        completions_path = checkpoint / "completion_records.jsonl.gz"
+        with gzip.open(completions_path, "wt", encoding="utf-8") as handle:
+            for job_id in completed_ids:
+                handle.write(json.dumps({"job_id": job_id}) + "\n")
+
+        def digest(path: Path) -> str:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        export = {
+            "bundle_id": "corrected_hardware_v9_v10_progress",
+            "planned_trials": len(original_jobs),
+            "completed_trials": len(completed_ids),
+            "remaining_terminal_failed_trials": len(retry_ids),
+            "files": {
+                "terminal_failures.csv": {"sha256": digest(failures_path)},
+                "completion_records.jsonl.gz": {"sha256": digest(completions_path)},
+            },
+        }
+        export_path = checkpoint / "export_manifest.json"
+        export_path.write_bytes(canonical_json_bytes(export))
+        config_value = self._config()
+        config_value["campaign"]["job_allowlist"] = {
+            "path": "corrected_hardware_v9_v10_progress/terminal_failures.csv",
+            "sha256": digest(failures_path),
+            "predecessor_export_manifest": (
+                "corrected_hardware_v9_v10_progress/export_manifest.json"
+            ),
+            "predecessor_export_manifest_sha256": digest(export_path),
+            "expected_planned_jobs": len(original_jobs),
+            "expected_completed_jobs": len(completed_ids),
+            "expected_retry_jobs": len(retry_ids),
+        }
+        self.config_path.write_bytes(canonical_json_bytes(config_value))
+
+        retry_config = load_causal_config(self.config_path, self.root)
+        retry_blocks = plan_paired_blocks(retry_config)
+        scheduled = [job for block in retry_blocks for job in block.jobs]
+        self.assertEqual(retry_ids, {job.job_id for job in scheduled})
+        original_identity = {job.job_id: job.identity() for job in original_jobs}
+        self.assertTrue(
+            all(
+                job.identity() == original_identity[job.job_id]
+                for job in scheduled
+            )
+        )
+        summary = validate_schedule(retry_config, retry_blocks)
+        self.assertEqual(2, summary["allowlisted_job_count"])
+        self.assertEqual(len(completed_ids), summary["sealed_completed_job_count"])
+
+        with failures_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{completed_ids[0]}\n")
+        with self.assertRaisesRegex(ValueError, "allowlist SHA-256 mismatch"):
             load_causal_config(self.config_path, self.root)
 
     def test_priority_trace_blocks_run_first_without_changing_balance(self) -> None:

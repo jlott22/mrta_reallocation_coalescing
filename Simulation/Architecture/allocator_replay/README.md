@@ -37,23 +37,16 @@ value solely because position changed. A new bid requires a real claim
 lifecycle event such as outbid, completion, invalidation, targeted recovery
 release, or selection of another task.
 
-The standalone release-trace HIL commands below are retained for protocol and
-historical motionless replay. They do not contain the full causal stream of
-peer/completion/recovery events and therefore are not, by themselves, the
-hardware arm of the corrected experiment. Hardware timings for the rerun must
-come from the causal simulation provider and fresh output roots.
+Standalone release-trace HIL remains a reusable protocol tool. It does not
+contain the full causal stream of peer/completion/recovery events and is not,
+by itself, the hardware arm of the corrected experiment.
 
 ## Software validation
 
-From the repository root on Windows:
-
-```powershell
-scripts/run_hil_pilot.ps1 -DryRun
-```
-
-The dry run exercises the actual chunked serial protocol against an in-process
-loopback, all persistent context restore paths, resumability, reporting, and
-the device/host timing split. It never claims hardware validation.
+The tests under `Tests/HIL/AllocatorReplay/` exercise the chunked serial
+protocol against an in-process loopback, persistent context restore paths,
+resumability, and the device/host timing split. Loopback tests never claim
+hardware validation.
 
 ## One-time hardware setup
 
@@ -79,38 +72,13 @@ firmware identity, and exercises initial visibility, later online admission,
 and duplicate-epoch idempotence. Current-study evidence must cover the four
 primary allocators.
 
-## Pilot and selected campaign
+## Corrected experiment hardware path
 
-```powershell
-scripts/run_hil_pilot.ps1
-scripts/run_hil_campaign.ps1
-```
+The fixed hardware matrix is represented by the compact checkpoint at the
+repository root. If the 14 technical failures are retried, use only
+`configs/corrected/hardware_optional_retry_14.json` and follow
+`docs/experiment/OPTIONAL_HARDWARE_RETRY.md`. The allowlist is checksum-bound
+to the checkpoint and excludes all 82 successful jobs.
 
-Pass explicit ports when needed, for example `-Ports COM12,COM13`. Both
-launchers validate every scenario/release byte hash before opening hardware.
-Campaign schedules are immutable and bind Git/source/config/manifest/platform
-provenance plus the exact build, module set, firmware, and device set. Every
-journal row seals the same identity and report rebuilding rejects an unbound
-completion. Completed trials are skipped on rerun; an interrupted trial starts
-a new generation while prior journal rows remain append-only. A trial is
-pinned to its original device, so reconnect that board before resuming.
-
-Useful direct commands:
-
-```powershell
-python -m allocator_replay hil-status --config configs/hil_campaign.json
-python -m allocator_replay hil-report --config configs/hil_campaign.json
-```
-
-Reports are written under `results/hil_reallocation_coalescing/<campaign>/`:
-
-- `schedule.json`, `config_snapshot.json`, and `state.json`;
-- append-only `journal/attempts.jsonl`;
-- `reports/allocator_calls.csv`;
-- `reports/trial_metrics.csv`;
-- `reports/condition_metrics.csv` and `reports/summary.json`.
-
-The supplied pilot and selected standalone HIL campaign are archived
-pre-correction configurations. DMCHBA and DGA remain technically selectable,
-which is precisely why a fresh current-study configuration must explicitly
-allow only CBAA, ACBBA, PI, and HIPC.
+DMCHBA and DGA remain technically selectable by the reusable replay library,
+but corrected experiment configs permit only CBAA, ACBBA, PI, and HIPC.

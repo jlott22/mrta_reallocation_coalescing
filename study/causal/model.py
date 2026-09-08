@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
+import csv
+import gzip
 import hashlib
 import json
 import math
 import re
-import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -158,6 +160,12 @@ class CausalConfig:
     excluded_completed_blocks: tuple[str, ...] = ()
     continuation_manifest_path: Path | None = None
     continuation_manifest_sha256: str | None = None
+    job_allowlist: tuple[str, ...] = ()
+    sealed_completed_job_ids: tuple[str, ...] = ()
+    job_allowlist_path: Path | None = None
+    job_allowlist_sha256: str | None = None
+    predecessor_export_manifest_path: Path | None = None
+    predecessor_export_manifest_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -395,6 +403,110 @@ def load_causal_config(path: Path | str, repo_root: Path | str = ".") -> CausalC
             )
         if completion_manifest.get("completed_job_count") != len(observed_job_ids):
             raise ValueError("continuation completed job count mismatch")
+    job_allowlist: tuple[str, ...] = ()
+    sealed_completed_job_ids: tuple[str, ...] = ()
+    job_allowlist_path: Path | None = None
+    job_allowlist_sha256: str | None = None
+    predecessor_export_manifest_path: Path | None = None
+    predecessor_export_manifest_sha256: str | None = None
+    allowlist_spec = campaign.get("job_allowlist")
+    if allowlist_spec is not None:
+        if continuation is not None:
+            raise ValueError("continuation and job_allowlist are mutually exclusive")
+        if not isinstance(allowlist_spec, dict):
+            raise ValueError("campaign.job_allowlist must be an object")
+        job_allowlist_path = _contained_path(
+            root,
+            allowlist_spec.get("path"),
+            "campaign.job_allowlist.path",
+        )
+        declared_allowlist_sha = str(allowlist_spec.get("sha256", ""))
+        if re.fullmatch(r"[0-9a-f]{64}", declared_allowlist_sha) is None:
+            raise ValueError(
+                "campaign.job_allowlist.sha256 must be a lowercase SHA-256"
+            )
+        job_allowlist_sha256 = sha256_file(job_allowlist_path)
+        if job_allowlist_sha256 != declared_allowlist_sha:
+            raise ValueError("job allowlist SHA-256 mismatch")
+        predecessor_export_manifest_path = _contained_path(
+            root,
+            allowlist_spec.get("predecessor_export_manifest"),
+            "campaign.job_allowlist.predecessor_export_manifest",
+        )
+        declared_predecessor_sha = str(
+            allowlist_spec.get("predecessor_export_manifest_sha256", "")
+        )
+        if re.fullmatch(r"[0-9a-f]{64}", declared_predecessor_sha) is None:
+            raise ValueError(
+                "predecessor_export_manifest_sha256 must be a lowercase SHA-256"
+            )
+        predecessor_export_manifest_sha256 = sha256_file(
+            predecessor_export_manifest_path
+        )
+        if predecessor_export_manifest_sha256 != declared_predecessor_sha:
+            raise ValueError("predecessor export manifest SHA-256 mismatch")
+        predecessor = _load_object(predecessor_export_manifest_path)
+        expected_planned = _positive_int(
+            allowlist_spec.get("expected_planned_jobs"),
+            "campaign.job_allowlist.expected_planned_jobs",
+        )
+        expected_completed = _positive_int(
+            allowlist_spec.get("expected_completed_jobs"),
+            "campaign.job_allowlist.expected_completed_jobs",
+        )
+        expected_retry = _positive_int(
+            allowlist_spec.get("expected_retry_jobs"),
+            "campaign.job_allowlist.expected_retry_jobs",
+        )
+        if expected_completed + expected_retry != expected_planned:
+            raise ValueError("completed plus retry jobs must equal planned jobs")
+        if any((
+            predecessor.get("bundle_id") != "corrected_hardware_v9_v10_progress",
+            predecessor.get("planned_trials") != expected_planned,
+            predecessor.get("completed_trials") != expected_completed,
+            predecessor.get("remaining_terminal_failed_trials") != expected_retry,
+        )):
+            raise ValueError("predecessor hardware checkpoint counts or identity changed")
+        bundle_root = predecessor_export_manifest_path.parent
+        files = predecessor.get("files")
+        if not isinstance(files, dict):
+            raise ValueError("predecessor export manifest lacks file hashes")
+        expected_allowlist_path = bundle_root / "terminal_failures.csv"
+        if job_allowlist_path != expected_allowlist_path:
+            raise ValueError("job allowlist must be the checkpoint terminal_failures.csv")
+        completion_path = bundle_root / "completion_records.jsonl.gz"
+        for name, path_value in (
+            ("terminal_failures.csv", job_allowlist_path),
+            ("completion_records.jsonl.gz", completion_path),
+        ):
+            metadata = files.get(name)
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("sha256") != sha256_file(path_value)
+            ):
+                raise ValueError(f"predecessor checkpoint file hash mismatch: {name}")
+        with job_allowlist_path.open(newline="", encoding="utf-8") as handle:
+            retry_ids = [
+                str(row.get("job_id", "")) for row in csv.DictReader(handle)
+            ]
+        if len(retry_ids) != expected_retry or len(set(retry_ids)) != expected_retry:
+            raise ValueError("job allowlist count or uniqueness mismatch")
+        job_allowlist = tuple(_safe_id(value, "retry job_id") for value in retry_ids)
+        completed_ids: list[str] = []
+        with gzip.open(completion_path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("completion record must be an object")
+                completed_ids.append(_safe_id(row.get("job_id"), "completed job_id"))
+        if (
+            len(completed_ids) != expected_completed
+            or len(set(completed_ids)) != expected_completed
+        ):
+            raise ValueError("sealed completed-job count or uniqueness mismatch")
+        if set(completed_ids) & set(job_allowlist):
+            raise ValueError("retry allowlist overlaps sealed successful jobs")
+        sealed_completed_job_ids = tuple(completed_ids)
     binding_sha256: str | None = None
     declared_binding_sha256 = hardware.get("bindings_file_sha256")
     if declared_binding_sha256 is not None and (
@@ -512,6 +624,12 @@ def load_causal_config(path: Path | str, repo_root: Path | str = ".") -> CausalC
         excluded_completed_blocks=excluded_completed_blocks,
         continuation_manifest_path=continuation_manifest_path,
         continuation_manifest_sha256=continuation_manifest_sha256,
+        job_allowlist=job_allowlist,
+        sealed_completed_job_ids=sealed_completed_job_ids,
+        job_allowlist_path=job_allowlist_path,
+        job_allowlist_sha256=job_allowlist_sha256,
+        predecessor_export_manifest_path=predecessor_export_manifest_path,
+        predecessor_export_manifest_sha256=predecessor_export_manifest_sha256,
     )
 
 

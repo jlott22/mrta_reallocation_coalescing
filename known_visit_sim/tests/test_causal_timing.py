@@ -143,7 +143,7 @@ class CausalComputeTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[2]
         manifest_root = (
             repo_root
-            / "study/generated/manifests/collaborative_visit_g19_t50_n25_calibrated_v2"
+            / "study/generated/manifests/collaborative_visit_g19_t50_n50_corrected_v1"
         )
         scenario_raw = json.loads(
             (manifest_root / "scenarios/trace_0007.json").read_text(

@@ -726,6 +726,22 @@ def run_campaign(
                 else str(config.continuation_manifest_path)
             ),
             "completion_manifest_sha256": config.continuation_manifest_sha256,
+            "job_allowlist": list(config.job_allowlist),
+            "job_allowlist_path": (
+                None
+                if config.job_allowlist_path is None
+                else str(config.job_allowlist_path)
+            ),
+            "job_allowlist_sha256": config.job_allowlist_sha256,
+            "sealed_completed_job_count": len(config.sealed_completed_job_ids),
+            "predecessor_export_manifest": (
+                None
+                if config.predecessor_export_manifest_path is None
+                else str(config.predecessor_export_manifest_path)
+            ),
+            "predecessor_export_manifest_sha256": (
+                config.predecessor_export_manifest_sha256
+            ),
         },
         "worker_count": selected_workers,
         "required_publication_workers": PUBLICATION_WORKER_COUNT,

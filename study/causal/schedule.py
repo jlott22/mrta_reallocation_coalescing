@@ -135,9 +135,37 @@ def plan_paired_blocks(config: CausalConfig, *, zero_compute: bool = False) -> l
     # Build the complete original schedule before removing predecessor blocks.
     # This preserves each unfinished block's board assignment and Latin policy
     # order exactly; filtering earlier would silently rotate later pairs.
-    selected = [
-        block for block in blocks if block.block_id not in excluded_block_ids
-    ]
+    selected = [block for block in blocks if block.block_id not in excluded_block_ids]
+    if config.job_allowlist:
+        all_job_ids = {job.job_id for block in blocks for job in block.jobs}
+        retry_ids = set(config.job_allowlist)
+        completed_ids = set(config.sealed_completed_job_ids)
+        unknown = (retry_ids | completed_ids) - all_job_ids
+        if unknown:
+            raise ValueError(
+                "checkpoint contains jobs outside the fixed design: "
+                + ", ".join(sorted(unknown))
+            )
+        if retry_ids | completed_ids != all_job_ids:
+            raise ValueError(
+                "sealed successes and retry jobs do not partition the design"
+            )
+        selected = []
+        for block in blocks:
+            jobs = tuple(job for job in block.jobs if job.job_id in retry_ids)
+            if jobs:
+                selected.append(
+                    PairedBlock(
+                        block_id=block.block_id,
+                        algorithm=block.algorithm,
+                        load_id=block.load_id,
+                        trace_id=block.trace_id,
+                        board=block.board,
+                        worker_index=block.worker_index,
+                        core_id=block.core_id,
+                        jobs=jobs,
+                    )
+                )
     validate_schedule(config, selected, zero_compute=zero_compute)
     return selected
 
@@ -161,7 +189,13 @@ def validate_schedule(
     for block in blocks:
         if block.board.board_id != config.boards[block.worker_index].board_id:
             raise AssertionError("worker/board binding changed inside schedule")
-        if {job.policy.policy_id for job in block.jobs} != expected_policy_ids:
+        observed_policy_ids = {job.policy.policy_id for job in block.jobs}
+        if config.job_allowlist:
+            if not observed_policy_ids or not observed_policy_ids.issubset(
+                expected_policy_ids
+            ):
+                raise AssertionError(f"retry block has invalid policies: {block.block_id}")
+        elif observed_policy_ids != expected_policy_ids:
             raise AssertionError(f"paired block is missing policies: {block.block_id}")
         if any(job.board_id != block.board.board_id for job in block.jobs):
             raise AssertionError("paired policies were split across boards")
@@ -184,10 +218,11 @@ def validate_schedule(
         dimensions["trace"][block.trace_id] += 1
     if (
         not config.excluded_completed_blocks
+        and not config.job_allowlist
         and max(board_counts.values()) - min(board_counts.values()) > 1
     ):
         raise AssertionError("paired blocks are not approximately balanced across boards")
-    if config.stage == "full":
+    if config.stage == "full" and not config.job_allowlist:
         board_ids = [board.board_id for board in config.boards]
         for dimension_name, values in (
             ("algorithm", config.algorithms),
@@ -208,6 +243,8 @@ def validate_schedule(
         "excluded_completed_job_count": (
             len(config.excluded_completed_blocks) * len(config.policies)
         ),
+        "sealed_completed_job_count": len(config.sealed_completed_job_ids),
+        "allowlisted_job_count": len(config.job_allowlist),
         "board_block_counts": dict(sorted(board_counts.items())),
         "first_policy_counts_by_board": {
             board: dict(sorted(counts.items())) for board, counts in sorted(first_positions.items())

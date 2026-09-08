@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/_agx_causal_common.sh"
 
-CONFIG="${1:-configs/agx_causal_smoke_v1.json}"
+CONFIG="${1:-configs/corrected/hardware_optional_retry_14.json}"
 require_file "${CONFIG}"
 require_file configs/local/agx_board_bindings.json
 ACK_ARGS=()

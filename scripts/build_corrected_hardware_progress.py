@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build a compact, fail-closed snapshot of corrected RP2040 progress.
+"""Export corrected RP2040 raw campaigns into a compact checkpoint.
 
 The raw v9/v10 roots contain hundreds of megabytes of per-call diagnostics.
 This exporter retains every successful trial summary and completion seal, a
 complete terminal/attempt failure audit, schedules/provenance, and hashes that
 locate the omitted raw artifacts without copying those artifacts into Git.
+It does not perform statistical analysis or create paper figures.
 """
 
 from __future__ import annotations
@@ -127,9 +128,22 @@ def _failure_category(message: str) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--output-dir", type=Path)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repo-root", type=Path, default=Path(__file__).resolve().parents[1]
+    )
+    parser.add_argument("--output-dir", type=Path, help="New compact export directory")
+    parser.add_argument(
+        "--v9-root", type=Path, required=True, help="Raw v9 campaign root"
+    )
+    parser.add_argument(
+        "--v10-root", type=Path, required=True, help="Raw v10 campaign root"
+    )
+    parser.add_argument(
+        "--v9-completion-manifest",
+        type=Path,
+        help="Sealed manifest for the 26 retained v9 successes",
+    )
     args = parser.parse_args()
     repo = args.repo_root.resolve()
     output = (args.output_dir or repo / "corrected_hardware_v9_v10_progress").resolve()
@@ -147,7 +161,15 @@ def main() -> int:
     if not readme_output.exists():
         shutil.copyfile(readme_template, readme_output)
 
-    roots = {campaign: repo / "study" / "output" / campaign for campaign in (V9_ID, V10_ID)}
+    def resolved(value: Path | None, default: Path) -> Path:
+        if value is None:
+            return default.resolve()
+        return value.resolve() if value.is_absolute() else (repo / value).resolve()
+
+    roots = {
+        V9_ID: resolved(args.v9_root, repo),
+        V10_ID: resolved(args.v10_root, repo),
+    }
     schedules = {campaign: _json(root / "causal_schedule.json") for campaign, root in roots.items()}
     schedule_jobs = {campaign: _jobs(schedule) for campaign, schedule in schedules.items()}
     for campaign, expected in EXPECTED_IDENTITIES.items():
@@ -160,7 +182,10 @@ def main() -> int:
     if len(schedule_jobs[V9_ID]) != PLANNED_JOBS or len(schedule_jobs[V10_ID]) != 70:
         raise ValueError("unexpected v9/v10 schedule size")
 
-    audit_path = repo / "AGX_CORRECTED_EXPERIMENT_HANDOFF" / "audit" / "hardware_v9_completed_26.json"
+    audit_path = resolved(
+        args.v9_completion_manifest,
+        repo / "artifacts" / "hardware" / "hardware_v9_completed_26.json",
+    )
     if _sha256(audit_path) != V9_MANIFEST_SHA256:
         raise ValueError("v9 completion manifest hash mismatch")
     audit = _json(audit_path)

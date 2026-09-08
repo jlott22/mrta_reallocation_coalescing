@@ -1,95 +1,74 @@
 # Corrected experiment status
 
-Snapshot: **2026-09-07 (America/Los_Angeles)**
+Snapshot: **2026-09-08 (America/Los_Angeles)**
 
-This is the return point for the corrected MRTA reallocation-coalescing study.
-No campaign process or service is currently running. The AGX execution is
-complete; the RP2040 matrix is partially complete and must not be restarted as
-a full campaign.
+No campaign process is running. The corrected AGX experiment is complete. The
+fixed RP2040 allocator-HIL study is retained as 82 successful missions and 14
+technical failures; those failures remain in the study denominator rather than
+being treated as missing data.
 
-## Progress at a glance
+## Progress
 
-| Scope | Planned | Successfully retained | Remaining | State |
+| Scope | Planned | Successful | Retained failures/noncompletions | State |
 |---|---:|---:|---:|---|
-| AGX engineering smoke | 8 | 8 | 0 | Complete |
-| AGX causal simulations | 3,000 | 3,000 technically complete | 0 | Execution complete; 60 algorithmic noncompletions retained as outcomes |
-| AGX zero-compute matches | 3,000 | 3,000 | 0 | Complete |
-| RP2040 hardware missions | 96 | 82 | 14 | Stopped incomplete after retry exhaustion |
+| AGX causal | 3,000 | 2,940 algorithmically complete | 60 algorithmic noncompletions | Execution complete |
+| AGX zero-compute | 3,000 | 3,000 | 0 | Complete |
+| RP2040 allocator HIL | 96 | 82 | 14 technical failures | Complete as observed; retry optional |
 
-The AGX export is in [`corrected_agx_v7_results/`](corrected_agx_v7_results/README.md).
-The compact hardware checkpoint is in
+The AGX export is [`corrected_agx_v7_results/`](corrected_agx_v7_results/README.md).
+The hardware checkpoint is
 [`corrected_hardware_v9_v10_progress/`](corrected_hardware_v9_v10_progress/README.md).
-The pre-correction bundle under `publication/aug14_final_v1/` remains historical
-provenance and is not an input to the corrected results.
 
-## AGX state
+All 82 successful hardware missions passed host/device parity and completed
+algorithmically. The 14 terminal failures comprise 11 ACBBA, two PI, and one
+CBAA job; nine are high-load, three medium-load, and two low-load. Across the
+34 failed attempts, the recorded categories are 24 parity failures, six result
+chunk-sequence failures, three memory failures, and one timeout/no-response.
+A failed attempt can carry more than one category.
 
-All four v7 production roots completed: Round 1 and Round 2, causal and
-zero-compute, with 1,500 promoted outputs per root. The tracked export contains
-all 6,000 summaries, 3,000 exact causal/zero pairs, task and allocation-epoch
-tables, coverage, provenance, and checksums.
+## Exact hardware failures
 
-The causal runs contain 60 algorithmic noncompletions (30 per round). They are
-valid technical outcomes and were not discarded. The generic final aggregation
-command still needs correction before publication analysis: its release-time
-validator stopped at these known first blockers:
+| Job ID | Recorded categories |
+|---|---|
+| `ACBBA__high__trace_0000__count_b4` | parity; result chunk sequence |
+| `ACBBA__high__trace_0000__eager_b1` | memory; parity |
+| `ACBBA__high__trace_0001__count_b4` | result chunk sequence |
+| `ACBBA__high__trace_0002__count_b4` | parity |
+| `ACBBA__high__trace_0002__eager_b1` | memory |
+| `ACBBA__high__trace_0003__count_b4` | parity; result chunk sequence |
+| `ACBBA__high__trace_0003__eager_b1` | parity; timeout/no response |
+| `ACBBA__low__trace_0002__eager_b1` | parity |
+| `ACBBA__medium__trace_0001__count_b4` | parity |
+| `ACBBA__medium__trace_0003__count_b4` | parity; result chunk sequence |
+| `ACBBA__medium__trace_0003__eager_b1` | parity |
+| `CBAA__high__trace_0001__count_b4` | parity |
+| `PI__high__trace_0001__count_b4` | parity |
+| `PI__low__trace_0003__eager_b1` | parity |
 
-- `ACBBA__high__count_b8__trace_0002`, `task_0041`;
-- `ACBBA__medium__count_b8__trace_0025`, `task_0041`.
-
-Do not rerun AGX jobs to address this. Fix and test the analysis treatment of
-retained algorithmic noncompletions against the existing export.
-
-## RP2040 state
-
-The fixed design remains 96 missions: four allocators, three loads, Eager and
-Count B4, and four traces. V9 produced 26 successes before the heap-repair
-cutover. V10 correctly excluded those 26 and produced 56 additional successes.
-The 82 successful jobs and their completion hashes are retained.
-
-V10 exhausted both allowed attempts for 14 jobs. Across all jobs it recorded 34
-failed attempts: 24 parity failures, six result-chunk sequence failures, three
-memory failures, and one timeout/no-response failure. Six of the 48 paired
-Eager/Count blocks remain partial. Exact job IDs and failure classes are in
+The authoritative machine-readable records are
 [`terminal_failures.csv`](corrected_hardware_v9_v10_progress/terminal_failures.csv)
 and [`attempt_failures.csv`](corrected_hardware_v9_v10_progress/attempt_failures.csv).
+Failed attempts are evidence, never successful result rows.
 
-The hardware timing lineages must stay explicit. V9 used source commit
-`3fe1f578`; V10 used `a3490a77` after the common heap-fragmentation repair.
-Successful outputs from those lineages may be combined for coverage, but timing
-sensitivity must report lineage because garbage-collection overhead changed.
+## Interpretation and optional retry
 
-## Safe resume plan
+The hardware campaign measures allocator execution and parity on four RP2040
+boards. It is not a moving-robot experiment. V9 contributed 26 successes before
+the heap repair and V10 contributed 56 afterward; timing lineages must remain
+explicit.
 
-1. Do not launch the existing `hardware_core_96.json` as a fresh campaign. Its
-   v10 output root resumes safely only on this host; without that ignored root,
-   the config does not independently exclude the 56 v10 successes.
-2. Diagnose the recorded parity and result-stream failures without modifying
-   the 82 successful result directories.
-3. Seal all 82 successful job IDs in a new continuation manifest.
-4. Create a new campaign/output identity that schedules exactly the 14 jobs in
-   `terminal_failures.csv`, with the same fixed scenarios and policies.
-5. Re-run only those 14 jobs, then rebuild the compact hardware package and run
-   the descriptive hardware analysis. Failed attempts remain audit evidence.
-6. Separately repair the AGX analysis validator and regenerate publication
-   tables from the retained 6,000-job export; do not execute simulations again.
+The study can be analyzed and written with 82 successes and 14 reported
+failures. If more hardware time becomes available, follow
+[`docs/experiment/OPTIONAL_HARDWARE_RETRY.md`](docs/experiment/OPTIONAL_HARDWARE_RETRY.md).
+The retry configuration schedules exactly the 14 jobs above and refuses to
+rerun any of the 82 successes.
 
-## Repository guide
+## Remaining work
 
-- `AGX_CORRECTED_EXPERIMENT_HANDOFF/`: frozen design, architecture, launch
-  history, and engineering audit notes.
-- `corrected_agx_v7_results/`: complete compact AGX result export.
-- `corrected_hardware_v9_v10_progress/`: incomplete but checksummed RP2040
-  progress export and exact resume set.
-- `known_visit_sim/`: corrected simulator and allocator implementations.
-- `Simulation/Architecture/allocator_replay/`: native RP2040 replay runtime and
-  host transport.
-- `study/`: campaign scheduling, validation, and analysis code.
-- `scripts/build_corrected_agx_v7_results.py`: reproducible AGX exporter.
-- `scripts/build_corrected_hardware_progress.py`: reproducible RP2040 progress
-  exporter.
-- `publication/aug14_final_v1/`: superseded pre-correction publication bundle.
-
-Large raw per-call hardware streams remain in ignored local output roots and
-are intentionally not committed. Their paths, byte sizes, and SHA-256 hashes
-are preserved in the compact hardware package's `raw_artifact_index.csv.gz`.
+1. Verify the retained data with `python3 scripts/verify_current_data.py`.
+2. Perform the statistical analysis described in
+   [`docs/experiment/ANALYSIS_PLAN.md`](docs/experiment/ANALYSIS_PLAN.md).
+3. Decide whether the optional 14-job hardware retry is worth the time; it is
+   not required to retain or report the failures.
+4. Write the paper while clearly separating AGX, zero-compute, allocator-HIL,
+   and any future physical-motion evidence.

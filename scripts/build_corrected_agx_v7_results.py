@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Build the corrected-v7 AGX-only publication export.
+"""Export corrected-v7 AGX raw campaigns into a compact canonical dataset.
 
-The exporter is intentionally allowlist-based: it reads exactly the four AGX
-simulation roots below and never enumerates RP2040 campaign directories.
+This packages raw campaign outputs; it does not perform statistical analysis
+or create paper figures. The four source roots are explicit and allowlisted.
 """
 
 from __future__ import annotations
@@ -140,11 +140,40 @@ def _write_jsonl(output: Path, records: Iterable[dict[str, Any]]) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--output-dir", type=Path)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repo-root", type=Path, default=Path(__file__).resolve().parents[1]
+    )
+    parser.add_argument("--output-dir", type=Path, help="New compact export directory")
+    parser.add_argument(
+        "--campaign-root",
+        action="append",
+        default=[],
+        metavar="CAMPAIGN_ID=PATH",
+        help="Required raw campaign root; provide each of the four allowlisted IDs",
+    )
     args = parser.parse_args()
     repo = args.repo_root.resolve()
+
+    overrides: dict[str, Path] = {}
+    expected_campaign_ids = {item[2] for item in CAMPAIGNS}
+    for value in args.campaign_root:
+        campaign_id, separator, raw_path = value.partition("=")
+        if not separator or campaign_id not in expected_campaign_ids:
+            raise ValueError(f"invalid --campaign-root override: {value}")
+        if campaign_id in overrides:
+            raise ValueError(f"duplicate campaign-root override: {campaign_id}")
+        candidate = Path(raw_path)
+        overrides[campaign_id] = candidate.resolve() if candidate.is_absolute() else (
+            repo / candidate
+        ).resolve()
+    missing_campaign_ids = expected_campaign_ids - set(overrides)
+    if missing_campaign_ids:
+        raise ValueError(
+            "explicit --campaign-root values are required for: "
+            + ", ".join(sorted(missing_campaign_ids))
+        )
+
     output = (args.output_dir or repo / "corrected_agx_v7_results").resolve()
     if output.exists():
         existing = {path.name for path in output.iterdir()}
@@ -156,7 +185,7 @@ def main() -> int:
     campaign_rows: list[dict[str, Any]] = []
     latest_completion = ""
     for round_id, arm, campaign_id, trace_min, trace_max in CAMPAIGNS:
-        root = repo / "study" / "output" / campaign_id
+        root = overrides[campaign_id]
         completed = root / "completed"
         job_dirs = sorted(path for path in completed.iterdir() if path.is_dir())
         if len(job_dirs) != EXPECTED_JOBS_PER_CAMPAIGN:
